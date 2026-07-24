@@ -228,7 +228,8 @@ class DummyAgent:
             # -------------------------------------------------------
             if response_message.tool_calls:
                 # 先把这个包含 tool_calls 的 assistant 消息追加到历史
-                # 这是 OpenAI API 的要求：tool_calls 必须出现在 assistant message 里
+                # 这是 OpenAI API 的要求：
+                # tool_calls 必须出现在 assistant message 里
                 self.history.append(response_message)
 
                 # -------------------------------------------------------

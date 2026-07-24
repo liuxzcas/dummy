@@ -99,7 +99,7 @@ def main():
         if not base_url:
             base_url = "https://api.deepseek.com"
 
-    model = "deepseek-chat"
+    model = "deepseek-v4-flash"  # Phase 0 固定使用此模型
 
     print(f"\n  模型: {model}")
     print(f"  地址: {base_url}")
