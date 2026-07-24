@@ -1,0 +1,315 @@
+"""
+============================================================
+core.py — Agent 核心循环
+============================================================
+
+本模块是整个项目的核心 —— 实现了 Tool-Calling Agent 的主循环。
+
+=== Agent 是什么？===
+
+在 LLM 的语境下，Agent = LLM + Tools + Loop。
+
+- LLM 提供"大脑"：理解用户意图、做出决策
+- Tools 提供"手脚"：执行具体操作（运行命令、读文件等）
+- Loop 提供"控制流"：LLM 决定做什么 → 执行 → 看结果 → 再决定
+
+=== 核心循环：Tool-Calling Loop ===
+
+这是 Agent 最基础的结构，所有复杂 Agent 系统
+（AutoGPT、LangChain Agent、Claude Code、Hermes Agent）都基于此。
+
+流程：
+                          ┌──────────────┐
+                          │  用户输入     │
+                          └──────┬───────┘
+                                 ▼
+                    ┌──────────────────────┐
+                    │ 构造消息列表          │
+                    │ (system + 历史 + 新消息)│
+                    └──────────┬───────────┘
+                               ▼
+                    ┌──────────────────────┐
+                    │ 调用 LLM（带工具定义） │
+                    └──────────┬───────────┘
+                               ▼
+                    ┌──────────────────────┐
+                    │  LLM 返回了什么？     │
+                    └──────────┬───────────┘
+                               │
+              ┌────────────────┼────────────────┐
+              ▼                ▼                ▼
+        ┌──────────┐    ┌──────────┐    ┌──────────┐
+        │ 文本回答 │    │ tool_call│    │ 其它/空  │
+        └────┬─────┘    └────┬─────┘    └────┬─────┘
+             │               │               │
+             ▼               ▼               ▼
+        ┌──────────┐  ┌──────────────┐ ┌──────────┐
+        │ 返回给   │  │ 执行工具     │ │ 错误处理 │
+        │ 用户     │  │ 回注结果     │ └──────────┘
+        └──────────┘  │ 回到循环    │
+                      └──────┬───────┘
+                             │
+                             ▼
+                    ┌──────────────────────┐
+                    │  再次调用 LLM        │
+                    └──────────────────────┘
+
+=== 为什么不能只用一次 LLM 调用？===
+
+因为 LLM 不知道工具执行的结果。
+比如用户说"当前目录有什么文件"，LLM 调用 terminal("ls")。
+它不知道 ls 输出了什么，必须等执行结果回来才能回答用户。
+所以需要循环：先调工具 → 拿到结果 → 再调 LLM 生成最终回答。
+
+这个过程可能有多步：
+用户："安装 Flask 并启动服务器"
+Agent：terminal("pip install flask") → LLM 看到成功
+      → terminal("flask run") → LLM 看到输出
+      → 告诉用户"服务器已在 http://127.0.0.1:5000 运行"
+
+=== Phase 0 的限制 ===
+
+1. 无状态保存：退出后历史丢失
+2. 无 context compression：长对话会超 token 限制
+3. 无并行 tool calling：一次只处理一个工具调用
+4. 无安全审批：工具直接执行
+
+这些在后续 Phase 逐步解决。
+============================================================
+"""
+
+import json
+from typing import Optional
+
+from llm import LLMClient
+from tools import ToolRegistry
+from prompt import build_system_prompt
+
+
+# ===========================================================
+# Agent 类
+# ===========================================================
+# 封装了 agent 的所有状态：LLM 客户端、工具集、对话历史、配置。
+#
+# 为什么不设计成纯函数？
+# 对话历史需要累积，状态需要保持。
+# 类是最自然的方式。后续可以加数据库持久化。=================
+
+
+class DummyAgent:
+    """
+    Dummy Agent — 最小可用的 Tool-Calling Agent。
+
+    核心方法：
+    - chat(user_input): 处理用户输入，返回最终回答
+    - get_history(): 获取当前对话历史
+    - reset(): 清空对话历史
+    """
+
+    # 最大连续工具调用轮次
+    # 防止 agent 陷入无限循环（比如一直调工具但不回答用户）
+    MAX_TOOL_TURNS = 40
+
+    def __init__(
+        self,
+        llm_client: LLMClient,
+        tool_registry: ToolRegistry,
+        system_prompt: Optional[str] = None,
+    ):
+        """
+        初始化 Agent。
+
+        参数：
+        - llm_client: 配置好的 LLM 客户端实例
+        - tool_registry: 注册好工具的注册表实例
+        - system_prompt: 可选的 system prompt 覆盖
+
+        === 为什么需要外部传入这些，而不是内部创建？===
+        依赖注入（Dependency Injection）模式。
+        Agent 不负责创建 LLM 客户端和工具 —— 它只负责"使用"它们。
+        好处：
+        1. 可测试：可以 mock LLM 客户端来测试 agent 逻辑
+        2. 灵活：换模型、换工具都不需要改 agent 代码
+        3. 单一职责：Agent 只关心循环逻辑
+        """
+        self.llm = llm_client
+        self.tools = tool_registry
+
+        # -------------------------------------------------------
+        # 构建 system prompt
+        # 如果外部传入了，就用外部的；否则自动生成。
+        # 自动生成的好处：添加新工具后，system prompt 自动更新。
+        # -------------------------------------------------------
+        if system_prompt:
+            self.system_prompt = system_prompt
+        else:
+            self.system_prompt = build_system_prompt(
+                self.tools.list_tools()
+            )
+
+        # -------------------------------------------------------
+        # 对话历史
+        # 存储结构：list[dict]
+        # 每个元素是 OpenAI 格式的消息：
+        # {"role": "system"|"user"|"assistant"|"tool", "content": "...", ...}
+        # 初始只有 system message。
+        # -------------------------------------------------------
+        self.history: list[dict] = [
+            {"role": "system", "content": self.system_prompt}
+        ]
+
+        # Tool 定义（缓存起来，每次调用都传给 LLM）
+        self.tool_definitions = self.tools.get_tool_definitions()
+
+    def chat(self, user_input: str) -> str:
+        """
+        处理用户的一条消息，返回 Agent 的最终回答。
+
+        参数：
+        - user_input: 用户输入的文本消息
+
+        返回值：
+        Agent 最终的回答文本。
+
+        === 执行流程 ===
+        1. 将用户输入追加到历史
+        2. 进入工具调用循环：
+           a. 调用 LLM（带工具定义）
+           b. 如果返回 tool_calls → 执行 → 回注结果 → 继续循环
+           c. 如果返回文本 → 追加到历史 → 返回文本
+        3. 如果循环轮次超限，返回超限提示
+
+        === 为什么需要 MAX_TOOL_TURNS？===
+        假设用户说"给我讲个故事"，
+        理论上 LLM 可以直接回答，不需要调任何工具。
+        但如果 LLM 在训练数据中学到"每件事都先 ls 一下"，
+        就可能在回答前先调 terminal("ls")。
+
+        如果 LLM 陷入"ls → 看到文件 → 再 ls"的死循环，
+        或者在一次推理中产生多个 tool_call，会耗尽 token 配额。
+
+        MAX_TOOL_TURNS 是安全网 —— 限制单次 chat 调用中
+        工具调用的轮次上限。
+        Hermes 的默认值是 90 轮。
+        Phase 0 保守设 10 轮。
+        """
+        # -------------------------------------------------------
+        # Step 1: 追加用户消息
+        # 角色是 "user"，这是 OpenAI 格式的要求。
+        # 注意 content 可以是字符串，也可以是数组（包含图片等）。
+        # Phase 0 只处理纯文本。
+        # -------------------------------------------------------
+        self.history.append({"role": "user", "content": user_input})
+
+        # -------------------------------------------------------
+        # Step 2: 工具调用循环
+        # 每次循环：
+        #   调用 LLM → 检查是否有 tool_calls →
+        #   有则执行并回注 → 继续；无则返回文本。
+        # -------------------------------------------------------
+        for turn in range(self.MAX_TOOL_TURNS):
+            # 2a. 调用 LLM
+            # 传入当前完整历史 + 工具定义
+            # LLM 返回的 message 可能包含 content 或 tool_calls
+            response_message = self.llm.chat(
+                messages=self.history,
+                tools=self.tool_definitions,
+                temperature=0.3,  # 工具调用时低温度更稳定
+            )
+
+            # -------------------------------------------------------
+            # 2b. 检查是否有 tool_calls
+            # tool_calls 是一个列表，每个元素是一个工具调用请求
+            # {
+            #   "id": "call_xxx",
+            #   "function": {"name": "terminal", "arguments": "{\"command\": \"ls\"}"},
+            #   "type": "function"
+            # }
+            # -------------------------------------------------------
+            if response_message.tool_calls:
+                # 先把这个包含 tool_calls 的 assistant 消息追加到历史
+                # 这是 OpenAI API 的要求：tool_calls 必须出现在 assistant message 里
+                self.history.append(response_message)
+
+                # -------------------------------------------------------
+                # 2c. 遍历所有 tool_calls 并执行
+                # 一个 LLM 响应可能包含多个 tool_calls（虽然 Phase 0 的模型通常一次只调一个）
+                # 每个 tool_call 独立执行
+                # -------------------------------------------------------
+                for tool_call in response_message.tool_calls:
+                    # 从 LLM 返回中提取信息
+                    tool_name = tool_call.function.name
+                    tool_call_id = tool_call.id
+
+                    # arguments 是 JSON 字符串，需要解析
+                    try:
+                        tool_args = json.loads(tool_call.function.arguments)
+                    except json.JSONDecodeError as e:
+                        # LLM 偶尔会生成非法 JSON（如末尾多逗号）
+                        # 这里尝试修复，修复不了就报错
+                        tool_args = {"_error": f"参数 JSON 解析失败: {e}"}
+
+                    # 打印工具调用日志
+                    print(f"\n  🛠  Agent 调用了 [{tool_name}] 参数={tool_args}")
+
+                    # 分发执行工具
+                    try:
+                        result = self.tools.dispatch(tool_name, tool_args)
+                    except Exception as e:
+                        result = f"[工具执行异常] {type(e).__name__}: {e}"
+
+                    # 打印执行结果摘要
+                    result_preview = result[:300] + "..." if len(result) > 300 else result
+                    print(f"  📝  {tool_name} 返回: {result_preview}")
+
+                    # -------------------------------------------------------
+                    # 2d. 将工具结果以 tool role 回注给 LLM
+                    # 这是关键步骤！必须设置正确的 tool_call_id！
+                    # tool_call_id 必须和 assistant message 中的 tool_calls[].id 一致。
+                    # 否则 LLM 无法把结果和调用关联起来。
+                    # -------------------------------------------------------
+                    self.history.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call_id,
+                        "content": result,
+                    })
+
+                # 工具执行完后，回到循环顶部，再次调 LLM
+                # 这次 LLM 能看到工具的执行结果，可以决定下一步
+                continue
+
+            # -------------------------------------------------------
+            # 2e. LLM 返回的是文本（没有 tool_calls）
+            # 这意味着 LLM 认为不需要再调工具了
+            # 可以认为这是对用户的最终回答
+            # -------------------------------------------------------
+            final_text = response_message.content or ""
+
+            # 把最终回答追加到历史（记住 LLM 说了什么）
+            self.history.append({"role": "assistant", "content": final_text})
+
+            return final_text
+
+        # -------------------------------------------------------
+        # 如果循环正常结束但没返回（即轮次用尽仍没得到文本回答）
+        # 这通常意味着 agent 陷入了无限工具循环
+        # -------------------------------------------------------
+        fallback = f"[已达最大工具调用轮次 {self.MAX_TOOL_TURNS}，停止循环]"
+        self.history.append({"role": "assistant", "content": fallback})
+        return fallback
+
+    def get_history(self) -> list[dict]:
+        """
+        获取完整的对话历史（包括 system prompt）。
+        用于调试或后续的持久化存储。
+        """
+        return list(self.history)
+
+    def reset(self):
+        """
+        重置对话历史，只保留 system prompt。
+        相当于重新开始对话，但保留工具注册等配置。
+        """
+        self.history = [
+            {"role": "system", "content": self.system_prompt}
+        ]
