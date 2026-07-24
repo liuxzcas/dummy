@@ -1,0 +1,442 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Dummy Agent — 知识图谱</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0d1117;
+    color: #e6edf3;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans SC', sans-serif;
+    overflow: hidden;
+    height: 100vh;
+  }
+  #graph { width: 100vw; height: 100vh; display: block; }
+
+  /* 工具栏 / 图例 */
+  #legend {
+    position: fixed;
+    top: 20px;
+    left: 20px;
+    background: rgba(22, 27, 34, 0.92);
+    border: 1px solid #30363d;
+    border-radius: 12px;
+    padding: 16px 20px;
+    max-width: 220px;
+    z-index: 100;
+    backdrop-filter: blur(8px);
+    user-select: none;
+  }
+  #legend h3 {
+    font-size: 13px;
+    font-weight: 600;
+    color: #8b949e;
+    margin-bottom: 10px;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+  }
+  .legend-item { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; font-size: 12px; color: #c9d1d9; }
+  .legend-dot { width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; }
+  .legend-line { width: 20px; height: 2px; flex-shrink: 0; }
+
+  /* 节点 tooltip */
+  #tooltip {
+    position: fixed;
+    background: rgba(22, 27, 34, 0.95);
+    border: 1px solid #30363d;
+    border-radius: 10px;
+    padding: 14px 18px;
+    max-width: 320px;
+    z-index: 200;
+    pointer-events: none;
+    backdrop-filter: blur(8px);
+    opacity: 0;
+    transition: opacity 0.15s;
+    font-size: 13px;
+    line-height: 1.6;
+  }
+  #tooltip.visible { opacity: 1; }
+  #tooltip .tt-title { font-weight: 600; color: #f0f6fc; font-size: 15px; margin-bottom: 4px; }
+  #tooltip .tt-desc { color: #8b949e; font-size: 12px; }
+  #tooltip .tt-tag {
+    display: inline-block;
+    font-size: 10px;
+    padding: 1px 8px;
+    border-radius: 6px;
+    margin-top: 6px;
+    font-weight: 500;
+  }
+  .tag-data { background: rgba(88, 166, 255, 0.15); color: #58a6ff; }
+  .tag-loop { background: rgba(63, 185, 80, 0.15); color: #3fb950; }
+  .tag-design { background: rgba(210, 153, 34, 0.15); color: #d29922; }
+  .tag-future { background: rgba(163, 113, 247, 0.15); color: #a371f7; }
+  .tag-arch { background: rgba(240, 86, 86, 0.15); color: #f05656; }
+
+  /* 标题 + 信息 */
+  #header {
+    position: fixed;
+    bottom: 24px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(22, 27, 34, 0.85);
+    border: 1px solid #30363d;
+    border-radius: 10px;
+    padding: 10px 24px;
+    z-index: 100;
+    text-align: center;
+    backdrop-filter: blur(6px);
+  }
+  #header h1 { font-size: 14px; font-weight: 600; color: #f0f6fc; }
+  #header p { font-size: 11px; color: #8b949e; margin-top: 2px; }
+
+  .control-hint {
+    position: fixed;
+    bottom: 80px;
+    left: 50%;
+    transform: translateX(-50%);
+    font-size: 11px;
+    color: #484f58;
+    z-index: 100;
+    pointer-events: none;
+  }
+</style>
+</head>
+<body>
+
+<div id="legend">
+  <h3>图例</h3>
+  <div class="legend-item"><div class="legend-dot" style="background:#58a6ff"></div> 数据 / 存储</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#3fb950"></div> 循环 / 流程</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#d29922"></div> 设计决策</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#a371f7"></div> 未来扩展</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#f05656"></div> 架构组件</div>
+  <div class="legend-item" style="margin-top: 8px; border-top: 1px solid #21262d; padding-top: 8px;">
+    <svg width="20" height="10"><line x1="0" y1="5" x2="20" y2="5" stroke="#30363d" stroke-width="1.5"/></svg>
+    数据流
+  </div>
+  <div class="legend-item">
+    <svg width="20" height="10"><line x1="0" y1="5" x2="20" y2="5" stroke="#58a6ff" stroke-width="2" stroke-dasharray="4,3"/></svg>
+    未来数据流
+  </div>
+</div>
+
+<div id="tooltip"></div>
+
+<div id="header">
+  <h1>Dummy Agent — 知识图谱</h1>
+  <p>拖拽节点 · 滚轮缩放 · 悬停查看详情</p>
+</div>
+<div class="control-hint">基于 Phase 0 代码与会话数据分析</div>
+
+<svg id="graph"></svg>
+
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<script>
+// ============================================================
+// 数据
+// ============================================================
+const data = {
+  nodes: [
+    // ---- 架构组件 (red) ----
+    { id: "DummyAgent",          label: "DummyAgent",     group: "arch",  desc: "Agent 主类，维护 history 和工具注册表，驱动 tool-calling loop", tag: "核心入口", tagClass: "tag-arch" },
+    { id: "LLMClient",          label: "LLMClient",      group: "arch",  desc: "封装 DeepSeek (OpenAI 兼容) API 调用，处理消息发送与响应接收", tag: "通信层", tagClass: "tag-arch" },
+    { id: "ToolRegistry",       label: "ToolRegistry",   group: "arch",  desc: "工具注册表：注册工具定义 → 生成 JSON Schema → dispatch 执行", tag: "调度层", tagClass: "tag-arch" },
+    { id: "PromptBuilder",      label: "PromptBuilder",  group: "arch",  desc: "自动构建 System Prompt，包含角色身份和可用工具列表", tag: "提示词", tagClass: "tag-arch" },
+
+    // ---- 数据 / 存储 (blue) ----
+    { id: "History",            label: "self.history",   group: "data",  desc: "对话历史：list[dict]，存储全部消息。每次调 LLM 都完整发送", tag: "list[dict]", tagClass: "tag-data" },
+    { id: "SystemPrompt",       label: "System Prompt",  group: "data",  desc: "history[0]，角色身份 + 工具描述。由 PromptBuilder 自动生成或外部传入", tag: "history[0]", tagClass: "tag-data" },
+    { id: "ToolDefs",           label: "Tool Definitions",group: "data",  desc: "JSON Schema 格式的工具定义列表，通过 API tools 参数传递", tag: "独立参数", tagClass: "tag-data" },
+    { id: "ToolResults",        label: "工具执行结果",    group: "data",  desc: "工具的执行输出以 role='tool' 回注到 history，与 tool_call_id 配对", tag: "role: tool", tagClass: "tag-data" },
+
+    // ---- 循环 / 流程 (green) ----
+    { id: "ToolCallingLoop",    label: "Tool-Calling Loop", group: "loop", desc: "核心循环：调 LLM → 检查 tool_calls → 执行 → 回注 → 继续", tag: "第 210-291 行", tagClass: "tag-loop" },
+    { id: "Dispatch",           label: "Dispatch",       group: "loop",  desc: "根据 LLM 返回的 name 查找 handler 并执行，返回结果字符串", tag: "查找+执行", tagClass: "tag-loop" },
+    { id: "LLMResponse",        label: "LLM 响应",       group: "loop",  desc: "两种返回：tool_calls(调工具) 或 content(最终回答)。由 LLM 自主决定", tag: "二选一", tagClass: "tag-loop" },
+
+    // ---- 设计决策 (yellow) ----
+    { id: "DepInjection",       label: "依赖注入",       group: "design", desc: "LLMClient 和 ToolRegistry 由外部传入，而非 Agent 内部创建。可测试、可换", tag: "设计模式", tagClass: "tag-design" },
+    { id: "OptionalPrompt",     label: "Optional[str]",  group: "design", desc: "system_prompt 设计为可选：不传则根据工具列表自动生成", tag: "可选 vs 必填", tagClass: "tag-design" },
+    { id: "CacheToolDefs",      label: "缓存 Tool Defs", group: "design", desc: "工具定义在 __init__ 缓存一次，每次调 LLM 复用。性能 vs 动态性取舍", tag: "设计取舍", tagClass: "tag-design" },
+    { id: "FiveFiles",          label: "5 文件拆分",     group: "design", desc: "单一职责原则：llm / tools / prompt / core / main 各管一事", tag: "模块化", tagClass: "tag-design" },
+    { id: "LowTemperature",     label: "Temperature 0.3",group: "design", desc: "低温度保证工具调用精确，不 0.0 避免死循环", tag: "参数调优", tagClass: "tag-design" },
+    { id: "ShellTrue",          label: "shell=True",     group: "design", desc: "subprocess.run(shell=True) 方便但对 LLM 不安全，Phase 1 需加审批", tag: "安全风险", tagClass: "tag-design" },
+
+    // ---- 未来扩展 (purple) ----
+    { id: "TreeHistory",        label: "树形历史",       group: "future", desc: "从线性列表 → MessageNode 树结构，支持分支/回溯/追溯。架构级改动", tag: "Phase Tree", tagClass: "tag-future" },
+    { id: "ConcurrentTools",    label: "并发工具",       group: "future", desc: "ThreadPoolExecutor 并行执行 tool_calls，需注意依赖和副作用", tag: "~10 行改动", tagClass: "tag-future" },
+    { id: "DynamicTools",       label: "动态增减工具",   group: "future", desc: "运行时注册/注销工具，需刷新 ToolDefs 缓存让 LLM 感知新工具", tag: "加个方法", tagClass: "tag-future" },
+    { id: "SessionPersistence", label: "会话持久化",     group: "future", desc: "把 self.history 写入 SQLite/JSON，退出后能恢复对话", tag: "Phase 2", tagClass: "tag-future" },
+  ],
+
+  links: [
+    // 架构 → 数据
+    { source: "DummyAgent",     target: "History",      label: "维护", cls: "" },
+    { source: "DummyAgent",     target: "ToolRegistry", label: "拥有", cls: "" },
+    { source: "DummyAgent",     target: "LLMClient",    label: "依赖注入", cls: "" },
+
+    // 数据 → 数据
+    { source: "SystemPrompt",   target: "History",      label: "history[0]", cls: "" },
+    { source: "ToolResults",    target: "History",      label: "回注追加", cls: "" },
+
+    // 循环相关
+    { source: "ToolCallingLoop", target: "LLMClient",   label: "调用", cls: "" },
+    { source: "ToolCallingLoop", target: "History",     label: "追加消息", cls: "" },
+    { source: "ToolCallingLoop", target: "LLMResponse", label: "接收", cls: "" },
+    { source: "ToolCallingLoop", target: "Dispatch",    label: "触发", cls: "" },
+    { source: "LLMResponse",    target: "ToolDefs",     label: "接收 Schema", cls: "" },
+    { source: "LLMResponse",    target: "History",      label: "读取", cls: "" },
+
+    // 分发
+    { source: "Dispatch",       target: "ToolRegistry", label: "查找 handler", cls: "" },
+    { source: "ToolRegistry",   target: "ToolDefs",     label: "生成", cls: "" },
+    { source: "Dispatch",       target: "ToolResults",  label: "产生输出", cls: "" },
+
+    // 设计决策关联
+    { source: "DepInjection",   target: "DummyAgent",   label: "影响", cls: "dashed" },
+    { source: "OptionalPrompt", target: "DummyAgent",   label: "影响", cls: "dashed" },
+    { source: "CacheToolDefs",  target: "ToolDefs",     label: "缓存策略", cls: "dashed" },
+    { source: "FiveFiles",      target: "DummyAgent",   label: "拆分依据", cls: "dashed" },
+    { source: "LowTemperature", target: "ToolCallingLoop", label: "参数", cls: "dashed" },
+    { source: "ShellTrue",      target: "Dispatch",     label: "实现方式", cls: "dashed" },
+
+    // PromptBuilder
+    { source: "PromptBuilder",  target: "SystemPrompt", label: "构造", cls: "" },
+    { source: "PromptBuilder",  target: "ToolRegistry", label: "读取工具列表", cls: "" },
+
+    // 未来扩展
+    { source: "TreeHistory",    target: "History",      label: "替代", cls: "future" },
+    { source: "ConcurrentTools",target: "Dispatch",     label: "扩展", cls: "future" },
+    { source: "DynamicTools",   target: "ToolDefs",     label: "刷新缓存", cls: "future" },
+    { source: "SessionPersistence", target: "History",  label: "持久化", cls: "future" },
+    { source: "TreeHistory",    target: "DummyAgent",   label: "重构", cls: "future" },
+  ]
+};
+
+// ============================================================
+// 颜色映射
+// ============================================================
+const colorMap = {
+  arch:   "#f05656",
+  data:   "#58a6ff",
+  loop:   "#3fb950",
+  design: "#d29922",
+  future: "#a371f7",
+};
+
+// ============================================================
+// D3 力导图
+// ============================================================
+const svg = d3.select("#graph");
+const width = window.innerWidth;
+const height = window.innerHeight;
+svg.attr("width", width).attr("height", height);
+
+// 缩放
+const g = svg.append("g");
+svg.call(d3.zoom().scaleExtent([0.3, 3]).on("zoom", (e) => {
+  g.attr("transform", e.transform);
+}));
+
+// 箭头标记
+const defs = svg.append("defs");
+defs.append("marker")
+  .attr("id", "arrow")
+  .attr("viewBox", "0 -5 10 10")
+  .attr("refX", 28)
+  .attr("refY", 0)
+  .attr("markerWidth", 6)
+  .attr("markerHeight", 6)
+  .attr("orient", "auto")
+  .append("path")
+  .attr("d", "M0,-5L10,0L0,5")
+  .attr("fill", "#30363d");
+
+defs.append("marker")
+  .attr("id", "arrow-future")
+  .attr("viewBox", "0 -5 10 10")
+  .attr("refX", 28)
+  .attr("refY", 0)
+  .attr("markerWidth", 6)
+  .attr("markerHeight", 6)
+  .attr("orient", "auto")
+  .append("path")
+  .attr("d", "M0,-5L10,0L0,5")
+  .attr("fill", "#a371f7");
+
+defs.append("marker")
+  .attr("id", "arrow-dashed")
+  .attr("viewBox", "0 -5 10 10")
+  .attr("refX", 28)
+  .attr("refY", 0)
+  .attr("markerWidth", 6)
+  .attr("markerHeight", 6)
+  .attr("orient", "auto")
+  .append("path")
+  .attr("d", "M0,-5L10,0L0,5")
+  .attr("fill", "#d29922");
+
+// 力模拟
+const simulation = d3.forceSimulation(data.nodes)
+  .force("link", d3.forceLink(data.links).id(d => d.id).distance(d => {
+    if (d.cls === "future") return 180;
+    return 120;
+  }))
+  .force("charge", d3.forceManyBody().strength(d => {
+    if (d.group === "future") return -500;
+    return -800;
+  }))
+  .force("center", d3.forceCenter(width / 2, height / 2))
+  .force("collision", d3.forceCollide().radius(d => {
+    const len = d.label.length;
+    return Math.max(45, len * 5.5);
+  }));
+
+// 链接
+const linkGroup = g.append("g").selectAll("g.link-group")
+  .data(data.links)
+  .join("g")
+  .attr("class", "link-group");
+
+const link = linkGroup.append("line")
+  .attr("stroke", d => {
+    if (d.cls === "future") return "#a371f7";
+    if (d.cls === "dashed") return "#d29922";
+    return "#30363d";
+  })
+  .attr("stroke-width", d => {
+    if (d.cls === "future") return 2;
+    if (d.cls === "dashed") return 1.5;
+    return 1.5;
+  })
+  .attr("stroke-dasharray", d => {
+    if (d.cls === "future") return "6,4";
+    if (d.cls === "dashed") return "4,3";
+    return null;
+  })
+  .attr("marker-end", d => {
+    if (d.cls === "future") return "url(#arrow-future)";
+    if (d.cls === "dashed") return "url(#arrow-dashed)";
+    return "url(#arrow)";
+  });
+
+// 链接标签
+const linkLabel = linkGroup.append("text")
+  .attr("fill", "#484f58")
+  .attr("font-size", "10px")
+  .attr("text-anchor", "middle")
+  .attr("dy", -4)
+  .text(d => d.label);
+
+// 节点组
+const node = g.append("g").selectAll("g.node")
+  .data(data.nodes)
+  .join("g")
+  .attr("class", "node")
+  .call(d3.drag()
+    .on("start", (e, d) => {
+      if (!e.active) simulation.alphaTarget(0.3).restart();
+      d.fx = d.x; d.fy = d.y;
+    })
+    .on("drag", (e, d) => { d.fx = e.x; d.fy = e.y; })
+    .on("end", (e, d) => {
+      if (!e.active) simulation.alphaTarget(0);
+      d.fx = null; d.fy = null;
+    })
+  );
+
+// 节点圆
+node.append("circle")
+  .attr("r", d => Math.max(22, d.label.length * 4 + 2))
+  .attr("fill", d => {
+    const c = d3.color(colorMap[d.group]);
+    c.opacity = 0.25;
+    return c;
+  })
+  .attr("stroke", d => colorMap[d.group])
+  .attr("stroke-width", 2)
+  .attr("filter", "drop-shadow(0 0 6px rgba(0,0,0,0.4))");
+
+// 节点外发光（hover 用）
+node.append("circle")
+  .attr("r", d => Math.max(22, d.label.length * 4 + 2) + 4)
+  .attr("fill", "none")
+  .attr("stroke", d => colorMap[d.group])
+  .attr("stroke-width", 0)
+  .attr("opacity", 0.3);
+
+// 节点标签
+node.append("text")
+  .text(d => d.label)
+  .attr("fill", "#e6edf3")
+  .attr("font-size", "12px")
+  .attr("font-weight", "600")
+  .attr("text-anchor", "middle")
+  .attr("dy", "0.35em")
+  .style("pointer-events", "none")
+  .style("user-select", "none");
+
+// Tooltip
+const tooltip = d3.select("#tooltip");
+let tooltipTimeout = null;
+
+node.on("mouseenter", function(e, d) {
+  clearTimeout(tooltipTimeout);
+  const rect = this.getBoundingClientRect();
+  tooltip
+    .html(`
+      <div class="tt-title">${d.label}</div>
+      <div class="tt-desc">${d.desc}</div>
+      <span class="tt-tag ${d.tagClass}">${d.tag}</span>
+    `)
+    .style("left", (e.clientX + 16) + "px")
+    .style("top", Math.min(e.clientY - 10, window.innerHeight - 180) + "px")
+    .classed("visible", true);
+
+  // hover 高亮
+  d3.select(this).select("circle:last-child")
+    .attr("stroke-width", 3);
+})
+.on("mousemove", function(e, d) {
+  tooltip
+    .style("left", (e.clientX + 16) + "px")
+    .style("top", Math.min(e.clientY - 10, window.innerHeight - 180) + "px");
+})
+.on("mouseleave", function() {
+  tooltipTimeout = setTimeout(() => tooltip.classed("visible", false), 100);
+  d3.select(this).select("circle:last-child")
+    .attr("stroke-width", 0);
+});
+
+// ============================================================
+// 每帧更新
+// ============================================================
+simulation.on("tick", () => {
+  link
+    .attr("x1", d => d.source.x)
+    .attr("y1", d => d.source.y)
+    .attr("x2", d => d.target.x)
+    .attr("y2", d => d.target.y);
+
+  linkLabel
+    .attr("x", d => (d.source.x + d.target.x) / 2)
+    .attr("y", d => (d.source.y + d.target.y) / 2);
+
+  node.attr("transform", d => `translate(${d.x},${d.y})`);
+});
+
+// ============================================================
+// 自适应
+// ============================================================
+window.addEventListener("resize", () => {
+  const w = window.innerWidth;
+  const h = window.innerHeight;
+  svg.attr("width", w).attr("height", h);
+  simulation.force("center", d3.forceCenter(w / 2, h / 2));
+  simulation.alpha(0.3).restart();
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,10 @@
+# ============================================================
+# Dummy Agent — Phase 0 依赖清单
+# 目标：最小可用的 Tool-Calling Agent
+#
+# openai: OpenAI 兼容 API 的 Python SDK
+#         DeepSeek API 完全兼容 OpenAI 的 Chat Completions 接口，
+#         包括 tool_calls / function calling 功能。
+#         版本 >=1.0 引入 native tool calling 支持。
+# ============================================================
+openai>=1.0.0
