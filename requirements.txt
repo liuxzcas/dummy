@@ -17,3 +17,6 @@ openai>=1.0
 requests>=2.31
 beautifulsoup4>=4.12
 lxml>=5.0.0
+
+# Phase 1 : JSON 容错解析（LLM 常生成非法 JSON）
+json5>=0.15

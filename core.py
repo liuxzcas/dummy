@@ -79,6 +79,7 @@ Agent：terminal("pip install flask") → LLM 看到成功
 """
 
 import json
+import re
 from typing import Optional
 
 from llm import LLMClient
@@ -243,21 +244,18 @@ class DummyAgent:
                     tool_call_id = tool_call.id
 
                     # arguments 是 JSON 字符串，需要解析
-                    try:
-                        tool_args = json.loads(tool_call.function.arguments)
-                    except json.JSONDecodeError as e:
-                        # LLM 偶尔会生成非法 JSON（如末尾多逗号）
-                        # 这里尝试修复，修复不了就报错
-                        tool_args = {"_error": f"参数 JSON 解析失败: {e}"}
+                    # LLM 生成的 JSON 有时不合法（content 中未转义的引号、字面换行符）。
+                    # 采用多层容错策略：
+                    #   1. 标准 json.loads
+                    #   2. json5（允许单引号、尾逗号等）
+                    #   3. 正则提取已知键（最坏情况兜底）
+                    tool_args = self._parse_tool_arguments(tool_call.function.arguments)
 
                     # 打印工具调用日志
                     print(f"\n  🛠  Agent 调用了 [{tool_name}] 参数={tool_args}")
 
-                    # 分发执行工具
-                    try:
-                        result = self.tools.dispatch(tool_name, tool_args)
-                    except Exception as e:
-                        result = f"[工具执行异常] {type(e).__name__}: {e}"
+                    # 分发执行工具（dispatch 内部已做异常兜底和结果规范化）
+                    result = self.tools.dispatch(tool_name, tool_args)
 
                     # 打印执行结果摘要
                     result_preview = result[:300] + "..." if len(result) > 300 else result
@@ -298,6 +296,72 @@ class DummyAgent:
         fallback = f"[已达最大工具调用轮次 {self.MAX_TOOL_TURNS}，停止循环]"
         self.history.append({"role": "assistant", "content": fallback})
         return fallback
+
+    @staticmethod
+    def _parse_tool_arguments(raw: str) -> dict:
+        """多层容错解析 LLM 返回的工具参数 JSON。
+
+        策略：
+        1. 标准 json.loads
+        2. json5.loads（容错单引号、尾逗号、未转义字符等）
+        3. 正则提取：找到已知 key（path, content, mode）并提取值
+        """
+        # 策略 1: 标准 JSON
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            pass
+
+        # 策略 2: json5
+        try:
+            import json5
+            return json5.loads(raw)
+        except Exception:
+            pass
+
+        # 策略 3: 正则提取（针对 write_file 等已知结构的扁平 JSON）
+        # 当 content 含未转义引号时，标准解析必然失败。
+        # 这里利用"已知 key 的顺序"做容错提取。
+        result = {}
+        try:
+            # 提取 path
+            m = re.search(r'"(?:path|file)"\s*:\s*"([^"]*)"', raw)
+            if m:
+                result["path"] = m.group(1)
+
+            # 提取 content（最难：值里可能有未转义引号）
+            # 做法：找到 "content": " 之后的内容，然后向前扫描直到
+            # 遇到 ", "mode" 或 "}" 或字符串结尾
+            cm = re.search(r'"(?:content|text)"\s*:\s*"(.*)', raw, re.DOTALL)
+            if cm:
+                rest = cm.group(1)
+                # 尝试找结束位置：", "mode" 或 "}" 或 ", " 后跟已知 key
+                end_patterns = [
+                    r'",\s*"(?:mode|path|encoding|append)"',  # , "mode": ...
+                    r'"\s*\}\s*$',                          # "} 结尾
+                    r'"\s*,\s*\}',                          # ",}
+                ]
+                content_end = len(rest)
+                for pat in end_patterns:
+                    m2 = re.search(pat, rest)
+                    if m2:
+                        content_end = m2.start()
+                        break
+                result["content"] = rest[:content_end]
+
+            # 提取 mode
+            m = re.search(r'"mode"\s*:\s*"([^"]*)"', raw)
+            if m:
+                result["mode"] = m.group(1)
+
+        except Exception:
+            pass
+
+        if result:
+            return result
+
+        # 全部失败
+        return {"_error": f"参数 JSON 解析失败: {raw[:100]}"}
 
     def get_history(self) -> list[dict]:
         """
