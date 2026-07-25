@@ -86,7 +86,7 @@ def write_file_handler(path: str, content: str, mode: str = "overwrite") -> str:
         print(f"   项目: {project_root}")
         choice = input("  输入 y 确认写入 / n 拒绝: ").strip().lower()
         if choice != "y":
-            return f"[用户拒绝] 写入已取消: {path}"
+            return f"[用户拒绝将内容写到项目目录之外] 写入已取消: {path}"
         print()  # 空行，让后续输出不挤在一起
 
     # ---- 写入 ----

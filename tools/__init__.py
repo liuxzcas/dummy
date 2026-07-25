@@ -92,15 +92,16 @@ def create_default_registry() -> ToolRegistry:
     registry.register(
         name="web_search",
         description=(
-            "搜索网络并返回搜索结果列表（标题、链接、摘要）。"
+            "搜索网络并返回搜索结果列表（标题、链接、内容摘要）。"
             "当需要查找实时信息、文档、新闻、代码示例等网络内容时使用。"
-            "使用 DuckDuckGo 搜索引擎，无需 API Key。"
+            "使用 Tavily Search API，结果质量高。"
             "每条搜索请求有 15 秒超时。"
+            "需要设置 TAVILY_API_KEY 环境变量。"
         ),
         parameters={
             "query": {
                 "type": "string",
-                "description": "搜索关键词。可以使用 site:domain 等过滤语法。",
+                "description": "搜索关键词。",
             },
             "limit": {
                 "type": "integer",

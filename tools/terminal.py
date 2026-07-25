@@ -2,6 +2,15 @@
 tools/terminal.py — terminal 工具实现
 
 在本地 shell 中执行命令并返回输出。
+
+=== 编码说明（Windows 兼容） ===
+
+Windows 中文版默认编码是 GBK，而 git-bash 输出可能是 UTF-8。
+如果使用 subprocess 的 text=True 参数，Python 会用系统编码（GBK）
+解码输出，碰到非法字节会抛出 UnicodeDecodeError。
+
+修复方案：用 text=False（返回 bytes），手动 decode("utf-8", errors="replace")，
+非法字符被替换为 �，不会崩溃。
 """
 
 import subprocess
@@ -10,21 +19,23 @@ import subprocess
 def terminal_handler(command: str) -> str:
     """在本地 shell 中执行命令，返回输出。"""
     try:
+        # 注意：不用 text=True（Windows GBK 编码会崩）
+        # 改为手动用 utf-8 解码，errors='replace' 兜底非法字符
         result = subprocess.run(
             command,
             shell=True,
             capture_output=True,
-            text=True,
+            text=False,   # 返回 bytes，手动解码
             timeout=30,
         )
 
         output_parts = []
 
-        stdout = result.stdout.strip()
+        stdout = result.stdout.decode("utf-8", errors="replace").strip() if result.stdout else ""
         if stdout:
             output_parts.append(stdout)
 
-        stderr = result.stderr.strip()
+        stderr = result.stderr.decode("utf-8", errors="replace").strip() if result.stderr else ""
         if stderr:
             output_parts.append(f"[STDERR]\n{stderr}")
 
