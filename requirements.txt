@@ -7,4 +7,13 @@
 #         包括 tool_calls / function calling 功能。
 #         版本 >=1.0 引入 native tool calling 支持。
 # ============================================================
-openai>=1.0.0
+# Phase 0
+openai>=1.0
+
+# Phase 1 : 文件读写
+# openpyxl (Phase 2+)
+
+# Phase 1 : 网络工具
+requests>=2.31
+beautifulsoup4>=4.12
+lxml>=5.0.0
