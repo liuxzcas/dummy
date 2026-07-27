@@ -18,6 +18,13 @@ import subprocess
 
 def terminal_handler(command: str) -> str:
     """在本地 shell 中执行命令，返回输出。"""
+    # ---- 执行前确认 ----
+    print(f"\n  ⚠️  即将执行: {command}")
+    choice = input("    按 Enter 确认执行, 输入 n 取消: ").strip().lower()
+    if choice == "n":
+        return "[用户取消] 命令未执行"
+
+    # ---- 执行 ----
     try:
         # 注意：不用 text=True（Windows GBK 编码会崩）
         # 改为手动用 utf-8 解码，errors='replace' 兜底非法字符
