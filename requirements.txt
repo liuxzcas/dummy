@@ -20,3 +20,6 @@ lxml>=5.0.0
 
 # Phase 1 : JSON 容错解析（LLM 常生成非法 JSON）
 json5>=0.15
+
+# Phase 2.1 : .env 文件自动加载
+python-dotenv>=1.0

@@ -25,6 +25,7 @@ Phase 0 保持简单，手动提示输入。
 
 import sys
 import os
+from dotenv import load_dotenv
 
 # -------------------------------------------------------
 # 导入项目模块
@@ -76,6 +77,12 @@ def main():
     print_banner()
 
     # ===========================================================
+    # Step 0: 从 .env 文件加载环境变量（如果有的话）
+    # .env 文件在 .gitignore 中，不会提交到 GitHub
+    # ===========================================================
+    load_dotenv()
+
+    # ===========================================================
     # Step 1: 获取凭证
     # ===========================================================
     # 优先级：环境变量 > 用户输入
@@ -83,13 +90,15 @@ def main():
     # 也是生产环境的推荐做法
     # ===========================================================
 
-    # 尝试从环境变量读取 API Key
-    api_key = os.environ.get("DUMMY_AGENT_API_KEY", "").strip()
+    # 尝试从环境变量读取 API Key（支持两个变量名，兼容不同习惯）
+    api_key = os.environ.get("DUMMY_API", "").strip()
+    if not api_key:
+        api_key = os.environ.get("DUMMY_AGENT_API_KEY", "").strip()
     if not api_key:
         api_key = input("请输入你的 DeepSeek API Key: ").strip()
         if not api_key:
             print("错误: API Key 不能为空。")
-            print("你可以设置环境变量 DUMMY_AGENT_API_KEY 避免每次都输入。")
+            print("你可以设置环境变量 DUMMY_API 或 DUMMY_AGENT_API_KEY 避免每次都输入。")
             sys.exit(1)
 
     # 尝试从环境变量读取 Base URL

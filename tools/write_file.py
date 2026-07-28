@@ -38,12 +38,6 @@ def _show_diff(old: str, new: str, path: str) -> bool:
         n=2,  # 每个差异块上下各 2 行上下文
     ))
 
-    # 统计变更量
-    added = sum(1 for l in diff if l.startswith("+") and not l.startswith("+++"))
-    removed = sum(1 for l in diff if l.startswith("-") and not l.startswith("---"))
-    print(f"\n📝 write_file 将覆盖: {path}")
-    print(f"  旧: {len(old_lines)} 行 → 新: {len(new_lines)} 行 (+{added}/-{removed})")
-
     # 展示 diff（截断显示，太长的话只显示头尾）
     MAX_DIFF_LINES = 40
     if len(diff) > MAX_DIFF_LINES:
@@ -55,12 +49,18 @@ def _show_diff(old: str, new: str, path: str) -> bool:
     else:
         for line in diff:
             print(f"  {line.rstrip()}")
-
+            
+    # 统计变更量
+    added = sum(1 for l in diff if l.startswith("+") and not l.startswith("+++"))
+    removed = sum(1 for l in diff if l.startswith("-") and not l.startswith("---"))            
+    print(f"\n📝 write_file 将覆盖: {path}")
+    print(f"  旧: {len(old_lines)} 行 → 新: {len(new_lines)} 行 (+{added}/-{removed})")
     print()
     choice = input("  输入 y 确认写入 / n 拒绝 / d 查看完整 diff: ").strip().lower()
     if choice == "d":
         # 显示完整 diff（通过分页）
         for line in diff:
+            
             print(f"  {line.rstrip()}")
         print()
         choice = input("  输入 y 确认写入 / n 拒绝: ").strip().lower()
@@ -81,9 +81,9 @@ def write_file_handler(path: str, content: str, mode: str = "overwrite") -> str:
 
     # ---- 路径安全检测 ----
     if not full_path.startswith(project_root):
+        print(f"   项目: {project_root}")
         print(f"\n⚠️  write_file 试图写到项目目录之外:")
         print(f"   目标: {full_path}")
-        print(f"   项目: {project_root}")
         choice = input("  输入 y 确认写入 / n 拒绝: ").strip().lower()
         if choice != "y":
             return f"[用户拒绝将内容写到项目目录之外] 写入已取消: {path}"
