@@ -80,6 +80,7 @@ Agent：terminal("pip install flask") → LLM 看到成功
 
 import json
 import re
+import datetime
 from typing import Optional
 
 from llm import LLMClient
@@ -287,6 +288,7 @@ class DummyAgent:
             # 把最终回答追加到历史（记住 LLM 说了什么）
             self.history.append({"role": "assistant", "content": final_text})
 
+            self._save_conversation_log()
             return final_text
 
         # -------------------------------------------------------
@@ -295,7 +297,28 @@ class DummyAgent:
         # -------------------------------------------------------
         fallback = f"[已达最大工具调用轮次 {self.MAX_TOOL_TURNS}，停止循环]"
         self.history.append({"role": "assistant", "content": fallback})
+
+        self._save_conversation_log()
         return fallback
+
+    def _save_conversation_log(self):
+        """将当前对话历史保存到 logs/ 目录下的 JSON 文件。
+
+        文件名格式: logs/conversation_YYYYMMDD_HHMMSS.json
+        包含完整的 role/content/tool_calls 历史，用于 debug。
+        """
+        import json, os
+        log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
+        os.makedirs(log_dir, exist_ok=True)
+
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        log_path = os.path.join(log_dir, f"conversation_{timestamp}.json")
+
+        try:
+            with open(log_path, "w", encoding="utf-8") as f:
+                json.dump(self.history, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass  # 日志写入失败不影响主流程
 
     @staticmethod
     def _parse_tool_arguments(raw: str) -> dict:

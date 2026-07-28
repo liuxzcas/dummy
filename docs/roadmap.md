@@ -41,14 +41,32 @@
 
 ### Phase 2 — 持久化与记忆
 
-目标：Agent 退出后能恢复对话，不再丢失上下文。
+目标：Agent 退出后能恢复对话，不再丢失上下文。分三个子阶段：
+
+#### Phase 2.1 — .env 配置（已基本完成）
+
+| 功能 | 状态 | 说明 |
+|------|------|------|
+| `DUMMY_API` 环境变量 | ✅ 完成 | 从 `DUMMY_API` / `DUMMY_AGENT_API_KEY` 读取 API Key |
+| Base URL 配置 | ✅ 完成 | 支持 `DUMMY_AGENT_BASE_URL` 环境变量 |
+| `.env` 文件自动加载 | ⬜ 待做 | 启动时自动读取 `.env` 文件，替代手动 export |
+
+#### Phase 2.2 — Context 压缩（待设计）
 
 | 功能 | 说明 |
 |------|------|
-| Session 持久化 | SQLite 存储对话历史，支持 `/resume` 恢复 |
-| .env 配置 | API Key、base_url 等配置存文件，不用每次手输 |
-| Session 搜索 | 全文搜索历史对话内容 |
-| Context 压缩 | 对话超出 token 限制时，自动摘要旧内容 |
+| Token 计数 | 监控对话历史 token 用量 |
+| 自动摘要 | 接近上下文上限时，自动压缩早期对话 |
+| 压缩策略 | 摘要旧轮次 vs 截断 tool 结果 vs 丢弃完整 tool 调用链 |
+
+#### Phase 2.3 — Session 持久化与搜索
+
+| 功能 | 说明 |
+|------|------|
+| SQLite 存储 | 每次 chat() 调用自动写入数据库 |
+| 退出恢复 | `/resume` 命令恢复上次会话 |
+| Session 列表 | 查看所有历史会话 |
+| 全文搜索 | FTS5 索引，支持按关键词搜索历史对话 |
 
 ### Phase 3 — 自主学习
 

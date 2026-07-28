@@ -44,6 +44,7 @@ role="system"。它设定了 LLM 在整个对话中的行为基准。
 ============================================================
 """
 import datetime
+import os
 import sys
 
 
@@ -88,6 +89,7 @@ SYSTEM_PROMPT_TEMPLATE = """你是 Dummy Agent，一个正在学习工具调用�
 ## 环境信息
 
 - 操作系统: {os_info}
+- 当前目录: {cwd}
 - 运行时间: {timestamp}"""
 
 
@@ -119,6 +121,7 @@ def build_system_prompt(tool_names: list[str]) -> str:
 
     # 环境信息
     os_info = f"{sys.platform} (Windows via git-bash)"
+    cwd = os.getcwd()
 
     # 当前时间，让 LLM 知道对话发生的时间上下文
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S %Z")
@@ -126,5 +129,6 @@ def build_system_prompt(tool_names: list[str]) -> str:
     return SYSTEM_PROMPT_TEMPLATE.format(
         tool_descriptions=tool_descriptions,
         os_info=os_info,
+        cwd=cwd,
         timestamp=timestamp,
     )
