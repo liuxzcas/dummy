@@ -67,7 +67,11 @@ def create_default_registry() -> ToolRegistry:
             "将内容写入指定文件。"
             "当需要创建新文件或覆盖已有文件时使用。"
             "自动创建父目录。"
-            "支持两种模式：overwrite（覆盖，默认）和 append（追加到文件末尾）。"
+            "支持三种模式：overwrite（覆盖，默认）、append（追加到文件末尾）"
+            "和 line（替换指定行或行范围的内容，通过 line 和 line_end 参数控制）。"
+            "对 .py 文件默认自动做语法检查，发现错误会返回具体行号。"
+            "如果文件需要分多次写入，最后一次设 verify=True，之前设 False。"
+            "如果生成的内容超过500行，建议分多次写入。"
             "注意：只能写入文本内容（UTF-8 编码）。"
         ),
         parameters={
@@ -81,8 +85,16 @@ def create_default_registry() -> ToolRegistry:
             },
             "mode": {
                 "type": "string",
-                "description": "写入模式：overwrite（覆盖，默认）或 append（追加到文件末尾）。",
-                "enum": ["overwrite", "append"],
+                "description": "写入模式：overwrite（覆盖，默认）、append（追加到文件末尾）或 line（替换指定行）。",
+                "enum": ["overwrite", "append", "line"],
+            },
+            "line": {
+                "type": "integer",
+                "description": "仅 mode='line' 时有效。要替换的起始行号（从 1 开始）。",
+            },
+            "line_end": {
+                "type": "integer",
+                "description": "仅 mode='line' 时有效。要替换的结束行号（含两端，默认等于 line，即只替换一行）。",
             },
         },
         handler=write_file_handler,

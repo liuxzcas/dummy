@@ -144,7 +144,7 @@ class LLMClient:
         messages: list,
         tools: Optional[list] = None,
         temperature: float = 0.7,
-        max_tokens: int = 4096,
+        max_tokens: int = 8192,
     ):
         """
         发送 Chat Completion 请求，可选携带 tool 定义。

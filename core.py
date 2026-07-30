@@ -232,7 +232,7 @@ class DummyAgent:
                 # 先把这个包含 tool_calls 的 assistant 消息追加到历史
                 # 这是 OpenAI API 的要求：
                 # tool_calls 必须出现在 assistant message 里
-                self.history.append(response_message)
+                self.history.append(response_message.to_dict())
 
                 # -------------------------------------------------------
                 # 2c. 遍历所有 tool_calls 并执行
@@ -316,8 +316,11 @@ class DummyAgent:
 
         try:
             with open(log_path, "w", encoding="utf-8") as f:
-                json.dump(self.history, f, ensure_ascii=False, indent=2)
+                json.dump(self.history, f, ensure_ascii=False, indent=2, default=str)
         except Exception:
+            with open(log_path, "w", encoding="utf-8") as f:
+                f.write(str(self.history))
+            print(f"[警告] 对话历史保存为非 JSON 格式: {log_path}")
             pass  # 日志写入失败不影响主流程
 
     @staticmethod
@@ -381,7 +384,22 @@ class DummyAgent:
             pass
 
         if result:
+            # Unescape JSON escape sequences (strategy 3 regex does not decode them)
+            ESCAPE_MAP = {
+                "\\n": "\n",    # newline
+                "\\r": "\r",    # carriage return
+                "\\t": "\t",    # tab
+                '\\"': '"',    # double quote
+                "\\\\": "\\",  # backslash (must be last)
+            }
+            for key in result:
+                if isinstance(result[key], str):
+                    v = result[key]
+                    for escaped, actual in ESCAPE_MAP.items():
+                        v = v.replace(escaped, actual)
+                    result[key] = v
             return result
+
 
         # 全部失败
         return {"_error": f"参数 JSON 解析失败: {raw[:100]}"}
