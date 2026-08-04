@@ -54,6 +54,9 @@ def print_help():
     可用命令:
       /help     显示此帮助
       /reset    重置对话历史
+      /resume   恢复上一个持久化会话（默认恢复最新）
+      /resume <session_id>  恢复指定会话
+      /sessions 列出所有持久化会话
       /tools    列出可用工具
       /history  显示对话历史（调试用）
       /quit     退出 (/exit /q 也可)
@@ -155,6 +158,47 @@ def main():
             if user_input.lower() == "/reset":
                 agent.reset()
                 print("✅ 对话历史已重置\n")
+                continue
+
+            if user_input.lower() == "/resume":
+                ok = agent.resume_last_session()
+                if ok:
+                    restored_session_id = agent.current_session_id
+                    restored_count = len(agent.get_history())
+                    print(f"✅ 已恢复上一个会话: {restored_session_id}")
+                    print(f"📝 当前会话历史 ({restored_count} 条消息)\n")
+                else:
+                    print("⚠️ 没有可恢复的历史会话。\n")
+                continue
+
+            if user_input.lower().startswith("/resume "):
+                session_id = user_input.split(maxsplit=1)[1].strip()
+                ok = agent.resume_session(session_id)
+                if ok:
+                    restored_count = len(agent.get_history())
+                    print(f"✅ 已恢复会话: {agent.current_session_id}")
+                    print(f"📝 当前会话历史 ({restored_count} 条消息)\n")
+                else:
+                    print(f"⚠️ 无法恢复会话: {session_id}\n")
+                continue
+
+            if user_input.lower() == "/sessions":
+                sessions = agent.session_store.list_sessions()
+                if not sessions:
+                    print("🗂️ 当前没有任何持久化会话。\n")
+                else:
+                    print("🗂️ 持久化会话列表:")
+                    for idx, session in enumerate(sessions, start=1):
+                        message_count = int(session.get("message_count", 0))
+                        created_at = session.get("created_at", "")
+                        updated_at = session.get("updated_at", "")
+                        print(
+                            f"  [{idx}] {session['id']} "
+                            f"| messages={message_count} "
+                            f"| created={created_at} "
+                            f"| updated={updated_at}"
+                        )
+                print()
                 continue
 
             if user_input.lower() == "/tools":
