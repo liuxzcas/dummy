@@ -55,6 +55,12 @@ class SessionStore:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_session_sequence
+            ON messages(session_id, sequence)
+            """
+        )
         conn.commit()
         conn.close()
 
@@ -119,9 +125,12 @@ class SessionStore:
         """保存完整 history 到指定 session。
 
         这里会把整个历史重新写一遍，确保数据库与当前内存状态一致。
+        写入采用单事务 `BEGIN IMMEDIATE`，并用 `(session_id, sequence)`
+        作为稳定 upsert 键，避免并发写入时出现交叉覆盖。
         """
         conn = sqlite3.connect(self.db_path)
         try:
+            conn.execute("BEGIN IMMEDIATE")
             conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
             now = self._now_iso()
             for idx, msg in enumerate(history, start=1):
@@ -140,6 +149,12 @@ class SessionStore:
                         payload,
                         created_at
                     ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(session_id, sequence) DO UPDATE SET
+                        role = excluded.role,
+                        content = excluded.content,
+                        tool_call_id = excluded.tool_call_id,
+                        payload = excluded.payload,
+                        created_at = excluded.created_at
                     """,
                     (
                         session_id,
@@ -156,6 +171,9 @@ class SessionStore:
                 (now, session_id),
             )
             conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
         finally:
             conn.close()
 
