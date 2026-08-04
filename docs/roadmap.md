@@ -19,21 +19,24 @@
 
 设计文档：`docs/design.html`（英文）、`docs/design-zh.html`（中文）
 
-### Phase 1 — 工具扩展（进行中）
+### Phase 1 — 工具扩展（已基本完成）
 
 | 工具 | 状态 | 说明 |
 |------|------|------|
 | `tools/read_file.py` | ✅ 完成 | 支持 offset/limit 翻页，LLM 可自主分页读取大文件 |
 | `tools/write_file.py` | ✅ 完成 | 覆盖/追加模式、原子写入、Diff 预览、路径安全确认 |
-| `tools/search_files.py` | ⬜ | 搜索文件内容和文件名 |
-| `tools/web_search.py` | ⬜ | 网络搜索 |
-| `tools/web_extract.py` | ⬜ | 网页内容提取 |
+| `tools/search_files.py` | ⬜ 待做 | 搜索文件内容和文件名 |
+| `tools/web_search.py` | ✅ 完成 | 使用 Tavily Search API 返回结构化网络搜索结果 |
+| `tools/web_extract.py` | ✅ 完成 | 提取网页正文文本，自动补协议、清洗噪音 |
 
-**dispatch 层加固（待做）：**
+**dispatch 层加固（已完成/部分完成）：**
 
-- 统一超时控制
-- result 规范化（None → ""、异常兜底）
-- 工具执行前的安全过滤
+- 统一超时控制 ✅
+- result 规范化（None → ""、异常兜底） ✅
+- 工具执行前的安全过滤（工具级已实现） ✅
+  - `terminal`：执行前询问确认
+  - `write_file`：目录外路径需用户确认
+  - centralized dispatch 级安全过滤还未完全抽象化
 
 ---
 
@@ -43,13 +46,13 @@
 
 目标：Agent 退出后能恢复对话，不再丢失上下文。分三个子阶段：
 
-#### Phase 2.1 — .env 配置（已基本完成）
+#### Phase 2.1 — .env 配置（已完成）
 
 | 功能 | 状态 | 说明 |
 |------|------|------|
 | `DUMMY_API` 环境变量 | ✅ 完成 | 从 `DUMMY_API` / `DUMMY_AGENT_API_KEY` 读取 API Key |
 | Base URL 配置 | ✅ 完成 | 支持 `DUMMY_AGENT_BASE_URL` 环境变量 |
-| `.env` 文件自动加载 | ⬜ 待做 | 启动时自动读取 `.env` 文件，替代手动 export |
+| `.env` 文件自动加载 | ✅ 完成 | 启动时使用 `load_dotenv()` 自动读取 `.env` 文件 |
 
 #### Phase 2.2 — Context 压缩（待设计）
 
@@ -59,14 +62,14 @@
 | 自动摘要 | 接近上下文上限时，自动压缩早期对话 |
 | 压缩策略 | 摘要旧轮次 vs 截断 tool 结果 vs 丢弃完整 tool 调用链 |
 
-#### Phase 2.3 — Session 持久化与搜索
+#### Phase 2.3 — Session 持久化与搜索（已完成基础版）
 
-| 功能 | 说明 |
-|------|------|
-| SQLite 存储 | 每次 chat() 调用自动写入数据库 |
-| 退出恢复 | `/resume` 命令恢复上次会话 |
-| Session 列表 | 查看所有历史会话 |
-| 全文搜索 | FTS5 索引，支持按关键词搜索历史对话 |
+| 功能 | 状态 | 说明 |
+|------|------|------|
+| SQLite 存储 | ✅ 完成 | `sessions` / `messages` 表，`chat()` 自动写入数据库 |
+| 退出恢复 | ✅ 完成 | `/resume` 恢复最近一次会话，支持指定 `session_id` |
+| Session 列表 | ✅ 完成 | `/sessions` 查看会话列表与消息数量统计 |
+| 全文搜索 | ⬜ 待做 | 后续可接 FTS5 索引，支持按关键词搜索历史对话 |
 
 ### Phase 3 — 自主学习
 

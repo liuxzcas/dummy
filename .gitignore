@@ -23,3 +23,7 @@ Thumbs.db
 
 # Test files
 test.txt
+
+# Runtime artifacts
+session.db
+logs/

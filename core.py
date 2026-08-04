@@ -86,6 +86,7 @@ from typing import Optional
 from llm import LLMClient
 from tools import ToolRegistry
 from prompt import build_system_prompt
+from session_store import SessionStore
 
 
 # ===========================================================
@@ -136,6 +137,8 @@ class DummyAgent:
         """
         self.llm = llm_client
         self.tools = tool_registry
+        self.session_store = SessionStore()
+        self.current_session_id: Optional[str] = None
 
         # -------------------------------------------------------
         # 构建 system prompt
@@ -162,6 +165,11 @@ class DummyAgent:
 
         # Tool 定义（缓存起来，每次调用都传给 LLM）
         self.tool_definitions = self.tools.get_tool_definitions()
+
+        # 不在 __init__ 时创建新 session；
+        # 只有真正进入 chat() 或 reset() 时才开始持久化。
+        # 这样 /resume 可以准确加载此前的会话，而不是把当前空实例
+        # 误判成最新会话。
 
     def chat(self, user_input: str) -> str:
         """
@@ -195,6 +203,9 @@ class DummyAgent:
         Hermes 的默认值是 90 轮。
         Phase 0 保守设 10 轮。
         """
+        # 先确保当前会话已存在（首次 chat 时才创建）
+        self._ensure_session()
+
         # -------------------------------------------------------
         # Step 1: 追加用户消息
         # 角色是 "user"，这是 OpenAI 格式的要求。
@@ -202,6 +213,7 @@ class DummyAgent:
         # Phase 0 只处理纯文本。
         # -------------------------------------------------------
         self.history.append({"role": "user", "content": user_input})
+        self._persist_history()
 
         # -------------------------------------------------------
         # Step 2: 工具调用循环
@@ -273,6 +285,7 @@ class DummyAgent:
                         "tool_call_id": tool_call_id,
                         "content": result,
                     })
+                    self._persist_history()
 
                 # 工具执行完后，回到循环顶部，再次调 LLM
                 # 这次 LLM 能看到工具的执行结果，可以决定下一步
@@ -287,6 +300,7 @@ class DummyAgent:
 
             # 把最终回答追加到历史（记住 LLM 说了什么）
             self.history.append({"role": "assistant", "content": final_text})
+            self._persist_history()
 
             self._save_conversation_log()
             return final_text
@@ -297,9 +311,36 @@ class DummyAgent:
         # -------------------------------------------------------
         fallback = f"[已达最大工具调用轮次 {self.MAX_TOOL_TURNS}，停止循环]"
         self.history.append({"role": "assistant", "content": fallback})
+        self._persist_history()
 
         self._save_conversation_log()
         return fallback
+
+    def _ensure_session(self) -> None:
+        """如果当前 Agent 还没有绑定 session，就创建一个新的会话。"""
+        if self.current_session_id is None:
+            self.current_session_id = self.session_store.create_session()
+
+    def _persist_history(self) -> None:
+        """把当前内存历史同步持久化到 SQLite。"""
+        self._ensure_session()
+        self.session_store.save_history(self.current_session_id, self.history)
+
+    def resume_last_session(self) -> bool:
+        """恢复数据库中最新的会话历史到当前 Agent。"""
+        latest_session_id = self.session_store.get_latest_session_id()
+        if not latest_session_id:
+            return False
+        return self.resume_session(latest_session_id)
+
+    def resume_session(self, session_id: str) -> bool:
+        """恢复指定 session_id 的历史到当前 Agent。"""
+        history = self.session_store.load_history(session_id)
+        if not history:
+            return False
+        self.current_session_id = session_id
+        self.history = history
+        return True
 
     def _save_conversation_log(self):
         """将当前对话历史保存到 logs/ 目录下的 JSON 文件。
@@ -419,3 +460,5 @@ class DummyAgent:
         self.history = [
             {"role": "system", "content": self.system_prompt}
         ]
+        self.current_session_id = self.session_store.create_session()
+        self._persist_history()
