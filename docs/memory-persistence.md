@@ -80,7 +80,7 @@
     - `content`
     - `tool_call_id`
     - `payload`
-    - `created_at`
+    - `created_at`（消息首次写入时间；重写历史时保留，不被覆盖）
 
 这套数据结构有两个关键点：
 
@@ -110,7 +110,7 @@
 - `_ensure_schema()`：创建 `sessions` / `messages` 两张表
 - `create_session()`：创建新的 session
 - `list_sessions()`：列出会话列表，并统计每个会话的 message 数量
-- `save_history()`：把当前 `history` 重新写入数据库
+- `save_history()`：把当前 `history` 逐条 upsert 写入数据库（`(session_id, sequence)` 为稳定键；超出新长度的旧消息会被删除，兼容未来历史缩水；`created_at` 保留首次写入时间）
 - `load_history()`：从数据库恢复消息列表
 - `get_latest_session_id()`：拿到最近一次更新的 session
 
