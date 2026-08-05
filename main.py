@@ -25,6 +25,7 @@ Phase 0 保持简单，手动提示输入。
 
 import sys
 import os
+from datetime import datetime
 from dotenv import load_dotenv
 
 # -------------------------------------------------------
@@ -36,6 +37,21 @@ from dotenv import load_dotenv
 from llm import LLMClient
 from tools import create_default_registry
 from core import DummyAgent
+
+
+def format_local_time(iso_str: str) -> str:
+    """把 UTC ISO 时间字符串转成本地时区显示格式。
+
+    session_store 统一以 UTC 存储（canonical 时间），
+    展示层（CLI）负责转本地时区，存储层不与时区耦合。
+    """
+    try:
+        dt = datetime.fromisoformat(iso_str)
+        if dt.tzinfo is not None:
+            dt = dt.astimezone()  # 无参数 = 转系统本地时区
+        return dt.strftime("%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return iso_str  # 解析失败原样返回，不打断会话列表
 
 
 def print_banner():
@@ -190,8 +206,8 @@ def main():
                     print("🗂️ 持久化会话列表:")
                     for idx, session in enumerate(sessions, start=1):
                         message_count = int(session.get("message_count", 0))
-                        created_at = session.get("created_at", "")
-                        updated_at = session.get("updated_at", "")
+                        created_at = format_local_time(session.get("created_at", ""))
+                        updated_at = format_local_time(session.get("updated_at", ""))
                         print(
                             f"  [{idx}] {session['id']} "
                             f"| messages={message_count} "
