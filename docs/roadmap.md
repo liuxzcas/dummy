@@ -54,13 +54,18 @@
 | Base URL 配置 | ✅ 完成 | 支持 `DUMMY_AGENT_BASE_URL` 环境变量 |
 | `.env` 文件自动加载 | ✅ 完成 | 启动时使用 `load_dotenv()` 自动读取 `.env` 文件 |
 
-#### Phase 2.2 — Context 压缩（待设计）
+#### Phase 2.2 — Context 压缩（设计完成，待实现）
 
-| 功能 | 说明 |
-|------|------|
-| Token 计数 | 监控对话历史 token 用量 |
-| 自动摘要 | 接近上下文上限时，自动压缩早期对话 |
-| 压缩策略 | 摘要旧轮次 vs 截断 tool 结果 vs 丢弃完整 tool 调用链 |
+> 设计文档：[context-compression.md](./context-compression.md)
+> 两级策略：ToolResult 折叠（零 LLM 成本）+ 增量摘要（旧摘要+新块→新摘要）
+> 关键约束：磁盘全文保留（可逆）、只在 user 消息边界切、`_meta` 字段发 API 前剥离
+
+| 功能 | 状态 | 说明 |
+|------|------|------|
+| Token 计数 | ⬜ 待做 | 用 API 返回的 `usage.prompt_tokens` 精确计数，不做估算 |
+| ToolResult 折叠 | ⬜ 待做 | 超长 tool 结果截断（保留头尾+标记），零 LLM 成本 |
+| 增量摘要 | ⬜ 待做 | 接近上下文上限时，旧摘要+新消息块 → 新摘要 |
+| 压缩策略 | ⬜ 待做 | 摘要旧轮次 + 截断 tool 结果；丢弃完整 tool 调用链（不采用，破坏配对） |
 
 #### Phase 2.3 — Session 持久化与搜索（已完成基础版）
 
