@@ -124,14 +124,20 @@ class SessionStore:
     def save_history(self, session_id: str, history: list[dict[str, Any]]) -> None:
         """保存完整 history 到指定 session。
 
-        这里会把整个历史重新写一遍，确保数据库与当前内存状态一致。
-        写入采用单事务 `BEGIN IMMEDIATE`，并用 `(session_id, sequence)`
-        作为稳定 upsert 键，避免并发写入时出现交叉覆盖。
+        逐条 upsert（以 `(session_id, sequence)` 为稳定键）：
+        - 已有的行只更新 role/content/tool_call_id/payload，
+          不覆盖 created_at —— 保留每条消息首次写入的时间；
+        - 超出新历史长度的旧行删除 —— 这样既能处理历史增长，
+          也能处理未来 context compression 导致的历史缩水。
+
+        整个写入在单个 `BEGIN IMMEDIATE` 事务内完成，配合
+        `busy_timeout`，避免多进程并行写入时抛 "database is locked"
+        或出现交叉覆盖。
         """
         conn = sqlite3.connect(self.db_path)
         try:
+            conn.execute("PRAGMA busy_timeout = 10000")
             conn.execute("BEGIN IMMEDIATE")
-            conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
             now = self._now_iso()
             for idx, msg in enumerate(history, start=1):
                 payload = json.dumps(msg, ensure_ascii=False, default=str)
@@ -153,8 +159,7 @@ class SessionStore:
                         role = excluded.role,
                         content = excluded.content,
                         tool_call_id = excluded.tool_call_id,
-                        payload = excluded.payload,
-                        created_at = excluded.created_at
+                        payload = excluded.payload
                     """,
                     (
                         session_id,
@@ -166,6 +171,10 @@ class SessionStore:
                         now,
                     ),
                 )
+            conn.execute(
+                "DELETE FROM messages WHERE session_id = ? AND sequence > ?",
+                (session_id, len(history)),
+            )
             conn.execute(
                 "UPDATE sessions SET updated_at = ? WHERE id = ?",
                 (now, session_id),
