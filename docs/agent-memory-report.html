@@ -189,6 +189,22 @@ td .mono { font-family: var(--mono); font-size: 12px; color: var(--color-seconda
 .tech-tag.weight { border-color: rgba(239,68,68,0.3); color: #fca5a5; }
 .tech-tag.theory { border-color: rgba(6,182,212,0.3); color: #67e8f9; }
 
+/* ---------- code blocks ---------- */
+.code-block { background: #0d0e10; border: 1px solid var(--border-def); border-radius: 6px; padding: 16px 20px; font-family: var(--mono); font-size: 12.5px; overflow-x: auto; margin: 14px 0; line-height: 1.7; color: var(--color-secondary); white-space: pre; }
+.code-block .cm { color: #6b7280; }
+.code-block .kw { color: #818cf8; }
+.code-block .str { color: #6ee7b7; }
+.code-block .fn { color: #fcd34d; }
+
+/* ---------- implementation steps / kv ---------- */
+.steps { counter-reset: step; list-style: none; padding: 0; margin: 12px 0; }
+.steps li { counter-increment: step; position: relative; padding: 10px 14px 10px 52px; margin-bottom: 8px; background: var(--color-surface); border: 1px solid var(--border-sub); border-radius: 8px; font-size: 13.5px; color: var(--color-secondary); }
+.steps li::before { content: counter(step); position: absolute; left: 14px; top: 10px; width: 26px; height: 26px; border-radius: 50%; background: rgba(94,106,210,0.18); border: 1px solid rgba(94,106,210,0.4); color: #a5b4fc; font-family: var(--mono); font-size: 12.5px; display: flex; align-items: center; justify-content: center; }
+.kv { display: grid; grid-template-columns: 132px 1fr; gap: 6px 14px; margin: 12px 0; font-size: 13.5px; }
+.kv .k { color: var(--color-accent-bright); font-family: var(--mono); font-size: 12.5px; }
+.kv .v { color: var(--color-secondary); }
+.mono { font-family: var(--mono); font-size: 12.5px; color: var(--color-secondary); }
+
 /* ---------- footer ---------- */
 .footer {
   margin-top: 80px; padding-top: 24px; border-top: 1px solid var(--border-def);
@@ -1241,25 +1257,226 @@ td .mono { font-family: var(--mono); font-size: 12px; color: var(--color-seconda
 <!-- ================================================================ -->
 <section id="s8">
   <div class="sec-head">
-    <h2>08 · 对 dummy-agent 的落地建议<span class="sec-tag green">从小做起</span></h2>
-    <div class="sec-desc">你不需要 15 个方案,只需要按路线图逐步拿走每个方案里"最值得偷的那一点"。</div>
+    <h2>08 · 对 dummy-agent 的落地建议<span class="sec-tag green">实施路线图</span></h2>
+    <div class="sec-desc">把 15 个方案翻译成 dummy-agent 的四步实施路线。每阶段统一给:借鉴来源(偷哪一点)、详细设计、实现步骤、衡量指标、坑。总原则只有一个——<b>先最小方案跑通,遇到实证痛点再上重方案</b>。</div>
   </div>
 
+  <!-- 8.0 总览表 -->
   <div class="table-wrap">
     <table>
       <thead>
-        <tr><th>Roadmap 阶段</th><th>偷谁的思路</th><th>具体做法</th></tr>
+        <tr><th>Roadmap 阶段</th><th>偷谁的思路</th><th>核心动作</th><th>前置依赖</th></tr>
       </thead>
       <tbody>
-        <tr><td><b>Phase 2.2 压缩</b>(进行中)</td><td>MemGPT(换页思想) + 自研两级策略</td><td>阈值触发(ToolResult 折叠 + 增量摘要);"谁决定换页"取中间态:先框架写死,观察后再说要不要 agent 自主</td></tr>
-        <tr><td><b>Phase 2.3b FTS 搜索</b></td><td>Hermes state.db 实测结论</td><td>中文搜索直接用 <span class="mono">FTS5 trigram</span> tokenizer,别用默认分词(标准 FTS5 对中文只能整句匹配)——这是已验证的现成答案</td></tr>
-        <tr><td><b>Phase 2.4 跨 Session 记忆</b></td><td>PlugMem(知识单元) + Mem0(两阶段) 的低配</td><td>事实抽取 → 结构化条目(带时间/来源)→ 冲突更新 → 按需注入;先把 LongMemEval 五类题型抄成 20-30 题回归集</td></tr>
-        <tr><td><b>Phase 3 自主学习</b></td><td>Hermes skills 机制</td><td>"工具使用模式学习" = 程序性记忆:把成功的多步流程存成可加载的 SKILL.md 式文档</td></tr>
+        <tr><td><b>Phase 2.2 压缩</b>(进行中)</td><td>MemGPT 换页思想 + 自研两级策略</td><td>阈值触发:ToolResult 折叠 → 增量摘要</td><td>Session 持久化 ✅(已完成)</td></tr>
+        <tr><td><b>Phase 2.3b FTS 搜索</b></td><td>Hermes state.db 实测结论</td><td>FTS5 trigram 索引 + /search 命令</td><td>持久化 ✅ + 压缩(建议先压后搜)</td></tr>
+        <tr><td><b>Phase 2.4 跨 Session 记忆</b></td><td>PlugMem(知识单元)+ Mem0(两阶段)低配</td><td>事实抽取 → 冲突更新 → 按需注入</td><td>压缩 ✅(先控制单会话长度)</td></tr>
+        <tr><td><b>Phase 3 自主学习</b></td><td>Hermes skills 机制</td><td>成功流程 → SKILL.md 式文档 → 相关时加载</td><td>2.4 ✅(先有"事实",再学"流程")</td></tr>
       </tbody>
     </table>
   </div>
 
-  <div class="callout warn">⚠️ <b>一个提醒:</b> 记忆系统是"越早做越亏,越晚做越赚"的组件——先用最简单方案跑通,等你真的遇到"上下文不够 / 用户重复提问 / 经验不复用"的实证痛点,再上对应的重方案。别为了用 PlugMem 而用 PlugMem。</div>
+  <!-- ============ 8.1 Phase 2.2 ============ -->
+  <div class="work">
+    <div class="work-head">
+      <h3>8.1 · Phase 2.2 · 上下文压缩</h3>
+      <div class="work-meta"><span>设计文档: docs/context-compression.md</span><span>状态:设计完成,待实现</span></div>
+      <span class="tech-tag memory">Working Memory 管理</span>
+    </div>
+
+    <div class="subblock">
+      <h4>借鉴来源:偷 MemGPT 的哪一点</h4>
+      <p>只偷"<b>上下文 = RAM,外部 = 硬盘,满了要换页</b>"这个模型,<b>不偷</b>它的"agent 自主换页"。因为 MemGPT 的教训是 agent 可能陷入"疯狂管理内存"的死循环——对教学项目,先由<b>框架写死阈值触发</b>,跑稳之后再考虑要不要放开给 agent 决定。</p>
+    </div>
+
+    <div class="subblock">
+      <h4>详细设计(5 个决策点)</h4>
+      <div class="kv">
+        <div class="k">① 触发判断</div>
+        <div class="v">用 API 返回的 <span class="mono">usage.prompt_tokens</span> 精确计数,不用字符估算。阈值 = 窗口 × 0.7(如 64K 窗口 → 44.8K 触发),留 30% 余量给单次工具结果和摘要消息。触发点在工具循环每次调 LLM 之前,绝不在循环中途压缩。</div>
+        <div class="k">② 两级策略</div>
+        <div class="v">L1 ToolResult 折叠:超长 tool 结果截断(保留头 200 + 尾 100 字符 + 标记"原文在 SQLite"),零 LLM 成本,先做先验证。L2 增量摘要:旧摘要 + 新消息块 → 新摘要,只压早期,最近 N 轮(默认 6)原文保留。</div>
+        <div class="k">③ 摘要消息格式</div>
+        <div class="v"><span class="mono">role=user</span> + 前缀"[早期对话摘要]" + <span class="mono">_meta.covers</span>(覆盖了多少条原始消息,防重复压缩)。不用 role=system,避免和 Agent 身份指令混淆、避免被当指令执行。</div>
+        <div class="k">④ 切割规则</div>
+        <div class="v">只在 <b>user 消息边界</b>切。每条 user 消息开启一轮完整交换,在边界切天然保证 assistant(tool_calls)/tool 消息成对完整,不会产出非法序列。</div>
+        <div class="k">⑤ 持久化联动</div>
+        <div class="v">压缩后照常调 <span class="mono">save_history()</span> 全量重写——"逐条 upsert + 删尾部"逻辑已兼容历史缩水(7d60e11 已就绪)。磁盘永远保留全文,内存压缩可逆。</div>
+      </div>
+    </div>
+
+    <div class="subblock">
+      <h4>代码骨架(核心 30 行)</h4>
+      <div class="code-block"><span class="cm"># compressor.py — 触发判断 + L1 折叠 + L2 增量摘要</span>
+<span class="kw">def</span> should_compress(last_prompt_tokens, window, ratio=<span class="str">0.7</span>):
+    <span class="kw">return</span> last_prompt_tokens &gt; window * ratio
+
+<span class="kw">def</span> fold_tool_results(history, max_chars=<span class="str">600</span>, head=<span class="str">200</span>, tail=<span class="str">100</span>):
+    <span class="kw">for</span> msg <span class="kw">in</span> history:
+        <span class="kw">if</span> msg[<span class="str">"role"</span>] == <span class="str">"tool"</span> <span class="kw">and</span> len(msg[<span class="str">"content"</span>]) &gt; max_chars:
+            msg[<span class="str">"content"</span>] = msg[<span class="str">"content"</span>][:head] + <span class="str">"...[截断,原文见 session.db]..."</span> + msg[<span class="str">"content"</span>][-tail:]
+    <span class="kw">return</span> history
+
+<span class="kw">def</span> strip_meta(history):  <span class="cm"># 发 API 前剥离 _meta,浅拷贝</span>
+    <span class="kw">return</span> [{k: v <span class="kw">for</span> k, v <span class="kw">in</span> m.items() <span class="kw">if</span> k != <span class="str">"_meta"</span>} <span class="kw">for</span> m <span class="kw">in</span> history]</div>
+    </div>
+
+    <div class="subblock">
+      <h4>实现步骤</h4>
+      <ol class="steps">
+        <li>llm.py:chat() 末尾加 <span class="mono">self.last_usage = response.usage</span></li>
+        <li>compressor.py:config + should_compress + L1 折叠(纯函数,可单测)</li>
+        <li>core.py:工具循环顶部接入触发点,压缩后调 _persist_history()</li>
+        <li>L2 增量摘要(_call_summary_llm,低 temperature + max_tokens=1024)</li>
+        <li>发 API 前统一 strip_meta;压缩失败必须降级(跳过压缩继续对话)</li>
+        <li>mini 事实召回测试集(§8.5 模板),每次改策略必跑</li>
+      </ol>
+    </div>
+
+    <div class="subblock">
+      <h4>衡量指标与坑</h4>
+      <p>衡量:压缩率 ≥ 50% / 事实召回 ≥ 90%(8 题 mini 集)/ 摘要延迟 &lt; 3s / 压缩后格式合法性 100%。</p>
+      <p>坑:① 摘要丢精确值(路径/数字)→ 摘要 prompt 强制原样保留;② 切断 tool_calls 配对 → 只在 user 边界切;③ 摘要被当指令 → role=user + 前缀;④ _meta 被 API 拒 → 发请求前剥离;⑤ 摘要调用失败挂掉主流程 → 降级;⑥ 每 5 次基于磁盘原文重建摘要,防误差累积。</p>
+    </div>
+  </div>
+
+  <!-- ============ 8.2 Phase 2.3b ============ -->
+  <div class="work">
+    <div class="work-head">
+      <h3>8.2 · Phase 2.3b · FTS 全文搜索</h3>
+      <div class="work-meta"><span>借鉴: Hermes state.db 实测</span><span>中文搜索的现成答案</span></div>
+      <span class="tech-tag struct">Episodic 检索</span>
+    </div>
+
+    <div class="subblock">
+      <h4>借鉴来源:偷 Hermes 的哪一点</h4>
+      <p>直接偷它的<b>双 FTS5 索引</b>结论:标准 FTS5(unicode61 分词)对中文只能<b>整句匹配</b>("你好世界"搜"你好"命中不了),而 <b>trigram tokenizer</b> 按三个字符切分,天然支持中文子串搜索。Hermes 的 state.db 里同时建了 <span class="mono">messages_fts</span>(标准)和 <span class="mono">messages_fts_trigram</span> 两个虚拟表——这就是验证过的生产配置,你照抄即可。</p>
+    </div>
+
+    <div class="subblock">
+      <h4>详细设计</h4>
+      <div class="code-block"><span class="cm">-- 建表:对 messages 表建 trigram 全文索引</span>
+<span class="kw">CREATE VIRTUAL TABLE</span> messages_fts <span class="kw">USING</span> fts5(
+    content, session_id <span class="kw">UNINDEXED</span>,
+    tokenize = <span class="str">'trigram'</span>   <span class="cm">-- 中文子串搜索的关键</span>
+);
+
+<span class="cm">-- 同步策略(先简单后增量):每轮对话落库后全量重建</span>
+<span class="kw">INSERT INTO</span> messages_fts <span class="kw">SELECT</span> payload, session_id <span class="kw">FROM</span> messages;
+
+<span class="cm">-- 查询:snippet() 输出命中片段,按 session 聚合</span>
+<span class="kw">SELECT</span> session_id, snippet(messages_fts) <span class="kw">FROM</span> messages_fts
+<span class="kw">WHERE</span> messages_fts <span class="kw">MATCH</span> <span class="str">'"你好"'</span> <span class="kw">ORDER BY</span> rank <span class="kw">LIMIT</span> 10;</div>
+      <ul>
+        <li><b>/search 命令</b>:输入关键词 → 返回 session_id + 本地时间 + 命中片段;复用已有的 /sessions 展示格式。</li>
+        <li><b>同步策略</b>:先全量重建(对话频率低,量小,简单可靠);后续量大了再改"增量 + 触发器"。</li>
+        <li><b>与压缩的关系</b>:FTS 索引建在 messages 表上,压缩只改内存 history,不动库,所以两者正交,无冲突。</li>
+      </ul>
+    </div>
+
+    <div class="subblock">
+      <h4>衡量指标与坑</h4>
+      <p>衡量:20 题检索测试的召回率(含中文短词、代码符号、文件名)/ 查询延迟(目标 &lt; 100ms)。</p>
+      <p>坑:① 默认分词对中文失效 → 必须 trigram;② trigram 对 1-2 字符的查询词无能为力(至少 3 字符);③ 同步时机——重建期间搜索会漏最新消息;④ 结果排序用 <span class="mono">rank</span>,别按 id 倒序。</p>
+    </div>
+  </div>
+
+  <!-- ============ 8.3 Phase 2.4 ============ -->
+  <div class="work">
+    <div class="work-head">
+      <h3>8.3 · Phase 2.4 · 跨 Session 记忆</h3>
+      <div class="work-meta"><span>借鉴: PlugMem × Mem0 的低配</span><span>Semantic 记忆</span></div>
+      <span class="tech-tag struct">知识单元</span>
+    </div>
+
+    <div class="subblock">
+      <h4>借鉴来源:偷哪两点</h4>
+      <ul>
+        <li><b>偷 PlugMem 的"知识单元"思想</b>:不存流水账,存"提炼过的事实"(用户偏好、项目事实、决定)。这是它"信息密度最高"的原因,也是它 SOTA 的根基。</li>
+        <li><b>偷 Mem0 的"两阶段 + 冲突更新"</b>:抽取(LLM 判断值得记什么)+ 更新(新事实与旧记忆合并/覆盖/去重)。这一步保证记忆库不自相矛盾——用户改了偏好,旧条目要被覆盖而不是并列。</li>
+        <li><b>不偷</b>:PlugMem 的三组件全管线(Structure/Retrieval/Reasoning 每步调 LLM 太重),只要抽取 + 注入这两环。</li>
+      </ul>
+    </div>
+
+    <div class="subblock">
+      <h4>详细设计</h4>
+      <div class="code-block"><span class="cm">-- memories 表:跨会话事实条目(独立于 sessions/messages)</span>
+<span class="kw">CREATE TABLE</span> memories (
+    id            <span class="kw">TEXT PRIMARY KEY</span>,          <span class="cm">-- uuid</span>
+    content       <span class="kw">TEXT NOT NULL</span>,             <span class="cm">-- 事实条目:"用户预算 500 元"</span>
+    category      <span class="kw">TEXT</span>,                     <span class="cm">-- preference / project / decision / identity</span>
+    source_session <span class="kw">TEXT</span>,                    <span class="cm">-- 来源会话,可追溯</span>
+    confidence    <span class="kw">REAL DEFAULT 0.8</span>,          <span class="cm">-- 置信度,冲突时低的让位</span>
+    created_at    <span class="kw">TEXT NOT NULL</span>,
+    updated_at    <span class="kw">TEXT NOT NULL</span>
+);</div>
+      <ul>
+        <li><b>写入管线</b>:每轮对话结束后,LLM 抽取"值得跨会话记住的事实"(限制条数,如最多 3 条)→ 与现有条目做冲突检测(关键词/语义相似度)→ 冲突则按"新覆盖旧 + 置信度裁决",无冲突则插入。</li>
+        <li><b>注入策略</b>:会话开始时,按"与当前 session 相关的记忆"(全部或 top-k,建议 ≤ 500 token)注入 system prompt 的固定区块,格式照抄 Hermes:标题 + 条目 + § 分隔。</li>
+        <li><b>回归测试集</b>:把 LongMemEval 五类题型抄 20-30 题——信息抽取("第 3 轮提到的文件名")/ 跨会话推理 / 时序推理("先说了 A 还是 B")/ 知识更新("改了偏好后还用旧的吗")/ 弃答("不知道就说不,不许编")。这是检验记忆质量的唯一硬标准。</li>
+      </ul>
+    </div>
+
+    <div class="subblock">
+      <h4>衡量指标与坑</h4>
+      <p>衡量:回归集事实召回率 / 弃答率(不知道时正确说"不知道"的比例,防幻觉)/ 注入 token 预算(常驻部分 ≤ 500 token)。</p>
+      <p>坑:① 抽取质量是天花板——抽错事实=记忆污染,且会污染后续判断;② 冲突更新误覆盖——置信度 + 来源可追溯兜底;③ 注入膨胀——超预算就砍最旧/最低置信度条目;④ 事实过期——updated_at 长期不更新的条目定期人工确认;⑤ 别把"对话摘要"当记忆——摘要属于 episodic,事实才属于 semantic,混了检索就乱。</p>
+    </div>
+  </div>
+
+  <!-- ============ 8.4 Phase 3 ============ -->
+  <div class="work">
+    <div class="work-head">
+      <h3>8.4 · Phase 3 · 自主学习(程序性记忆)</h3>
+      <div class="work-meta"><span>借鉴: Hermes skills 机制</span><span>Procedural 记忆</span></div>
+      <span class="tech-tag llm">技能沉淀</span>
+    </div>
+
+    <div class="subblock">
+      <h4>借鉴来源:偷 Hermes skills 的哪一点</h4>
+      <p>整套照搬 <b>SKILL.md 机制</b>:系统提示里只放"技能名 + 一句话描述"索引(不占常驻),agent 判断相关时再加载全文——这就是"大而详细但不常驻"的参考答案。Hermes 靠 curator 后台管理技能生命周期(usage 统计、过期归档、备份),你也可以简化成"手动 + 定期清理"。</p>
+    </div>
+
+    <div class="subblock">
+      <h4>详细设计</h4>
+      <ul>
+        <li><b>流程</b>:agent 成功完成一个多步骤任务(≥3 步、有可复用性)→ 把过程沉淀成文档(触发条件 + 步骤 + 坑 + 验证方法)→ 存为技能文件 → 下次相关任务自动加载。</li>
+        <li><b>与 Phase 2.4 的分工</b>:2.4 存"事实"(semantic:用户偏好、项目事实),Phase 3 存"流程"(procedural:怎么做)。一条经验问自己:"这是'知道什么'还是'知道怎么做'?"——前者进 memories 表,后者进技能文件。</li>
+        <li><b>来源</b>:从对话日志(logs/ 已有)挖掘成功的工具调用序列,这是你项目已有的数据资产。</li>
+      </ul>
+    </div>
+
+    <div class="subblock">
+      <h4>衡量指标与坑</h4>
+      <p>衡量:技能命中率(相关任务时正确加载)/ 复用率(加载后任务成功率 vs 不加载)。</p>
+      <p>坑:① 技能膨胀——只沉淀"第二次还会用"的流程,一次性的别存;② 技能过期——文档里必须带验证步骤,失效能被发现;③ 别把记忆条目写成技能,别把技能写成记忆,分工要清晰。</p>
+    </div>
+  </div>
+
+  <!-- ============ 8.5 优先级与不要做 ============ -->
+  <div class="work">
+    <div class="work-head">
+      <h3>8.5 · 优先级与"不要做"清单</h3>
+      <span class="tech-tag theory">Anti-patterns</span>
+    </div>
+    <div class="subblock">
+      <h4>推荐顺序</h4>
+      <p><b>2.2 压缩 → 2.3b FTS → 2.4 跨会话记忆 → Phase 3 技能</b>。理由:压缩是地基(先控制单会话长度,后续才有干净的语料);FTS 独立且价值直观;跨会话记忆依赖前两者;技能沉淀最后(经验素材最多)。每一步都独立可交付、可回滚。</p>
+    </div>
+    <div class="subblock">
+      <h4>不要做</h4>
+      <ul>
+        <li>❌ <b>不要一开始就上向量库</b>:你的场景还没出现"语义检索"的痛点,FTS trigram 已经够用,向量库是后话。</li>
+        <li>❌ <b>不要让 agent 自主管理记忆</b>:MemGPT 的死循环教训,先框架写死。</li>
+        <li>❌ <b>不要把全部原文当记忆注入</b>:PlugMem 的教训——流水账信息密度太低,要提炼。</li>
+        <li>❌ <b>不要为"记住用户偏好"上知识图谱</b>:Zep 的教训——杀鸡用牛刀,独立事实用扁平表就够。</li>
+        <li>❌ <b>不要直接横比 benchmark 分数</b>:各家 harness 不同,看同一次评测的相对差距。</li>
+        <li>❌ <b>不要在压缩未验证前做记忆注入</b>:注入的前提是"该记的没被压丢",先有测试集再说。</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="callout warn">⚠️ <b>一个提醒:</b> 记忆系统是"越早做越亏,越晚做越赚"的组件——先用最简单方案跑通,等你真的遇到"上下文不够 / 用户重复提问 / 经验不复用"的实证痛点,再上对应的重方案。别为了用 PlugMem 而用 PlugMem;同样,别为了"有记忆功能"而提前建 memories 表——先让压缩和搜索跑起来,你自然会知道该记什么。</div>
 </section>
 
 <!-- ================================================================ -->
