@@ -1,0 +1,1301 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agent 记忆系统深度报告 — 15 项工作逐一拆解</title>
+<style>
+:root {
+  --color-bg: #08090a;
+  --color-panel: #0f1011;
+  --color-surface: #191a1b;
+  --color-surface-hover: #222326;
+  --color-primary: #f7f8f8;
+  --color-secondary: #d0d6e0;
+  --color-tertiary: #8a8f98;
+  --color-quaternary: #62666d;
+  --color-accent: #5e6ad2;
+  --color-accent-bright: #7170ff;
+  --color-green: #10b981;
+  --color-pink: #ec4899;
+  --color-amber: #f59e0b;
+  --color-cyan: #06b6d4;
+  --color-red: #ef4444;
+  --border-def: rgba(255,255,255,0.08);
+  --border-sub: rgba(255,255,255,0.05);
+  --radius: 8px;
+  --font: 'Inter', system-ui, -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --mono: 'JetBrains Mono', ui-monospace, 'Cascadia Code', monospace;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  background: var(--color-bg);
+  color: var(--color-secondary);
+  font-family: var(--font);
+  font-size: 15px;
+  line-height: 1.75;
+}
+.wrap { max-width: 1080px; margin: 0 auto; padding: 0 28px 80px; }
+
+/* ---------- sticky header ---------- */
+.sticky {
+  position: sticky; top: 0; z-index: 100;
+  background: rgba(8,9,10,0.85);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--border-sub);
+}
+.sticky-inner {
+  max-width: 1080px; margin: 0 auto; padding: 12px 28px;
+  display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  font-size: 13px;
+}
+.sticky-inner .brand { color: var(--color-primary); font-weight: 600; margin-right: auto; }
+.sticky-inner a { color: var(--color-tertiary); text-decoration: none; white-space: nowrap; }
+.sticky-inner a:hover { color: var(--color-accent-bright); }
+
+/* ---------- hero ---------- */
+.hero { padding: 56px 0 8px; }
+.hero h1 { font-size: 40px; line-height: 1.25; color: var(--color-primary); font-weight: 650; letter-spacing: -0.5px; }
+.hero h1 .hl { color: var(--color-accent-bright); }
+.hero p.sub { font-size: 17px; color: var(--color-tertiary); margin-top: 14px; max-width: 780px; }
+.hero .warning {
+  margin-top: 20px; padding: 12px 18px; border-radius: var(--radius);
+  background: rgba(245,158,11,0.08); border: 1px solid rgba(245,158,11,0.2);
+  color: #fcd34d; font-size: 13.5px;
+}
+
+/* ---------- stats bar ---------- */
+.stats-bar { display: flex; gap: 14px; flex-wrap: wrap; margin: 28px 0 8px; }
+.stat-item {
+  flex: 1; min-width: 160px; padding: 16px 18px;
+  background: var(--color-panel); border: 1px solid var(--border-def); border-radius: var(--radius);
+}
+.stat-num { font-size: 26px; font-weight: 650; color: var(--color-primary); font-family: var(--mono); }
+.stat-num.accent { color: var(--color-accent-bright); }
+.stat-num.green { color: var(--color-green); }
+.stat-num.amber { color: var(--color-amber); }
+.stat-label { font-size: 12.5px; color: var(--color-tertiary); margin-top: 4px; }
+
+/* ---------- TOC ---------- */
+.toc {
+  margin: 36px 0 8px; padding: 24px 26px;
+  background: var(--color-panel); border: 1px solid var(--border-def); border-radius: var(--radius);
+}
+.toc-title { font-size: 14px; font-weight: 600; color: var(--color-primary); margin-bottom: 14px; }
+.toc-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 8px 24px; }
+.toc-grid a { color: var(--color-tertiary); text-decoration: none; font-size: 13.5px; padding: 5px 8px; border-radius: 6px; }
+.toc-grid a:hover { background: var(--color-surface-hover); color: var(--color-primary); }
+.toc-grid a .n { color: var(--color-accent); font-family: var(--mono); font-size: 12px; margin-right: 8px; }
+
+/* ---------- sections ---------- */
+section { margin-top: 64px; }
+.sec-head { border-bottom: 1px solid var(--border-def); padding-bottom: 14px; margin-bottom: 28px; }
+.sec-head h2 { font-size: 26px; color: var(--color-primary); font-weight: 650; }
+.sec-head .sec-desc { color: var(--color-tertiary); font-size: 14px; margin-top: 8px; }
+.sec-tag {
+  display: inline-block; font-size: 11px; padding: 3px 10px; border-radius: 20px;
+  border: 1px solid rgba(94,106,210,0.35); color: #a5b4fc; margin-left: 10px; vertical-align: middle;
+  font-family: var(--mono);
+}
+.sec-tag.green { border-color: rgba(16,185,129,0.35); color: #6ee7b7; }
+.sec-tag.amber { border-color: rgba(245,158,11,0.35); color: #fcd34d; }
+.sec-tag.pink { border-color: rgba(236,72,153,0.35); color: #f9a8d4; }
+
+/* ---------- work block ---------- */
+.work {
+  background: var(--color-panel); border: 1px solid var(--border-def);
+  border-radius: 12px; padding: 30px 32px; margin-bottom: 36px;
+}
+.work-head { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; border-bottom: 1px solid var(--border-sub); padding-bottom: 12px; }
+.work-head h3 { font-size: 21px; color: var(--color-primary); font-weight: 650; }
+.work-meta { font-size: 12px; color: var(--color-quaternary); font-family: var(--mono); display: flex; gap: 12px; flex-wrap: wrap; }
+.one-liner { margin: 16px 0; font-size: 15px; color: var(--color-secondary); }
+.one-liner strong { color: var(--color-primary); }
+.one-liner .pitch { color: var(--color-accent-bright); font-weight: 600; }
+
+.subblock { margin-top: 22px; }
+.subblock h4 {
+  font-size: 14.5px; color: var(--color-primary); font-weight: 600;
+  margin-bottom: 10px; padding-left: 10px; border-left: 3px solid var(--color-accent);
+}
+.subblock p, .subblock li { font-size: 14.5px; color: var(--color-secondary); }
+.subblock ul, .subblock ol { padding-left: 22px; margin-top: 6px; }
+.subblock li { margin-bottom: 7px; }
+.subblock .why { color: var(--color-green); font-weight: 600; }
+
+.analogy {
+  margin: 12px 0; padding: 14px 18px; border-radius: var(--radius);
+  background: rgba(94,106,210,0.07); border: 1px solid rgba(94,106,210,0.22);
+  font-size: 14px; color: #c7cbe8;
+}
+.analogy b { color: #a5b4fc; }
+
+.pros-cons { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 22px; }
+.pros, .cons { padding: 16px 20px; border-radius: var(--radius); }
+.pros { background: rgba(16,185,129,0.06); border: 1px solid rgba(16,185,129,0.2); }
+.cons { background: rgba(239,68,68,0.06); border: 1px solid rgba(239,68,68,0.2); }
+.pros h4 { color: #6ee7b7; border-left-color: var(--color-green); }
+.cons h4 { color: #fca5a5; border-left-color: var(--color-red); }
+.pros li, .cons li { font-size: 13.5px; margin-bottom: 6px; }
+
+.scenario { margin-top: 22px; }
+.scenario-box {
+  padding: 16px 20px; border-radius: var(--radius);
+  background: rgba(6,182,212,0.06); border: 1px solid rgba(6,182,212,0.2);
+}
+.scenario-box .lbl { font-size: 12px; color: #67e8f9; font-family: var(--mono); letter-spacing: 0.5px; }
+.scenario-box p { font-size: 14px; margin-top: 6px; }
+
+/* ---------- flow diagram ---------- */
+.flow { display: flex; align-items: stretch; gap: 8px; flex-wrap: wrap; margin: 14px 0; }
+.flow-box {
+  flex: 1; min-width: 150px; padding: 12px 14px; border-radius: var(--radius);
+  font-size: 13px; text-align: center;
+}
+.flow-box .t { font-weight: 600; font-size: 13.5px; }
+.flow-box .d { font-size: 11.5px; opacity: 0.75; margin-top: 4px; }
+.flow-arrow { align-self: center; color: var(--color-quaternary); font-size: 16px; padding: 0 2px; }
+.flow-box.memory { background: rgba(16,185,129,0.15); border: 1px solid rgba(16,185,129,0.3); color: #6ee7b7; }
+.flow-box.model { background: rgba(113,112,255,0.15); border: 1px solid rgba(113,112,255,0.3); color: #a5b4fc; }
+.flow-box.prompt { background: rgba(245,158,11,0.15); border: 1px solid rgba(245,158,11,0.3); color: #fcd34d; }
+.flow-box.api { background: rgba(236,72,153,0.15); border: 1px solid rgba(236,72,153,0.3); color: #f9a8d4; }
+.flow-box.store { background: rgba(6,182,212,0.15); border: 1px solid rgba(6,182,212,0.3); color: #67e8f9; }
+
+/* ---------- tables ---------- */
+.table-wrap { overflow-x: auto; margin: 16px 0; border-radius: var(--radius); border: 1px solid var(--border-def); }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+thead th {
+  font-weight: 600; color: var(--color-primary); background: var(--color-surface);
+  padding: 11px 14px; border-bottom: 1px solid var(--border-def); white-space: nowrap; text-align: left;
+}
+tbody td { padding: 11px 14px; border-bottom: 1px solid var(--border-sub); color: var(--color-tertiary); vertical-align: top; }
+tbody tr:hover td { background: rgba(255,255,255,0.02); }
+tbody tr:last-child td { border-bottom: none; }
+td .mono { font-family: var(--mono); font-size: 12px; color: var(--color-secondary); }
+
+/* ---------- callouts ---------- */
+.callout { padding: 15px 20px; border-radius: var(--radius); font-size: 13.5px; margin: 16px 0; }
+.callout.info { background: rgba(6,182,212,0.08); border: 1px solid rgba(6,182,212,0.2); color: #67e8f9; }
+.callout.warn { background: rgba(245,158,11,0.08); border: 1px solid rgba(245,158,11,0.2); color: #fcd34d; }
+.callout.danger { background: rgba(239,68,68,0.08); border: 1px solid rgba(239,68,68,0.2); color: #fca5a5; }
+
+/* ---------- tags ---------- */
+.tech-tag { font-size: 11px; padding: 3px 8px; border-radius: 4px; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); white-space: nowrap; }
+.tech-tag.memory { border-color: rgba(16,185,129,0.3); color: #6ee7b7; }
+.tech-tag.llm { border-color: rgba(94,106,210,0.3); color: #a5b4fc; }
+.tech-tag.struct { border-color: rgba(245,158,11,0.3); color: #fcd34d; }
+.tech-tag.product { border-color: rgba(236,72,153,0.3); color: #f9a8d4; }
+.tech-tag.weight { border-color: rgba(239,68,68,0.3); color: #fca5a5; }
+.tech-tag.theory { border-color: rgba(6,182,212,0.3); color: #67e8f9; }
+
+/* ---------- footer ---------- */
+.footer {
+  margin-top: 80px; padding-top: 24px; border-top: 1px solid var(--border-def);
+  color: var(--color-quaternary); font-size: 12.5px;
+}
+.footer a { color: var(--color-tertiary); }
+
+@media (max-width: 760px) {
+  .hero h1 { font-size: 30px; }
+  .pros-cons { grid-template-columns: 1fr; }
+  .work { padding: 22px 20px; }
+  .wrap { padding: 0 16px 60px; }
+}
+</style>
+</head>
+<body>
+
+<header class="sticky">
+  <div class="sticky-inner">
+    <span class="brand">🧠 Agent 记忆系统深度报告</span>
+    <a href="#s0">阅读地图</a>
+    <a href="#s1">派系一</a>
+    <a href="#s2">派系二</a>
+    <a href="#s3">派系三</a>
+    <a href="#s4">派系四</a>
+    <a href="#s5">派系五</a>
+    <a href="#s6">理论评测</a>
+    <a href="#s7">横向对比</a>
+    <a href="#s8">落地建议</a>
+  </div>
+</header>
+
+<div class="wrap">
+
+<section class="hero">
+  <h1>Agent 记忆系统深度报告<br><span class="hl">15 项工作逐一拆解</span></h1>
+  <p class="sub">从 MemGPT 到 PlugMem,从 Mem0 到 LongMemEval——每项工作的机制原理(用大白话讲)、优点、缺点、适用场景,以及"为什么偏偏是它适用这个场景"。配套文档: docs/memory-research.md(摘要版)。</p>
+  <div class="warning">⚠ 阅读约定: 本文默认读者"完全没接触过 agent 记忆"——每个机制都用类比先讲一遍,再给技术细节。论文领域迭代极快(部分工作 2026 年刚发表),引用前建议核对最新版本。</div>
+</section>
+
+<div class="stats-bar">
+  <div class="stat-item"><div class="stat-num accent">15</div><div class="stat-label">拆解的工作 / 框架</div></div>
+  <div class="stat-item"><div class="stat-num green">5</div><div class="stat-label">技术派系</div></div>
+  <div class="stat-item"><div class="stat-num amber">3</div><div class="stat-label">理论 / 评测基准</div></div>
+  <div class="stat-item"><div class="stat-num">2023→2026</div><div class="stat-label">时间跨度</div></div>
+</div>
+
+<div class="toc">
+  <div class="toc-title">📋 目录</div>
+  <div class="toc-grid">
+    <a href="#s0"><span class="n">00</span>阅读地图:为什么需要记忆 / 坐标系</a>
+    <a href="#s1"><span class="n">01</span>派系一 · 操作系统式分层 — MemGPT / Letta</a>
+    <a href="#s2"><span class="n">02</span>派系二 · 检索式原始记忆 — MemoryBank / Generative Agents / L-MEM / Wormhole</a>
+    <a href="#s3"><span class="n">03</span>派系三 · 结构化知识记忆 — Zep / HippoRAG / A-MEM / PlugMem</a>
+    <a href="#s4"><span class="n">04</span>派系四 · 记忆即产品 — Mem0 / LangMem / 厂商内置</a>
+    <a href="#s5"><span class="n">05</span>派系五 · 权重级记忆 — MemoryLLM / M+ / BMAS</a>
+    <a href="#s6"><span class="n">06</span>理论与评测 — CoALA / LongMemEval / LOCOMO</a>
+    <a href="#s7"><span class="n">07</span>横向对比总表</a>
+    <a href="#s8"><span class="n">08</span>对 dummy-agent 的落地建议</a>
+    <a href="#refs"><span class="n">09</span>参考链接</a>
+  </div>
+</div>
+
+<!-- ================================================================ -->
+<!-- SECTION 0 : 阅读地图                                              -->
+<!-- ================================================================ -->
+<section id="s0">
+  <div class="sec-head">
+    <h2>00 · 阅读地图<span class="sec-tag theory">先建立坐标系</span></h2>
+    <div class="sec-desc">在看具体工作之前,先把"agent 为什么要记忆、记忆有哪些类型、所有方案在争什么"讲清楚。这一节是所有后续内容的坐标系。</div>
+  </div>
+
+  <div class="work">
+    <div class="subblock">
+      <h4>为什么 agent 需要"记忆"?</h4>
+      <p>大模型本身是有"知识"的(它记住了训练数据里的世界),但它有两个致命缺陷:</p>
+      <ul>
+        <li><b>记不住"你"</b>:它不知道你是谁、你的项目结构、你上周让它改了什么——这些信息不在训练数据里,只存在于你和它的对话中。</li>
+        <li><b>上下文窗口是有限的</b>:一次对话能塞进去的文本有限(比如 64K~200K token),而长期合作会累积远超窗口的内容。</li>
+      </ul>
+      <p>所以"记忆系统"要解决的其实是两个问题:</p>
+      <ul>
+        <li><b>存什么</b>:对话、事实、流程、知识……哪些值得留,以什么形式留。</li>
+        <li><b>怎么取</b>:需要的时候,怎么把对当前任务最有用的部分放回上下文,而不把窗口塞爆。</li>
+      </ul>
+      <p>下面所有论文,本质上都是对这两个问题的不同回答。</p>
+    </div>
+
+    <div class="subblock">
+      <h4>记忆的四种类型(CoALA 分类法,所有工作的坐标系)</h4>
+      <p>CoALA(2024,普林斯顿等)把 agent 的记忆分成四类,像人脑一样分工:</p>
+      <table>
+        <thead><tr><th>类型</th><th>是什么</th><th>类比</th><th>特点</th></tr></thead>
+        <tbody>
+          <tr><td><b>working memory</b><br>工作记忆</td><td>当前正在处理的内容(就是发给 LLM 的上下文)</td><td>你的"眼前"</td><td>容量极小,每轮都变</td></tr>
+          <tr><td><b>episodic memory</b><br>情景记忆</td><td>过往发生过的事(对话记录、任务历史)</td><td>你的"经历"</td><td>无限增长,按需回忆</td></tr>
+          <tr><td><b>semantic memory</b><br>语义记忆</td><td>提炼出的事实(用户偏好、项目事实、常识)</td><td>你的"知识"</td><td>小而稳,每轮都该知道</td></tr>
+          <tr><td><b>procedural memory</b><br>程序性记忆</td><td>怎么做事的流程(工具用法、工作流、坑)</td><td>你的"技能"</td><td>大而详,用到才加载</td></tr>
+        </tbody>
+      </table>
+      <div class="analogy">💡 <b>一句话记忆法:</b> 工作记忆 = 桌面上摊开的纸;情景记忆 = 档案柜里的旧文件;语义记忆 = 贴在墙上的便签;程序记忆 = 你肌肉记忆里的操作手册。四类信息寿命不同、读写频率不同,硬塞进同一个地方会互相拖累——这就是"为什么要分多层"的根本原因。</div>
+    </div>
+
+    <div class="subblock">
+      <h4>所有方案在争什么?一个统一视角</h4>
+      <p>不管论文包装成什么样,争的都是同一个权衡——<b>"信息密度"与"检索成本"</b>:</p>
+      <ul>
+        <li><b>存原文</b>(对话原样存):保真度最高,但噪音大、检索贵(要全文向量化、相似度搜索)。</li>
+        <li><b>存摘要</b>:体积小,但丢了精确信息(路径、数字、名字)。</li>
+        <li><b>存结构化知识</b>(事实、三元组、知识单元):密度最高、最可复用,但<b>写入时要花 LLM 成本去抽取</b>,而且抽取质量是天花板。</li>
+      </ul>
+      <p>从"原文 → 摘要 → 结构化知识",信息密度递增,写入成本也递增。PlugMem 提出的"信息密度 = 有用信息 ÷ 消耗的上下文"就是把这场竞争显式化成了一把尺子。</p>
+    </div>
+
+    <div class="subblock">
+      <h4>五派系速览</h4>
+      <table>
+        <thead><tr><th>派系</th><th>核心思路</th><th>代表</th><th>一句话记忆</th></tr></thead>
+        <tbody>
+          <tr><td><b>一 · 操作系统式</b></td><td>上下文当 RAM,外部库当硬盘,agent 自己换页</td><td>MemGPT/Letta</td><td>"给 agent 装个操作系统"</td></tr>
+          <tr><td><b>二 · 检索式原文</b></td><td>原文都存,相关才取</td><td>MemoryBank、Generative Agents</td><td>"档案柜 + 检索员"</td></tr>
+          <tr><td><b>三 · 结构化知识</b></td><td>存事实/图/知识单元,不存流水账</td><td>Zep、HippoRAG、A-MEM、PlugMem</td><td>"把日记改造成知识卡片库"</td></tr>
+          <tr><td><b>四 · 记忆即产品</b></td><td>封装成 API/服务,拿来就用</td><td>Mem0、LangMem</td><td>"记忆的 SaaS"</td></tr>
+          <tr><td><b>五 · 权重级</b></td><td>把记忆写进模型参数</td><td>MemoryLLM、M+</td><td>"记忆长在脑子里,不用翻档案"</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+<!-- ================================================================ -->
+<!-- SECTION 1 : 派系一 · 操作系统式分层                              -->
+<!-- ================================================================ -->
+<section id="s1">
+  <div class="sec-head">
+    <h2>01 · 派系一 · 操作系统式分层<span class="sec-tag">MemGPT / Letta</span></h2>
+    <div class="sec-desc">核心思想:上下文窗口就是"内存条",外部数据库就是"硬盘",让 agent 自己像操作系统一样把数据在两者之间换进换出。</div>
+  </div>
+
+  <div class="work">
+    <div class="work-head">
+      <h3>MemGPT / Letta</h3>
+      <div class="work-meta"><span>UC Berkeley · Packer et al.</span><span>2023 论文 / 持续演进中</span><span>arXiv:2310.08560</span></div>
+      <span class="tech-tag memory">操作系统式分层</span>
+      <span class="tech-tag llm">自我编辑记忆</span>
+    </div>
+
+    <p class="one-liner"><span class="pitch">一句话:</span> 让 LLM 像操作系统管理内存一样管理自己的记忆——上下文是 RAM,数据库是硬盘,记忆满了就"换出",需要了就"换入",而且这一切由 agent 自己决定。</p>
+
+    <div class="subblock">
+      <h4>🧠 机制原理(先讲类比)</h4>
+      <div class="analogy">🖥️ <b>想象你的电脑:</b> 内存条(RAM)很小,装不下你所有打开的软件和文件;但硬盘很大。操作系统做的事是:你正在用的程序放内存,不用的先"换出"到硬盘,你要用的时候再"换入"。你完全感觉不到这个过程——你只看到电脑"记得"你所有东西。<br><br>MemGPT 把这一套搬给了 agent:<b>上下文窗口 = RAM</b>(小、贵、每轮都要付费),<b>数据库 = 硬盘</b>(大、便宜、永久)。区别在于:电脑的操作系统是写死的代码,而 MemGPT 的"操作系统"是 agent 自己——它通过调用工具(比如 sleep / 读写记忆库)来决定什么时候把旧对话"换出"、把什么"换入"。</div>
+      <p>具体流程(一次"换页"长这样):</p>
+      <ol>
+        <li>agent 在对话,上下文快满了;</li>
+        <li>agent 自己调用"记忆管理工具",把一段旧对话压缩/转移到外部数据库(换出);</li>
+        <li>上下文腾出空间,对话继续;</li>
+        <li>某个时刻 agent 觉得需要旧信息了,调用"检索工具"把相关记忆找回来(换入),塞回上下文。</li>
+      </ol>
+      <div class="flow">
+        <div class="flow-box memory"><div class="t">Core Memory</div><div class="d">常驻上下文,agent 可编辑(相当于寄存器)</div></div>
+        <div class="flow-arrow">⇄</div>
+        <div class="flow-box model"><div class="t">LLM 自己当 OS</div><div class="d">用工具调用决定换入/换出</div></div>
+        <div class="flow-arrow">⇄</div>
+        <div class="flow-box store"><div class="t">Archival Memory</div><div class="d">外部数据库,按需检索(相当于硬盘)</div></div>
+      </div>
+    </div>
+
+    <div class="subblock">
+      <h4>⚙️ 关键细节(进阶)</h4>
+      <ul>
+        <li><b>Core Memory(核心记忆)</b>:一小块常驻上下文的结构化文本(比如"我是谁、用户是谁、当前目标"),agent 可以用工具<b>直接改写</b>它——这是"自我编辑记忆"(self-editing memory)的雏形,后来被 Anthropic 的 context editing 等采纳。</li>
+        <li><b>Archival Memory(档案记忆)</b>:完整的历史记录,存在外部存储(数据库/向量库),只有检索命中才会进入上下文。</li>
+        <li><b>分页机制</b>:当上下文接近上限,agent 收到"内存不足"信号,自己决定压缩策略(摘要?删除?转存?),而不是由框架写死规则。</li>
+        <li><b>后续演进为 Letta</b>:从论文变成了完整的 agent 运行时,记忆块(memory blocks)成为一等公民,支持多 agent 共享/隔离记忆。</li>
+      </ul>
+    </div>
+
+    <div class="pros-cons">
+      <div class="pros">
+        <h4>✅ 优点</h4>
+        <ul>
+          <li><b>思想奠基者</b>:几乎所有后续工作都在回应它——你是抄它的换页,还是反对它的"让 agent 自己管"。</li>
+          <li><b>灵活</b>:换页策略不是写死的,agent 可以针对当前任务随机应变。</li>
+          <li><b>自我编辑</b>:agent 能改自己的记忆,这为"遗忘"和"纠错"提供了可能(记忆写错了,自己改回来)。</li>
+          <li><b>长程能力</b>:理论上对话可以无限长,因为历史可以不断换出。</li>
+        </ul>
+      </div>
+      <div class="cons">
+        <h4>⚠️ 缺点</h4>
+        <ul>
+          <li><b>重</b>:记忆管理本身变成了一套工具调用,每次换页都消耗 token 和时间。</li>
+          <li><b>可能本末倒置</b>:agent 可能陷入"疯狂管理记忆"而不干活(研究里真的观察到这种循环)。</li>
+          <li><b>对"记什么"没判断力</b>:换出是"整体搬走",不是"提炼精华",信息密度没有提升。</li>
+          <li><b>上手门槛高</b>:作为框架(Letta)要学整套 agent 运行时,小项目不值得。</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="scenario">
+      <div class="scenario-box">
+        <div class="lbl">🎯 适用场景</div>
+        <p><b>长程自主 agent</b>(一次任务持续数小时到数天、需要跨非常多轮对话保持状态)、多会话连续性的研究原型、需要"agent 自己决定记什么"的实验。</p>
+        <div class="lbl" style="margin-top:10px">❓ 为什么偏偏是它适用</div>
+        <p>换页是有成本的,所以只有<b>对话长到窗口放不下、且必须保持连续</b>的场景,这笔开销才划算。短对话(几百轮以内)直接全量放上下文,换页纯属浪费。另外它的价值在于"给了 agent 记忆管理的自主权",这恰好是<b>研究"agent 该不该自己管记忆"</b>这类问题的最佳实验平台——如果你只是想要"记住用户偏好",用它是杀鸡用牛刀。</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="callout info">📌 <b>给你的参考价值:</b> 你 dummy-agent 的 Phase 2.2 压缩 = 换出;SQLite 持久化 = 硬盘。MemGPT 告诉你的是:换页该由谁决定?它的答案是 agent 自己,但这有风险(死循环、token 浪费)。你可以在"框架写死阈值触发"和"agent 自主决定"之间取中间态——先写死,观察,再放开。</div>
+</section>
+<!-- ================================================================ -->
+<!-- SECTION 2 : 派系二 · 检索式原始记忆                             -->
+<!-- ================================================================ -->
+<section id="s2">
+  <div class="sec-head">
+    <h2>02 · 派系二 · 检索式原始记忆<span class="sec-tag green">存原文 · 相关才取</span></h2>
+    <div class="sec-desc">这一派最"老实":对话原文全部存下来,不加工、不提炼,需要的时候靠检索(通常向量相似度)把相关片段取回来。优点是保真、实现简单;缺点是没有结构、噪音大。</div>
+  </div>
+
+  <!-- ============ MemoryBank ============ -->
+  <div class="work">
+    <div class="work-head">
+      <h3>MemoryBank</h3>
+      <div class="work-meta"><span>2023</span><span>arXiv:2310.00710</span></div>
+      <span class="tech-tag memory">检索式原文</span>
+      <span class="tech-tag llm">LLM 决定遗忘</span>
+    </div>
+
+    <p class="one-liner"><span class="pitch">一句话:</span> 一个会"定期整理 + 主动遗忘"的记忆库——所有对话存下来,LLM 定期回顾,决定哪些记忆该更新、哪些该忘掉,像人一样"记不住"才正常。</p>
+
+    <div class="subblock">
+      <h4>🧠 机制原理(先讲类比)</h4>
+      <div class="analogy">📓 <b>想象一本会自己整理的日记:</b> 你每天写日记(所有对话原文入库);每周日晚上,你坐下来翻一遍这周的日记,把重要的提炼成几条"要点",把过时的划掉,把重复的合并(SIL 方法:摘要集成)。下次你再写日记时,会先翻一下"要点"和最近几天的内容,想起来了再接着写。<br><br>MemoryBank 就是把这个过程自动化:对话 → 记忆库(文本+向量双份);新对话开始时,用相似度检索相关旧记忆塞回上下文;每隔一段时间,LLM 对记忆库做一次"回顾",执行更新(SIL:把旧记忆与新对话综合成新记忆条目)。</div>
+      <p>核心组件:</p>
+      <ol>
+        <li><b>记忆存储</b>:原始对话保存为记忆条目,同时生成向量索引供相似度检索。</li>
+        <li><b>SIL(Summary-Integrated Long-term memory)</b>:用 LLM 把"旧记忆 + 新对话"整合成更新的记忆——既保留连续性,又吸收新信息。</li>
+        <li><b>遗忘机制</b>:LLM 判断哪些记忆过时/冲突,主动删除或改写——模拟人脑的遗忘曲线。</li>
+      </ol>
+    </div>
+
+    <div class="subblock">
+      <h4>⚙️ 关键细节(进阶)</h4>
+      <ul>
+        <li>检索是"全量相似度",不区分记忆类型——用户偏好、事件、闲聊混在一个库。</li>
+        <li>SIL 的整合是<b>有损压缩</b>:它不会保留原文,整合后旧细节就没了(这正是它的设计——模拟人脑遗忘)。</li>
+        <li>遗忘是"LLM 判断",判断质量直接决定记忆库会不会被垃圾填满或被误删。</li>
+      </ul>
+    </div>
+
+    <div class="pros-cons">
+      <div class="pros">
+        <h4>✅ 优点</h4>
+        <ul>
+          <li><b>简单直接</b>:存储 + 检索 + 定期整理,三件套,好实现。</li>
+          <li><b>有"遗忘"概念</b>:这是很多系统缺的——记忆不是越多越好,过时信息会污染判断。</li>
+          <li><b>实现成本低</b>:一个向量库 + 一个 LLM 调用就够了。</li>
+        </ul>
+      </div>
+      <div class="cons">
+        <h4>⚠️ 缺点</h4>
+        <ul>
+          <li><b>检索靠相似度,记不住"关系"</b>:能回答"上次提到过 X",答不了"X 和 Y 什么关系"。</li>
+          <li><b>整合即丢失</b>:SIL 一整合,精确细节(数字、路径、原文)就没了。</li>
+          <li><b>遗忘太激进会误伤</b>:LLM 判断"这个不重要"可能删掉后来有用的信息。</li>
+          <li><b>无结构</b>:无法按类型/时间/重要性精细管理。</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="scenario">
+      <div class="scenario-box">
+        <div class="lbl">🎯 适用场景</div>
+        <p><b>长期陪伴式聊天机器人</b>:用户隔几周回来,说"你还记得我之前说过去成都吗",它翻翻记忆库能答上来。</p>
+        <div class="lbl" style="margin-top:10px">❓ 为什么偏偏是它适用</div>
+        <p>陪伴场景的信息是<b>流水账式的</b>:一堆事件、偏好、闲聊,没有复杂的结构化关系;用户的需求是"模糊记得 + 大致对得上",不是精确查询。相似度检索 + 定期整理恰好覆盖这个需求,而且这个场景对<b>成本敏感</b>(陪伴机器人要便宜),MemoryBank 的简单就是它的核心竞争力。反过来,它做不了需要精确关系和时序推理的严肃场景。</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ Generative Agents ============ -->
+  <div class="work">
+    <div class="work-head">
+      <h3>Generative Agents(生成式智能体)</h3>
+      <div class="work-meta"><span>Stanford · Park et al.</span><span>2023</span><span>arXiv:2304.03442</span></div>
+      <span class="tech-tag memory">记忆流 + 检索打分</span>
+      <span class="tech-tag llm">反思</span>
+    </div>
+
+    <p class="one-liner"><span class="pitch">一句话:</span> 让 25 个虚拟小人生活在一个小镇里,每个小人随身带一个"记忆笔记本",按"重要性 × 新鲜度 × 相关性"打分回忆,还会定期写"周记"提炼认知——第一次让 agent 表现得"像真的记得"。</p>
+
+    <div class="subblock">
+      <h4>🧠 机制原理(先讲类比)</h4>
+      <div class="analogy">🏘️ <b>想象一个小镇,每个居民都有一个笔记本:</b><br>• 白天发生的一切(看到谁、聊了什么、做了什么)都记进笔记本(<b>memory stream</b>);<br>• 要说话/行动前,他翻笔记本找相关内容,但笔记本太厚,怎么找?他按三条规则排序:最近记的排前面(新鲜度)、当时觉得重要的排前面(重要性)、和当前话题相关的排前面(相关性)——三者的乘积就是打分;<br>• 每天晚上,他写一篇"周记"(<b>reflection</b>):把一天零散记录总结成"邻居 A 好像和邻居 B 关系不好"这种高层认知,写进笔记本的新一页。</div>
+      <p>三个核心组件:</p>
+      <ol>
+        <li><b>Memory Stream(记忆流)</b>:所有观察(observation)按时间顺序追加,每条记录带时间戳。</li>
+        <li><b>检索打分</b>:recency(越新越高,指数衰减)× importance(LLM 给每条记忆打 1-10 分)× relevance(与当前场景的向量相似度),三者相乘排序取 top-k。</li>
+        <li><b>Reflection(反思)</b>:定期(比如每 N 条记忆或隔一段时间)让 LLM 把零散记忆归纳成更高层的认知,这些认知也进入记忆流参与后续检索。</li>
+      </ol>
+    </div>
+
+    <div class="subblock">
+      <h4>⚙️ 关键细节(进阶)</h4>
+      <ul>
+        <li>importance 分数由 LLM 生成("这件事对'我'有多重要,1-10 分"),这是"重要性"首次被显式建模。</li>
+        <li>反思不是随意的:LLM 先找出"最近最活跃的几个实体/主题",再针对它们生成反思,避免写无关周记。</li>
+        <li>记忆流是纯追加的——<b>从不删除</b>,靠打分让不重要的自然沉底。这是和 MemoryBank(主动遗忘)相反的设计哲学。</li>
+      </ul>
+    </div>
+
+    <div class="pros-cons">
+      <div class="pros">
+        <h4>✅ 优点</h4>
+        <ul>
+          <li><b>范式级贡献</b>:首次端到端证明"记忆 → 检索 → 行为"能让 agent 表现出可信的长期行为一致性(小镇居民会传播八卦、组织派对)。</li>
+          <li><b>检索打分可解释</b>:为什么召回这条记忆?三个分数一清二楚。</li>
+          <li><b>反思机制</b>:从"记录"升级到"认知",这是后来 A-MEM、PlugMem 的"提炼"思想的源头。</li>
+          <li><b>不删数据</b>:不会误删,错了还能找回来。</li>
+        </ul>
+      </div>
+      <div class="cons">
+        <h4>⚠️ 缺点</h4>
+        <ul>
+          <li><b>贵</b>:每条观察都要 LLM 打重要性分、反思也要调 LLM,小镇 25 人规模就是天文数字的 token。</li>
+          <li><b>权重是玄学</b>:recency/importance/relevance 三个因子怎么加权没有理论依据,靠调参。</li>
+          <li><b>回忆有损</b>:相似度检索会把"精确事实"漏掉,只记得"大概"。</li>
+          <li><b>无真实数据保真要求</b>:它要的是"像",不是"准"。</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="scenario">
+      <div class="scenario-box">
+        <div class="lbl">🎯 适用场景</div>
+        <p><b>多 agent 社会模拟 / 沙盒 / 角色扮演</b>(虚拟小镇、游戏 NPC、社交实验)。</p>
+        <div class="lbl" style="margin-top:10px">❓ 为什么偏偏是它适用</div>
+        <p>这个场景要的不是"准确记住事实",而是<b>"表现得像一个有记忆、有成长的人"</b>——观众/用户观察的是行为可信度,不是数据正确率。打分检索 + 反思恰好能低成本营造这种"人格连续性"。而它的代价(贵、不准、调参)在模拟场景里无所谓,一旦换成需要精确回忆的生产场景(客服、助手),"大概记得"就是致命的。所以它是<b>"表演记忆"</b>的标杆,"精确记忆"的门外汉。</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ L-MEM / MemInsight ============ -->
+  <div class="work">
+    <div class="work-head">
+      <h3>L-MEM / MemInsight(Google)</h3>
+      <div class="work-meta"><span>Google DeepMind</span><span>2024</span><span>用于 Gemini 的记忆</span></div>
+      <span class="tech-tag memory">结构化记忆银行</span>
+      <span class="tech-tag llm">LLM 作为记忆构建器</span>
+    </div>
+
+    <p class="one-liner"><span class="pitch">一句话:</span> Google 给 Gemini 做的记忆系统:LLM 判断"什么值得记",把对话提炼成"用户画像 + 情景事件"两类结构化记忆存进记忆银行,需要时检索注入——已经跑在百万级用户的产品里。</p>
+
+    <div class="subblock">
+      <h4>🧠 机制原理(先讲类比)</h4>
+      <div class="analogy">🗂️ <b>想象一个资深秘书:</b> 每次你和老板开会,秘书不是把会议录音原样存档,而是现场判断"这个该记"(重要决定、你的偏好),然后分门别类整理——"关于你"的放进人事档案(<b>persona</b>),"发生过的事"放进项目档案(<b>episodic</b>)。下次开会前,秘书把相关档案挑出来放在老板桌上。<br><br>L-MEM/MemInsight 的秘书就是 LLM 自己:它读取对话,判断哪些信息值得长期保存,并决定存成"用户画像条目"(persona,如"用户喜欢简洁回复")还是"情景条目"(episodic,如"用户在 3 月改用了 PostgreSQL")。</div>
+      <p>核心设计:</p>
+      <ol>
+        <li><b>Persona + Episodic 双结构</b>:语义记忆(你是谁、你喜欢什么)和情景记忆(发生过什么)分开存,检索时按需取。</li>
+        <li><b>LLM 驱动的记忆构建</b>:不是全文入库,而是"提炼入库"——每条记忆是 LLM 生成的结构化条目。</li>
+        <li><b>向量库检索 + 注入</b>:新对话开始时,检索相关条目注入上下文。</li>
+      </ol>
+    </div>
+
+    <div class="subblock">
+      <h4>⚙️ 关键细节(进阶)</h4>
+      <ul>
+        <li>MemInsight 论文(2024)公开了架构;L-MEM 更强调"LLM 作为记忆构建器"的自主判断(该记什么、怎么组织)。</li>
+        <li>两条记忆类别对应 CoALA 的 semantic + episodic,是一次教科书式的分层实践。</li>
+        <li>提炼入库意味着<b>原文不留</b>,和 MemoryBank 一样是有损的,但结构更干净。</li>
+      </ul>
+    </div>
+
+    <div class="pros-cons">
+      <div class="pros">
+        <h4>✅ 优点</h4>
+        <ul>
+          <li><b>生产验证</b>:不是论文玩具,是真跑在 Gemini 上的。</li>
+          <li><b>结构清晰</b>:persona/episodic 分离,检索目标明确。</li>
+          <li><b>密度高</b>:只存提炼过的条目,上下文占用小。</li>
+        </ul>
+      </div>
+      <div class="cons">
+        <h4>⚠️ 缺点</h4>
+        <ul>
+          <li><b>闭源 + 强耦合</b>:和 Gemini/Google 基建深度绑定,公开实现细节少,别人抄不了。</li>
+          <li><b>提炼即丢失</b>:原文细节(精确引用、完整事件)不保留。</li>
+          <li><b>抽取成本</b>:每条记忆都要 LLM 生成,写入成本不低。</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="scenario">
+      <div class="scenario-box">
+        <div class="lbl">🎯 适用场景</div>
+        <p><b>大厂助手产品</b>(Gemini、类 ChatGPT 助手)的用户长期记忆。</p>
+        <div class="lbl" style="margin-top:10px">❓ 为什么偏偏是它适用</div>
+        <p>厂商场景有两个硬约束:一是<b>规模</b>(百万级用户,必须自动化、必须控制每用户成本),二是<b>体验要"聪明"</b>(用户期望它"了解我",不是"复读我的聊天记录")。结构化提炼正好同时满足——成本可控(每条记忆是一次 LLM 调用,比全文向量化+检索便宜)、体验好(记住的是"你是谁",不是"你说了啥")。这套设计能成立的前提是<b>自己拥有模型和算力</b>,所以它注定是厂商专属方案,通用框架抄不了它的闭环。</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ Wormhole Memory ============ -->
+  <div class="work">
+    <div class="work-head">
+      <h3>Wormhole Memory(虫洞记忆)</h3>
+      <div class="work-meta"><span>2025</span><span>跨对话检索</span></div>
+      <span class="tech-tag memory">两级检索</span>
+    </div>
+
+    <p class="one-liner"><span class="pitch">一句话:</span> 每次对话结束,存一条"对话摘要 + 检索信号"(像虫洞一样轻量的入口);新对话时先用信号快速定位"哪段旧对话值得看",再取原文——避免把全部历史都搜一遍。</p>
+
+    <div class="subblock">
+      <h4>🧠 机制原理(先讲类比)</h4>
+      <div class="analogy">🕳️ <b>想象图书馆的"索引卡片"系统:</b> 图书馆书很多,每次找书都把整座图书馆翻一遍太慢。于是每本书在门口留一张卡片:书名、主题、位置。你要找"和量子计算有关的书",先翻卡片(快),找到候选,再去书架上取那几本(准)。<br><br>Wormhole Memory 就是把每段旧对话变成一张"索引卡片":卡片 = 对话摘要(讲了什么)+ 检索信号(一段紧凑的向量/表示,用来快速匹配)。新对话来时,先和所有卡片匹配(轻量),命中后再去取那段对话的原文细节(精准)。</div>
+      <p>核心流程:</p>
+      <ol>
+        <li>一段对话结束时,LLM 生成摘要,并压缩出检索信号(低维表示);</li>
+        <li>摘要 + 信号一起入库;</li>
+        <li>新对话:用当前上下文和所有"检索信号"匹配(快),筛出相关对话;</li>
+        <li>命中后,检索该对话的原文/细节注入上下文。</li>
+      </ol>
+    </div>
+
+    <div class="pros-cons">
+      <div class="pros">
+        <h4>✅ 优点</h4>
+        <ul>
+          <li><b>轻量</b>:信号匹配比全文向量检索便宜得多。</li>
+          <li><b>两级筛选</b>:先粗筛(信号)再精取(原文),兼顾速度和召回。</li>
+          <li><b>思路新颖</b>:把"检索什么"和"看什么"分离,是实用的工程技巧。</li>
+        </ul>
+      </div>
+      <div class="cons">
+        <h4>⚠️ 缺点</h4>
+        <ul>
+          <li><b>新工作,生态小</b>:工程细节(信号怎么生成、怎么匹配)研究不充分。</li>
+          <li><b>依赖摘要质量</b>:摘要漏了,信号就偏了,原文再好也召不回。</li>
+          <li><b>信号是玄学</b>:怎么把对话压成"能匹配的信号"没有标准答案。</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="scenario">
+      <div class="scenario-box">
+        <div class="lbl">🎯 适用场景</div>
+        <p><b>多轮跨会话问答</b>、历史非常长(几十上百次会话)且每次只需其中一小段的场景。</p>
+        <div class="lbl" style="margin-top:10px">❓ 为什么偏偏是它适用</div>
+        <p>当历史总量大到"直接全量检索"都嫌贵时,预筛才有意义——<b>历史越长,虫洞越划算</b>。它解决的痛点是"大部分旧对话跟当前任务无关",所以先花小钱排除大部分、再花大钱精读少数。反之,如果历史不长(几次会话),直接全文检索更简单,虫洞属于过度设计。</p>
+      </div>
+    </div>
+  </div>
+</section>
+<!-- ================================================================ -->
+<!-- SECTION 3 : 派系三 · 结构化知识记忆                             -->
+<!-- ================================================================ -->
+<section id="s3">
+  <div class="sec-head">
+    <h2>03 · 派系三 · 结构化知识记忆<span class="sec-tag amber">存知识 · 不存流水账</span></h2>
+    <div class="sec-desc">这一派的共识是:流水账没有复用价值,值得存的是"提炼出来的知识"。差别在于把知识组织成什么——图(时间线图/索引图)、卡片网络、还是知识单元。代价统一是:写入时要花 LLM 成本去抽取。</div>
+  </div>
+
+  <!-- ============ Zep / Graphiti ============ -->
+  <div class="work">
+    <div class="work-head">
+      <h3>Zep / Graphiti(时序知识图谱)</h3>
+      <div class="work-meta"><span>Zep(商业公司)</span><span>2025</span><span>arXiv:2501.13956</span></div>
+      <span class="tech-tag struct">时序知识图谱</span>
+    </div>
+
+    <p class="one-liner"><span class="pitch">一句话:</span> 把记忆画成"人物关系图 + 时间轴":实体(人/事/物)是节点,关系是边,每条边都带时间戳;新信息只更新相关局部,不重建全图——所以它记得"谁在什么时候说了什么、后来怎么变了"。</p>
+
+    <div class="subblock">
+      <h4>🧠 机制原理(先讲类比)</h4>
+      <div class="analogy">🗺️ <b>想象一张会呼吸的关系地图:</b> 地图上每个点是一个人/项目/话题,两点之间画一条线表示关系,线上标注"什么时候建立的、内容是什么"。你和客户 A 上周谈成了合作 → 你俩之间多一条线,写着"2026-07-28:谈成合作"。这周 A 反悔了 → 不是删掉旧线,而是加一条新线"2026-08-03:反悔",旧线留着。<br><br>Zep/Graphiti 就把你的所有对话变成这样一张图:LLM 从每轮对话里抽取"实体 + 关系 + 时间"(三元组),增量地更新到图里。回答"A 为什么现在不理我了"时,它沿着图走到 A,再看时间线——"哦,8 月 3 号反悔了"。</div>
+      <p>核心组件:</p>
+      <ol>
+        <li><b>实体/关系抽取</b>:LLM 从对话中提取(实体, 关系, 实体, 时间),存成图节点和带时间戳的边。</li>
+        <li><b>增量更新</b>:新信息到达时,只更新涉及的局部子图(加边/改边),不需要重建整张图——这是它能规模化的重要原因。</li>
+        <li><b>时序查询</b>:检索时同时利用结构和时间,支持"在这之前/之后""发生了什么变化"这类推理。</li>
+      </ol>
+    </div>
+
+    <div class="subblock">
+      <h4>⚙️ 关键细节(进阶)</h4>
+      <ul>
+        <li>图结构解决的是"关系查询",时间戳解决的是"变化追踪",两者合起来才有"时序推理"。</li>
+        <li>与纯向量检索互补:向量管"语义相似",图管"结构化关系",实际系统常混合使用。</li>
+        <li>边(关系)也带重要性/置信度等属性,可支持更复杂的查询。</li>
+      </ul>
+    </div>
+
+    <div class="pros-cons">
+      <div class="pros">
+        <h4>✅ 优点</h4>
+        <ul>
+          <li><b>时序推理是独门绝技</b>:别家答不了"你上周说过 X,这周为什么变了",它能。</li>
+          <li><b>关系查询强</b>:谁是关键联系人、哪些项目互相影响,一目了然。</li>
+          <li><b>增量更新</b>:不用每次全量重建,适合持续写入的对话流。</li>
+        </ul>
+      </div>
+      <div class="cons">
+        <h4>⚠️ 缺点</h4>
+        <ul>
+          <li><b>基建重</b>:图数据库/图存储 + 抽取管线 + 混合检索,工程量大。</li>
+          <li><b>抽取质量是命门</b>:LLM 抽错实体/关系,图上就长"毒瘤";中文实体抽取尤其要调。</li>
+          <li><b>对话细节会丢</b>:图存的是关系,原文细节(确切的措辞、完整事件)不保留。</li>
+          <li><b>小项目过重</b>:几次对话的关系网,不值得搭图。</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="scenario">
+      <div class="scenario-box">
+        <div class="lbl">🎯 适用场景</div>
+        <p><b>企业级助手 / CRM / 客服</b>:需要长期跟踪"用户关系历史"的场景(销售跟进、客户支持、项目管理)。</p>
+        <div class="lbl" style="margin-top:10px">❓ 为什么偏偏是它适用</div>
+        <p>企业场景有两个特征,只有图能接住:一是<b>数据量大且持续增长</b>(增量更新省成本),二是<b>查询本质是关系型的</b>("这个客户和哪些项目相关、对我们的态度怎么变化的")。这类问题的答案藏在"关系 + 时间"里,向量相似度根本答不上来。图结构的高成本,只有在"关系查询"本身就是业务核心时才回本——个人陪伴助手没有这种查询需求,所以用它是浪费。</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ HippoRAG ============ -->
+  <div class="work">
+    <div class="work-head">
+      <h3>HippoRAG / HippoRAG 2</h3>
+      <div class="work-meta"><span>OSU · Gutiérrez et al.</span><span>NeurIPS 2024</span><span>arXiv:2405.14831</span></div>
+      <span class="tech-tag struct">海马体索引 + 知识图谱 + PPR</span>
+    </div>
+
+    <p class="one-liner"><span class="pitch">一句话:</span> 模仿大脑"海马体索引"机制:不存全部记忆,只存"哪些概念一起出现过"的索引图(知识图谱);回忆时沿着索引图上的联想路径走(个性化 PageRank),一次检索就能回答需要串联多个信息源的问题。</p>
+
+    <div class="subblock">
+      <h4>🧠 机制原理(先讲类比)</h4>
+      <div class="analogy">🧠 <b>想象大脑怎么"回忆":</b> 你记得"张三"和"人工智能大会"和"去年"三个词,但想不起它们的关系。大脑的做法:不把完整记忆都翻一遍,而是有一个"索引"——哪些概念在记忆里挨着出现过。你从"张三"出发,沿索引走到"人工智能大会",再走到"去年参会的人",一步步把碎片串起来。<br><br>HippoRAG 把这个过程搬给机器:LLM 把每篇文档抽成<b>三元组</b>(实体—关系—实体),所有三元组拼成一张知识图谱 = 大脑的"索引";回答多跳问题时,用<b>个性化 PageRank</b>(从问题里的实体出发,在图上做随机游走,看哪些节点被"激活")一次性地把相关碎片都激活,再交给 LLM 组织答案。<br><br>HippoRAG 2 再加一层"schema":把具体实体抽象成概念(比如把"张三/李四"抽象成"人"),让图更泛化,检索更稳。</div>
+      <p>关键点:传统多跳检索要"问→搜→再问→再搜"反复调 LLM(IRCoT 模式);HippoRAG 把多跳变成<b>图上一次 PPR 计算</b>,所以便宜 10-20 倍、快 6-13 倍。</p>
+    </div>
+
+    <div class="subblock">
+      <h4>⚙️ 关键细节(进阶)</h4>
+      <ul>
+        <li>建图成本:每篇文档要 LLM 抽取三元组(一次性开销,之后检索零 LLM)。</li>
+        <li>PPR 的"个性化"指从问题的种子实体出发——模仿海马体"从线索开始回忆"。</li>
+        <li>HippoRAG 2 的 schema 抽象解决"没见过的实体"问题:具体实体没见过,但它的抽象概念在图上,仍能被激活。</li>
+      </ul>
+    </div>
+
+    <div class="pros-cons">
+      <div class="pros">
+        <h4>✅ 优点</h4>
+        <ul>
+          <li><b>多跳检索 SOTA</b>:需要串联多个文档的问题,一次检索解决。</li>
+          <li><b>便宜 + 快</b>:对比 IRCoT,10-20 倍成本下降、6-13 倍提速。</li>
+          <li><b>检索时零 LLM</b>:图建好后,查询只跑 PPR,适合高频查询。</li>
+        </ul>
+      </div>
+      <div class="cons">
+        <h4>⚠️ 缺点</h4>
+        <ul>
+          <li><b>建图成本高</b>:文档越多,抽取三元组的 LLM 开销越大。</li>
+          <li><b>图质量决定一切</b>:抽错/漏抽,图上就没有那条路,再好的算法也走不到。</li>
+          <li><b>偏"知识库检索",不是"对话记忆"</b>:它处理的是文档集,不是对话流;没有时间、没有情感、没有用户画像。</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="scenario">
+      <div class="scenario-box">
+        <div class="lbl">🎯 适用场景</div>
+        <p><b>大规模文档库上的多跳问答</b>:法律卷宗、医学文献、技术手册——答案分散在多处、需要串联推理的场景。</p>
+        <div class="lbl" style="margin-top:10px">❓ 为什么偏偏是它适用</div>
+        <p>多跳问题的本质是"信息在图上的距离很远":一个事实在文档 A,另一个在文档 B,答案要两步以上才能凑齐。HippoRAG 的整个设计(索引图 + PPR)就是为"一次走通多步联想"而生。而<b>对话记忆是流水账,没有"多跳"需求</b>——"上次说了什么"一跳就够。所以它是检索工具,不是记忆系统;用在文档问答上如鱼得水,用在陪伴/助手上就大材小用了。</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ A-MEM ============ -->
+  <div class="work">
+    <div class="work-head">
+      <h3>A-MEM(Agentic Memory)</h3>
+      <div class="work-meta"><span>NeurIPS 2025</span><span>arXiv:2502.12110</span></div>
+      <span class="tech-tag struct">Zettelkasten 卡片笔记</span>
+      <span class="tech-tag llm">记忆自主演化</span>
+    </div>
+
+    <p class="one-liner"><span class="pitch">一句话:</span> 把记忆组织成"卡片笔记网络"(Zettelkasten 方法):每条记忆是一张结构化笔记卡,agent 写卡时自主决定"和哪些旧卡建立链接""旧卡要不要演化"——记忆会自己长成一张知识网,而不是一条条孤立记录。</p>
+
+    <div class="subblock">
+      <h4>🧠 机制原理(先讲类比)</h4>
+      <div class="analogy">🗃️ <b>想象学者卢曼的卡片盒:</b> 他不写整本书,而是把每个想法写在一张卡片上;新卡片总要想办法和旧卡片"接上头"(建立链接);当新想法和旧卡片冲突时,他会改写旧卡片(演化)。几十年后,卡片盒自己长成一张庞大的知识网络,他的著作都是从网里"长"出来的。<br><br>A-MEM 让 agent 这么做:每次互动生成一张"笔记卡"(标题、内容、关键词、标签,结构化);写卡时,LLM 自主决定:和哪几张旧卡建立链接(link)、哪些旧卡需要改写/合并(evolve)。它有三个"自主决策点"(agency points):写卡时、选链接时、决定演化时——全部由 LLM 判断,没有预设规则。</div>
+      <p>三个自主点:</p>
+      <ol>
+        <li><b>Write time</b>:判断这次互动值不值得记、记成什么结构。</li>
+        <li><b>Link decision</b>:新卡该和哪些旧卡建立关系(用 LLM 判断相关性,不靠向量相似度)。</li>
+        <li><b>Evolution decision</b>:新信息是否推翻旧卡(冲突时改写旧卡,而不是简单追加)。</li>
+      </ol>
+    </div>
+
+    <div class="subblock">
+      <h4>⚙️ 关键细节(进阶)</h4>
+      <ul>
+        <li>论文报告:去掉"链接生成"和"记忆演化"后性能明显下降——说明自主链接/演化是真有用的,不是装饰。</li>
+        <li>与向量检索互补:向量管"语义相近的卡",链接管"逻辑相关的卡",两者结合检索。</li>
+        <li>任务无关:不针对特定任务设计,附到任何 agent 上即可用。</li>
+      </ul>
+    </div>
+
+    <div class="pros-cons">
+      <div class="pros">
+        <h4>✅ 优点</h4>
+        <ul>
+          <li><b>记忆会"生长"</b>:链接 + 演化让零散记录自发组织成知识网,多跳推理受益明显。</li>
+          <li><b>可演化、可纠错</b>:新信息冲突时改写旧卡,而不是堆积矛盾。</li>
+          <li><b>任务无关</b>:不挑场景,通用性强。</li>
+        </ul>
+      </div>
+      <div class="cons">
+        <h4>⚠️ 缺点</h4>
+        <ul>
+          <li><b>依赖 LLM 的"元认知"</b>:判断"该不该记、该连谁、该不该改"是纯 LLM 判断,质量直接决定记忆网好坏。</li>
+          <li><b>写入成本高</b>:每次写卡 + 链接 + 演化,多次 LLM 调用。</li>
+          <li><b>难调试</b>:记忆网是不可预测的图,出问题了很难定位是"哪张卡"坏了。</li>
+          <li><b>有膨胀风险</b>:卡片无限增长,检索成本随之上升。</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="scenario">
+      <div class="scenario-box">
+        <div class="lbl">🎯 适用场景</div>
+        <p><b>研究型 / 知识工作者的长期记忆</b>:需要把跨越多日的零散想法、讨论、发现"织成知识网"的场景;长期自主 agent 的成长性记忆。</p>
+        <div class="lbl" style="margin-top:10px">❓ 为什么偏偏是它适用</div>
+        <p>这个场景的价值恰恰在<b>"知识之间的联系"</b>——研究工作的产出不是单个事实,而是"这些想法怎么互相印证/冲突"。卡片 + 链接是为此而生的组织形式;演化机制保证知识网能自我纠错(新发现推翻旧结论时,网会更新)。反过来,如果场景只是"记住用户偏好"(一条条独立事实),卡片网络是过度工程——独立事实用 Mem0 那种扁平存储更划算。A-MEM 的适用前提是:<b>记忆之间有值得维护的关系</b>。</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ PlugMem ============ -->
+  <div class="work">
+    <div class="work-head">
+      <h3>PlugMem(插拔式记忆模块)</h3>
+      <div class="work-meta"><span>Microsoft Research × UIUC</span><span>ICML 2026</span><span>arXiv:2603.03296</span></div>
+      <span class="tech-tag struct">知识单元 + 记忆图</span>
+      <span class="tech-tag llm">任务无关即插即用</span>
+    </div>
+
+    <p class="one-liner"><span class="pitch">一句话:</span> 不存"对话原文",也不存"摘要",而是把经验提炼成<b>知识单元</b>(事实 + 可复用技能),组织成记忆图;检索时用"概念/意图"路由,再把结果蒸馏成任务指导——当前任务无关记忆的 SOTA(LongMemEval 90.2, HotpotQA 79.1 F1),宣称 6 行代码即插即用。</p>
+
+    <div class="subblock">
+      <h4>🧠 机制原理(先讲类比)</h4>
+      <div class="analogy">📚 <b>想象一本"错题本 + 秘籍本"合体:</b> 大多数人记笔记是贴聊天记录(原文记忆)——又长又乱,下次根本不想翻。PlugMem 让你每次经历后做两件事:把"发生了什么"提炼成一条条<b>事实</b>(命题性知识:"用户预算 500 元"),把"怎么应对"提炼成一条条<b>技能</b>(规范性知识:"预算不够时,先给降级方案再问")。所有事实和技能按关联织成一张网。下次遇到类似场景,不是翻聊天记录,而是按"当前任务的概念/意图"在网里路由,把命中的知识蒸馏成一小段"行动指导"递给主 agent。<br><br>认知学依据:人脑分 episodic(事件)/ semantic(事实)/ procedural(技能);<b>决策靠的是从事件里提炼的事实和技能,不是事件本身</b>——这就是"为什么不存流水账"的底气。</div>
+      <p>三个组件(Structure / Retrieval / Reasoning):</p>
+      <ol>
+        <li><b>Structure(结构)</b>:原始交互(对话、文档、网页操作)→ 命题性知识(事实)+ 规范性知识(可复用技能)→ 记忆图。去冗余、提高信息密度。</li>
+        <li><b>Retrieval(检索)</b>:不检索长文本块,而是用<b>高层概念和推断意图</b>做路由信号,把与当前任务对齐的知识单元捞出来。</li>
+        <li><b>Reasoning(推理)</b>:把检索到的知识单元<b>蒸馏成任务导向的简短指导</b>,再注入主 agent 上下文——只让"决策相关"的知识进窗口。</li>
+      </ol>
+      <div class="flow">
+        <div class="flow-box store"><div class="t">原始交互</div><div class="d">对话 / 文档 / 网页</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-box prompt"><div class="t">知识单元</div><div class="d">事实 + 技能,去冗余</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-box memory"><div class="t">记忆图</div><div class="d">知识单元按关联组织</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-box api"><div class="t">概念/意图路由</div><div class="d">对齐当前任务</div></div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-box model"><div class="t">蒸馏指导</div><div class="d">决策相关的短文本</div></div>
+      </div>
+    </div>
+
+    <div class="subblock">
+      <h4>⚙️ 关键细节(进阶)</h4>
+      <ul>
+        <li><b>成绩</b>:LongMemEval 90.2 Acc、HotpotQA 79.1 F1 / 91.1% LLM-Judge Acc,均为 SOTA;轻微任务适配后取得,同时保持任务无关主干。</li>
+        <li><b>新度量</b>:提出"信息密度 = 有用决策信息 ÷ 消耗的上下文",用信息论统一分析,PlugMem 在三个异构基准上密度最高。</li>
+        <li><b>即插即用</b>:代码以插件形式挂到任意 agent(宣称 6 行),不要求改主 agent 结构;可与任务特化方案叠加(结果更高)。</li>
+        <li><b>三个基准</b>:长程对话问答(conversational QA)、多跳知识检索(multi-hop)、网页 agent 任务(web agent)——异构验证任务无关性。</li>
+      </ul>
+    </div>
+
+    <div class="pros-cons">
+      <div class="pros">
+        <h4>✅ 优点</h4>
+        <ul>
+          <li><b>任务无关 + 即插即用</b>:一个记忆模块服务所有任务,不用为每个场景重写。</li>
+          <li><b>信息密度高</b>:上下文只进"决策相关的蒸馏指导",窗口占用最小。</li>
+          <li><b>跨任务复用</b>:技能型知识单元能从任务 A 迁移到任务 B——这是"经验复用"的实体化。</li>
+          <li><b>指标领先</b>:三个异构基准全面 SOTA,不是单点刷分。</li>
+          <li><b>可叠加</b>:与任务特化方法组合还能再涨,不是二选一。</li>
+        </ul>
+      </div>
+      <div class="cons">
+        <h4>⚠️ 缺点</h4>
+        <ul>
+          <li><b>太新</b>:2026 年 2 月预印本、5 月开源,生态和第三方验证还少。</li>
+          <li><b>管线重</b>:Structure→Retrieval→Reasoning 每步都调 LLM,写入成本不低(每个交互都要抽取)。</li>
+          <li><b>抽取质量是天花板</b>:知识单元的质量 = 抽取 LLM 的质量,抽错事实=记忆污染,而且污染会沿记忆图传播。</li>
+          <li><b>SOTA 分数需轻量适配</b>:纯任务无关主干 + 一点适配才有 90.2;零适配的成绩要低一些。</li>
+          <li><b>调试难</b>:知识单元散布在记忆图里,"为什么它记得这个不记得那个"不好查。</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="scenario">
+      <div class="scenario-box">
+        <div class="lbl">🎯 适用场景</div>
+        <p><b>任意 agent 的通用记忆底座</b>;尤其适合<b>长程决策型 agent</b>(几小时以上的自主任务,需要把本次经验沉淀下来供下次任务复用)、跨任务连续工作的助手。</p>
+        <div class="lbl" style="margin-top:10px">❓ 为什么偏偏是它适用</div>
+        <p>长程决策场景的痛点是"经验一次性":agent 花几小时学会的流程,下次任务又从头学。PlugMem 的"技能型知识单元"就是为"经验复用"设计的——把"遇到 X 怎么做"沉淀成可迁移的知识,是这类场景的刚需。同时它任务无关,所以适合"一个 agent 什么任务都接"的通用底座。反过来,短对话场景(几十轮内结束)里,抽取知识单元的 LLM 成本比收益还高,用它会亏本。<b>它的适用边界 = 任务足够长/足够多,让知识单元的复用价值超过抽取成本。</b></p>
+      </div>
+    </div>
+
+    <div class="callout info">📌 <b>和你的关系:</b> PlugMem 的"知识单元"思路正是 dummy-agent Phase 2.4(跨 Session 记忆)的蓝本——你不需要照搬三组件,只需拿走"事实抽取 → 结构化条目 → 按需注入"这一条主线,就是它的低配版。</div>
+  </div>
+</section>
+<!-- ================================================================ -->
+<!-- SECTION 4 : 派系四 · 记忆即产品                                 -->
+<!-- ================================================================ -->
+<section id="s4">
+  <div class="sec-head">
+    <h2>04 · 派系四 · 记忆即产品<span class="sec-tag pink">拿来就用</span></h2>
+    <div class="sec-desc">前面三派是"技术路线",这一派是"商业模式":把记忆封装成 API/服务/产品,你的 agent 调用它就行。对学习者来说,它们的价值不是技术新颖,而是"别人把坑都踩完了"的工程参考。</div>
+  </div>
+
+  <!-- ============ Mem0 ============ -->
+  <div class="work">
+    <div class="work-head">
+      <h3>Mem0</h3>
+      <div class="work-meta"><span>开源 + 托管服务</span><span>2024 起</span><span>arXiv:2504.19413</span></div>
+      <span class="tech-tag product">记忆 API</span>
+      <span class="tech-tag llm">两阶段:抽取 + 更新</span>
+    </div>
+
+    <p class="one-liner"><span class="pitch">一句话:</span> 记忆界的"增删改查 SaaS":两阶段处理(抽取值得记的事实 + 更新/合并冲突),对外提供干净的 API(add / search / update / delete),任何 agent 都能在几行代码内接上;社区最大(~60K stars)。</p>
+
+    <div class="subblock">
+      <h4>🧠 机制原理(先讲类比)</h4>
+      <div class="analogy">📮 <b>想象一个外包的"记忆管家"服务:</b> 你把每轮对话发给管家,管家自己判断"这里面有什么值得长期记住的"(抽取),然后更新他的笔记本——如果你今天说"我喜欢咖啡",昨天记的是"我喜欢茶",管家会主动把旧条目改成"喜欢咖啡"(冲突更新),而不是记两条矛盾记录。你随时可以问他"你记得我的偏好吗",他给你答案;也可以直接说"把那条删了"。<br><br>Mem0 就是这个管家:两个阶段——<b>Extraction</b>(LLM 判断并抽取事实)+ <b>Update</b>(与旧记忆合并/去重/冲突解决);对外是简单的 API,底层存储可以用向量库/图库/键值库(可插拔)。</div>
+      <p>两阶段细节:</p>
+      <ol>
+        <li><b>Extraction</b>:LLM 读取对话,决定哪些信息值得记(用户偏好、项目事实、身份信息),抽成结构化事实条目。</li>
+        <li><b>Update</b>:新事实与旧记忆比对——重复则合并、冲突则覆盖(用户改了偏好)、新增则插入。这一步是 Mem0 的核心卖点:记忆不会自相矛盾。</li>
+      </ol>
+    </div>
+
+    <div class="pros-cons">
+      <div class="pros">
+        <h4>✅ 优点</h4>
+        <ul>
+          <li><b>接入最容易</b>:几行代码,不关心底层。</li>
+          <li><b>记忆干净</b>:冲突更新机制让记忆库不自相矛盾,这是很多自研方案做不到的。</li>
+          <li><b>社区 + 生态</b>:~60K stars,和主流框架(OpenAI/LangChain/CrewAI)都有集成。</li>
+          <li><b>部署灵活</b>:开源自托管或托管服务都行。</li>
+        </ul>
+      </div>
+      <div class="cons">
+        <h4>⚠️ 缺点</h4>
+        <ul>
+          <li><b>黑盒</b>:它到底记了什么、为什么这么记,你很难检查和干预。</li>
+          <li><b>写入成本</b>:每次对话都要 LLM 抽取+更新,高频场景 token 开销可观。</li>
+          <li><b>粒度是"事实"</b>:表达不了复杂关系(需要图的场景它吃力)。</li>
+          <li><b>学习价值有限</b>:对你(要搞懂原理的人)来说,直接用它是"知其然不知其所以然"。</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="scenario">
+      <div class="scenario-box">
+        <div class="lbl">🎯 适用场景</div>
+        <p><b>生产环境的助手/客服快速上线</b>:想给现有 agent 加记忆、又不想自己造轮子的团队;需要"用户偏好/事实"级记忆的产品。</p>
+        <div class="lbl" style="margin-top:10px">❓ 为什么偏偏是它适用</div>
+        <p>这个场景的诉求是<b>"快、稳、别让我管基建"</b>——Mem0 就是为"商品化记忆"设计的:API 一接,偏好/事实自动抽取更新。它适用的前提是记忆需求正好落在"独立事实"这个粒度上(偏好、身份、项目信息),这是大多数助手产品的刚需。反之,需要时序推理、关系查询、或深度定制的场景,它的扁平事实模型就不够了。</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ LangMem / LangGraph Store ============ -->
+  <div class="work">
+    <div class="work-head">
+      <h3>LangMem / LangGraph Store</h3>
+      <div class="work-meta"><span>LangChain 生态</span><span>2024 起</span></div>
+      <span class="tech-tag product">框架内记忆</span>
+    </div>
+
+    <p class="one-liner"><span class="pitch">一句话:</span> LangChain 生态的记忆组件:记忆操作(存/取/更新)以 agent 工具或 API 形式存在,和 LangGraph 的图状态管理深度绑定——用 LangChain 的人顺手就有,跳出生态的人用不上。</p>
+
+    <div class="subblock">
+      <h4>🧠 机制原理(先讲类比)</h4>
+      <div class="analogy">🔌 <b>想象装修公司给你配的"智能家居套餐":</b> 灯、锁、窗帘都是同一家的,一个 App 全控,设置联动很方便——但前提是你全屋都用它的设备。LangMem/LangGraph Store 就是 LangChain 生态里的"智能家居套餐":记忆的读写变成 agent 可以调用的工具/API,和 LangGraph 的状态图无缝联动。</div>
+      <p>要点:记忆不是独立系统,而是<b>框架的一部分</b>——agent 在 LangGraph 里跑,记忆通过工具调用存取,状态在图的节点间流转。</p>
+    </div>
+
+    <div class="pros-cons">
+      <div class="pros">
+        <h4>✅ 优点</h4>
+        <ul>
+          <li><b>生态一致</b>:已经在用 LangGraph 的项目,记忆零摩擦接入。</li>
+          <li><b>工具化</b>:记忆操作是 agent 可自主调用的工具,支持"agent 决定何时记/取"的模式。</li>
+        </ul>
+      </div>
+      <div class="cons">
+        <h4>⚠️ 缺点</h4>
+        <ul>
+          <li><b>锁定生态</b>:出了 LangChain/LangGraph 就没法用,抽象层较厚。</li>
+          <li><b>记忆能力本身无突破</b>:技术上仍是"检索/存储"的组合,没有新机制。</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="scenario">
+      <div class="scenario-box">
+        <div class="lbl">🎯 适用场景</div>
+        <p><b>已经在用 LangGraph 构建 agent 的团队</b>。</p>
+        <div class="lbl" style="margin-top:10px">❓ 为什么偏偏是它适用</div>
+        <p>这类场景的选择标准不是"谁的记忆最强",而是<b>"和现有栈的一致性"</b>——换记忆方案的成本远大于记忆能力差异的收益。LangMem 的定位就是"你反正用 LangChain,记忆顺手带上",技术平庸但集成价值明确。</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 厂商内置 ============ -->
+  <div class="work">
+    <div class="work-head">
+      <h3>Claude / OpenAI 等厂商内置记忆</h3>
+      <div class="work-meta"><span>Anthropic / OpenAI</span><span>2024-2025 起</span></div>
+      <span class="tech-tag product">零配置记忆</span>
+    </div>
+
+    <p class="one-liner"><span class="pitch">一句话:</span> 厂商在自家模型/客户端层面实现的跨会话记忆:自动保存用户偏好、项目事实,下次会话自动生效——用户零配置,但完全不可移植、不可定制。</p>
+
+    <div class="subblock">
+      <h4>🧠 机制原理(先讲类比)</h4>
+      <div class="analogy">☁️ <b>想象一个"不用你操心的云端秘书":</b> 你不需要告诉它"请记住我喜欢简洁回复"——它自己观察、自己记、自己用。你换一家公司,秘书不跟你走。</div>
+      <p>实现层面:通常是"系统提示 + 外部记忆存储"的组合(和 Hermes 的 MEMORY.md 思路同源),但由厂商托管;Anthropic 还提出了 context editing 机制(让模型在推理中自主编辑上下文)。</p>
+    </div>
+
+    <div class="pros-cons">
+      <div class="pros">
+        <h4>✅ 优点</h4>
+        <ul>
+          <li><b>零成本接入</b>:打开开关就有。</li>
+          <li><b>质量有保障</b>:厂商调优过,不会记一堆垃圾。</li>
+        </ul>
+      </div>
+      <div class="cons">
+        <h4>⚠️ 缺点</h4>
+        <ul>
+          <li><b>不可移植</b>:换模型/换厂商,记忆清零。</li>
+          <li><b>不透明</b>:记了什么、怎么改,用户基本无法控制。</li>
+          <li><b>不可定制</b>:无法按自己的业务逻辑组织记忆。</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="scenario">
+      <div class="scenario-box">
+        <div class="lbl">🎯 适用场景</div>
+        <p><b>用官方客户端的个人 / 小团队</b>,记忆需求是"记得我这个人"级别的通用场景。</p>
+        <div class="lbl" style="margin-top:10px">❓ 为什么偏偏是它适用</div>
+        <p>适用标准很简单:<b>你愿不愿意为"可移植、可定制"付代价</b>。个人使用场景里,记忆是锦上添花,厂商内置"够用且免费",自己搭一套的收益为负。一旦记忆成为业务核心(agent 产品),不可移植就是致命的——这就是为什么企业场景几乎都自建或用 Mem0/Letta 这类开源方案。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================================================================ -->
+<!-- SECTION 5 : 派系五 · 权重级记忆                                 -->
+<!-- ================================================================ -->
+<section id="s5">
+  <div class="sec-head">
+    <h2>05 · 派系五 · 权重级记忆<span class="sec-tag" style="border-color:rgba(239,68,68,0.35);color:#fca5a5;">记忆长在脑子里</span></h2>
+    <div class="sec-desc">前面所有派系都是"外部记忆"(存在模型之外,用的时候塞回上下文)。这一派反着来:把记忆<b>写进模型参数</b>——推理时零检索、零上下文占用。代价:需要训练。</div>
+  </div>
+
+  <div class="work">
+    <div class="work-head">
+      <h3>MemoryLLM / M+ / BMAS</h3>
+      <div class="work-meta"><span>2024-2025</span><span>权重级 / 参数记忆</span></div>
+      <span class="tech-tag weight">可训练记忆参数</span>
+    </div>
+
+    <p class="one-liner"><span class="pitch">一句话:</span> 给模型加一块"可训练的记忆区"——新知识通过微调写进这块参数,推理时模型直接"知道",不需要检索,也不占上下文窗口。</p>
+
+    <div class="subblock">
+      <h4>🧠 机制原理(先讲类比)</h4>
+      <div class="analogy">🧬 <b>想象"肌肉记忆"和"翻笔记本"的区别:</b> 前面所有派系都是"翻笔记本"(检索);权重级记忆是"练成肌肉记忆"(把知识刻进神经连接)。你学自行车,不是每次骑车前翻说明书,而是骑多了身体自己会。MemoryLLM 就是让模型通过训练把"新知识"练成肌肉记忆——之后每次推理都用得上,且不占"桌面"(上下文)。</div>
+      <ul>
+        <li><b>MemoryLLM(2024)</b>:在模型里插入可训练的 residual adapter(记忆参数),用语料微调把知识写入;推理时模型自然"想起"。</li>
+        <li><b>M+(2025)</b>:扩展 MemoryLLM 的记忆容量,支持更大规模的长程记忆。</li>
+        <li><b>BMAS(2025)</b>:脑启发多 agent——前额叶协调 + 海马-新皮层双记忆分工,把"记忆分区"做到系统层面。</li>
+      </ul>
+    </div>
+
+    <div class="pros-cons">
+      <div class="pros">
+        <h4>✅ 优点</h4>
+        <ul>
+          <li><b>推理零开销</b>:没有检索步骤、不占上下文,速度最快。</li>
+          <li><b>不干扰提示词</b>:上下文窗口全部留给任务本身。</li>
+        </ul>
+      </div>
+      <div class="cons">
+        <h4>⚠️ 缺点</h4>
+        <ul>
+          <li><b>要训练</b>:每次更新知识都要微调,API 用户完全做不了。</li>
+          <li><b>更新慢</b>:对话是实时的,微调是批量的,跟不上节奏。</li>
+          <li><b>灾难性遗忘</b>:新知识可能冲掉旧知识。</li>
+          <li><b>不可解释</b>:知识在参数里,无法检查/删除单条记忆。</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="scenario">
+      <div class="scenario-box">
+        <div class="lbl">🎯 适用场景</div>
+        <p><b>模型厂商 / 有训练能力的团队</b>;端侧部署(推理时无检索依赖,省算力);知识更新频率低的场景。</p>
+        <div class="lbl" style="margin-top:10px">❓ 为什么偏偏是它适用</div>
+        <p>适用前提是<b>你拥有模型和训练管线</b>——这是硬门槛,直接把绝大多数应用团队排除在外。它的优势(零检索开销)只有在"推理量巨大、检索成本成为瓶颈"或"端侧无检索基建"时才值得;而对话式记忆的更新频率(每秒都在变)和它的更新方式(批量微调)根本不匹配。所以这条路线适合"静态知识注入",不适合"动态对话记忆"。</p>
+      </div>
+    </div>
+  </div>
+</section>
+<!-- ================================================================ -->
+<!-- SECTION 6 : 理论与评测                                          -->
+<!-- ================================================================ -->
+<section id="s6">
+  <div class="sec-head">
+    <h2>06 · 理论与评测<span class="sec-tag theory">地图与标尺</span></h2>
+    <div class="sec-desc">看方案之前,先有坐标系(CoALA);比方案之后,要有标尺(LongMemEval / LOCOMO)。这一节讲这三个"元工具"。</div>
+  </div>
+
+  <div class="work">
+    <div class="work-head">
+      <h3>CoALA(Cognitive Architectures for Language Agents)</h3>
+      <div class="work-meta"><span>Princeton / MIT / Google DeepMind</span><span>TMLR 2024</span><span>arXiv:2309.02427</span></div>
+      <span class="tech-tag theory">理论框架</span>
+    </div>
+
+    <p class="one-liner"><span class="pitch">一句话:</span> 不发明新记忆技术,而是给所有 agent(和所有记忆论文)画了一张标准结构图:任何 agent = 记忆 + 动作空间 + 决策循环。读论文前先读它,你就知道每篇论文在图的哪个位置动了刀。</p>
+
+    <div class="subblock">
+      <h4>🧠 机制原理(先讲类比)</h4>
+      <div class="analogy">🗺️ <b>想象一张"城市地图"和"导航 App"的区别:</b> 导航 App(具体方案)告诉你"现在左转";城市地图(CoALA)告诉你"这座城市有哪些区、路怎么连通"。没有地图,你每个路口都靠猜;有了地图,你一眼看出某个导航方案为什么绕路。<br><br>CoALA 的地图有三块:<b>记忆</b>(working / episodic / semantic / procedural 四类)、<b>动作空间</b>(内部记忆操作 + 外部环境动作)、<b>决策循环</b>(规划 → 执行 → 观察 → 反思)。所有记忆论文都能放进这张图:MemGPT 在动"记忆换页",PlugMem 在改"记忆的存储格式",Generative Agents 在改"检索打分"。</div>
+      <p>它的两个实际用途:</p>
+      <ul>
+        <li><b>读论文的坐标系</b>:看到一篇记忆论文,先问"它动了四类记忆里的哪类?动了存储、检索还是决策?"——定位完,机制基本就懂了一半。</li>
+        <li><b>设计 agent 的 checklist</b>:搭 agent 前,按它的结构过一遍"我的记忆分几层、动作空间有哪些、决策循环怎么走",避免漏项。</li>
+      </ul>
+    </div>
+
+    <div class="pros-cons">
+      <div class="pros">
+        <h4>✅ 优点</h4>
+        <ul>
+          <li><b>统一语言</b>:让所有记忆论文可以横向比较,省大量阅读时间。</li>
+          <li><b>前瞻性</b>:它预测的"记忆操作作为动作"后来被 Anthropic context editing 等验证。</li>
+        </ul>
+      </div>
+      <div class="cons">
+        <h4>⚠️ 缺点</h4>
+        <ul>
+          <li><b>只回答"该有什么",不回答"怎么实现"</b>:框架不给具体算法。</li>
+          <li><b>偏分类学</b>:对"哪个方案更好"没有判断力。</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="scenario">
+      <div class="scenario-box">
+        <div class="lbl">🎯 适用场景</div>
+        <p><b>研究者 / 学习者</b>:建立 agent 记忆的全局认知;写方案前的架构设计。</p>
+        <div class="lbl" style="margin-top:10px">❓ 为什么偏偏是它适用</div>
+        <p>它的价值不在"能用",而在"能想清楚"。对要系统学习的人(比如你),它是性价比最高的第一份阅读材料——先用 30 分钟建立坐标系,后面每篇论文都能少读一半。对纯工程落地,它没有直接产出,所以工程团队常跳过它,这就是"为什么很多人觉得论文看不懂"的原因之一——缺地图。</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="work">
+    <div class="work-head">
+      <h3>LongMemEval / LOCOMO(记忆评测基准)</h3>
+      <div class="work-meta"><span>ICLR 2025 / 2024</span><span>arXiv:2410.10813 / 2402.17753</span></div>
+      <span class="tech-tag theory">评测标准</span>
+    </div>
+
+    <p class="one-liner"><span class="pitch">一句话:</span> 记忆系统的"期末考试":LongMemEval 用 500 道题(信息抽取、多会话推理、时序推理、知识更新、弃答)考"长时间交互后你还记不记得、会不会用",并发现一个残酷事实——持续交互下记忆准确率普遍掉约 30%。</p>
+
+    <div class="subblock">
+      <h4>🧠 机制原理(先讲类比)</h4>
+      <div class="analogy">📝 <b>想象"期末考"和"随堂小测"的区别:</b> 大多数记忆论文的评测像随堂小测——刚讲完就考(短对话里测记忆),当然考得好。LongMemEval 是期末考:和用户持续交互很久(长对话、多会话)之后,再考"你还记得第 3 轮说的文件名吗?用户 2 小时前改了偏好你知道吗?信息不确定时你会不会老实说不知道?"<br><br>它把"记忆好不好"拆成五个维度:信息抽取(还记得事实吗)、多会话推理(能跨会话串联吗)、时序推理(知道事情先后吗)、知识更新(旧信息被推翻后你还用旧的吗)、弃答(不知道时会不会胡说)。</div>
+      <p>关键发现与用法:</p>
+      <ul>
+        <li><b>30% 掉点</b>:论文报告持续交互下准确率显著下降——"记忆系统在长对话里都会退化"是普遍现象,不是个别方案的问题。</li>
+        <li><b>怎么用</b>:任何记忆方案都可以在 LongMemEval 上跑分横向比较(PlugMem 90.2 就是在这考的)。</li>
+        <li><b>LOCOMO 是更早的同类</b>:专注"长时间对话中的记忆保持与利用",LongMemEval 在其基础上扩展了时序/更新/弃答等维度。</li>
+      </ul>
+      <div class="callout warn">⚠️ <b>注意 benchmark 的坑:</b> 厂商/论文引用的分数常常是在<b>各自改过的 harness</b> 下跑的,Mem0 和 Zep 都引 LongMemEval,但评测方式不完全一致,分数不能直接横比。参考时看"同一次评测里的相对差距",别信绝对值。</div>
+    </div>
+
+    <div class="scenario">
+      <div class="scenario-box">
+        <div class="lbl">🎯 适用场景</div>
+        <p><b>方案选型 / 论文对比 / 自研验证</b>:挑记忆方案前用它跑分;自己做记忆功能时,把它的问题类型抄成自己的回归测试。</p>
+        <div class="lbl" style="margin-top:10px">❓ 为什么偏偏是它适用</div>
+        <p>评测基准适用的场景是<b>"需要公平比较"</b>的地方——买方案、发论文、验收自研。它的价值不是"分数好看",而是<b>把"记忆好不好"变成可重复测量的量</b>。对你 dummy-agent 的意义:不用跑完整的 500 题,把五类问题的出题思路抄 20-30 题,就是你 Phase 2.4 的回归测试集(和 Phase 2.2 的 mini 事实召回集是同一思路)。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ================================================================ -->
+<!-- SECTION 7 : 横向对比总表                                        -->
+<!-- ================================================================ -->
+<section id="s7">
+  <div class="sec-head">
+    <h2>07 · 横向对比总表<span class="sec-tag">一页看懂全部</span></h2>
+    <div class="sec-desc">把 15 项工作压到一张表里。选型时先看"信息粒度"和"成本"两列,基本能排除一半。</div>
+  </div>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>工作</th><th>派系</th><th>存什么(信息粒度)</th><th>检索/取用方式</th><th>主要成本</th><th>一句话适用场景</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td><b>MemGPT/Letta</b></td><td>一 · OS式</td><td>原文 + 常驻核心块</td><td>agent 自主换页(工具调用)</td><td>每次换页的 token 与延迟</td><td>长程自主 agent、研究"agent 自管记忆"</td></tr>
+        <tr><td><b>MemoryBank</b></td><td>二 · 检索式</td><td>原文 + LLM 定期整合</td><td>向量相似度 + 定期回顾</td><td>LLM 整合/遗忘判断</td><td>长期陪伴聊天,模糊回忆</td></tr>
+        <tr><td><b>Generative Agents</b></td><td>二 · 检索式</td><td>观察流 + 反思</td><td>recency×importance×relevance 打分</td><td>每观察打分 + 反思,贵</td><td>多 agent 社会模拟 / 角色扮演</td></tr>
+        <tr><td><b>L-MEM/MemInsight</b></td><td>二 · 检索式</td><td>结构化条目(persona+episodic)</td><td>向量检索注入</td><td>LLM 抽取</td><td>大厂助手的产品级记忆(厂商专属)</td></tr>
+        <tr><td><b>Wormhole Memory</b></td><td>二 · 检索式</td><td>摘要 + 检索信号</td><td>两级:信号预筛 → 原文精取</td><td>信号生成</td><td>历史极长、每次只取小段的跨会话问答</td></tr>
+        <tr><td><b>Zep/Graphiti</b></td><td>三 · 结构化</td><td>时序知识图谱</td><td>图 + 时间查询</td><td>实体抽取 + 图基建,重</td><td>企业 CRM/客服,关系与时序推理</td></tr>
+        <tr><td><b>HippoRAG</b></td><td>三 · 结构化</td><td>三元组知识图谱</td><td>个性化 PageRank 多跳</td><td>建图(一次性 LLM 抽取)</td><td>大规模文档库多跳问答</td></tr>
+        <tr><td><b>A-MEM</b></td><td>三 · 结构化</td><td>笔记卡 + 链接网络</td><td>向量 + 链接混合</td><td>写卡/链接/演化多次 LLM</td><td>研究型长期记忆,知识织网</td></tr>
+        <tr><td><b>PlugMem</b></td><td>三 · 结构化</td><td>知识单元(事实+技能)图</td><td>概念/意图路由 + 蒸馏</td><td>三组件管线,每步 LLM</td><td>任意 agent 通用记忆底座,长程决策</td></tr>
+        <tr><td><b>Mem0</b></td><td>四 · 产品</td><td>事实条目(冲突更新)</td><td>API: add/search/update/delete</td><td>每次抽取+更新</td><td>生产助手快速加记忆,不想造轮子</td></tr>
+        <tr><td><b>LangMem</b></td><td>四 · 产品</td><td>框架内记忆对象</td><td>工具调用,绑 LangGraph</td><td>生态锁定</td><td>已经在用 LangGraph 的团队</td></tr>
+        <tr><td><b>厂商内置</b></td><td>四 · 产品</td><td>厂商托管</td><td>自动注入</td><td>不可移植</td><td>个人用官方客户端</td></tr>
+        <tr><td><b>MemoryLLM/M+/BMAS</b></td><td>五 · 权重</td><td>参数内记忆</td><td>零检索,直接"知道"</td><td>训练/微调</td><td>有训练能力的团队,静态知识注入</td></tr>
+        <tr><td><b>CoALA</b></td><td>理论</td><td>—(坐标系)</td><td>—</td><td>—</td><td>读论文前的地图,架构设计 checklist</td></tr>
+        <tr><td><b>LongMemEval/LOCOMO</b></td><td>评测</td><td>—(标尺)</td><td>—</td><td>—</td><td>方案选型 / 自研回归测试</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout info">📌 <b>选型心法:</b> ① 记忆需求是"独立事实"→ Mem0/扁平存储;② 是"关系 + 变化"→ Zep 类图方案;③ 是"经验跨任务复用"→ PlugMem 类知识单元;④ 是"表现得像记得"→ Generative Agents 类打分检索;⑤ 只是"别丢上下文"→ 压缩 + 持久化就够,根本不用上记忆系统。</div>
+</section>
+
+<!-- ================================================================ -->
+<!-- SECTION 8 : 落地建议                                            -->
+<!-- ================================================================ -->
+<section id="s8">
+  <div class="sec-head">
+    <h2>08 · 对 dummy-agent 的落地建议<span class="sec-tag green">从小做起</span></h2>
+    <div class="sec-desc">你不需要 15 个方案,只需要按路线图逐步拿走每个方案里"最值得偷的那一点"。</div>
+  </div>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>Roadmap 阶段</th><th>偷谁的思路</th><th>具体做法</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><b>Phase 2.2 压缩</b>(进行中)</td><td>MemGPT(换页思想) + 自研两级策略</td><td>阈值触发(ToolResult 折叠 + 增量摘要);"谁决定换页"取中间态:先框架写死,观察后再说要不要 agent 自主</td></tr>
+        <tr><td><b>Phase 2.3b FTS 搜索</b></td><td>Hermes state.db 实测结论</td><td>中文搜索直接用 <span class="mono">FTS5 trigram</span> tokenizer,别用默认分词(标准 FTS5 对中文只能整句匹配)——这是已验证的现成答案</td></tr>
+        <tr><td><b>Phase 2.4 跨 Session 记忆</b></td><td>PlugMem(知识单元) + Mem0(两阶段) 的低配</td><td>事实抽取 → 结构化条目(带时间/来源)→ 冲突更新 → 按需注入;先把 LongMemEval 五类题型抄成 20-30 题回归集</td></tr>
+        <tr><td><b>Phase 3 自主学习</b></td><td>Hermes skills 机制</td><td>"工具使用模式学习" = 程序性记忆:把成功的多步流程存成可加载的 SKILL.md 式文档</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout warn">⚠️ <b>一个提醒:</b> 记忆系统是"越早做越亏,越晚做越赚"的组件——先用最简单方案跑通,等你真的遇到"上下文不够 / 用户重复提问 / 经验不复用"的实证痛点,再上对应的重方案。别为了用 PlugMem 而用 PlugMem。</div>
+</section>
+
+<!-- ================================================================ -->
+<!-- REFERENCES                                                      -->
+<!-- ================================================================ -->
+<section id="refs">
+  <div class="sec-head">
+    <h2>09 · 参考链接</h2>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>工作</th><th>链接</th></tr></thead>
+      <tbody>
+        <tr><td>MemGPT / Letta</td><td>arxiv.org/abs/2310.08560 · github.com/letta-ai/letta</td></tr>
+        <tr><td>MemoryBank</td><td>arxiv.org/abs/2310.00710</td></tr>
+        <tr><td>Generative Agents</td><td>arxiv.org/abs/2304.03442</td></tr>
+        <tr><td>Zep / Graphiti</td><td>arxiv.org/abs/2501.13956 · github.com/getzep/graphiti</td></tr>
+        <tr><td>HippoRAG</td><td>arxiv.org/abs/2405.14831 · github.com/osu-nlp-group/hipporag</td></tr>
+        <tr><td>A-MEM</td><td>arxiv.org/abs/2502.12110</td></tr>
+        <tr><td>PlugMem</td><td>arxiv.org/abs/2603.03296 · github.com/TIMAN-group/PlugMem · MSR Blog(2026-03)</td></tr>
+        <tr><td>Mem0</td><td>arxiv.org/abs/2504.19413 · github.com/mem0ai/mem0</td></tr>
+        <tr><td>CoALA</td><td>arxiv.org/abs/2309.02427</td></tr>
+        <tr><td>LongMemEval</td><td>arxiv.org/abs/2410.10813</td></tr>
+        <tr><td>LOCOMO</td><td>arxiv.org/abs/2402.17753</td></tr>
+        <tr><td>论文清单</td><td>github.com/TsinghuaC3I/Awesome-Memory-for-Agents</td></tr>
+        <tr><td>Hermes 记忆官方文档</td><td>hermes-agent.nousresearch.com/docs/user-guide/features/memory</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<div class="footer">
+  <p>本报告由 Hermes 生成 · 2026-08-05 · 配套摘要版: docs/memory-research.md · 调研对象为截至 2026-08 公开的论文/项目</p>
+  <p>内容按"机制 → 优劣 → 场景 → 为什么"四段式组织;所有 arXiv 编号与基准分数均来自公开来源,引用前建议核对最新版本。</p>
+</div>
+
+</div>
+</body>
+</html>
