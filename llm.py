@@ -139,6 +139,15 @@ class LLMClient:
         # 保存基础信息，后续需要打印或调试时使用
         self.base_url = base_url
 
+        # -------------------------------------------------------
+        # last_usage: 最近一次 API 调用返回的 usage(含 prompt_tokens)。
+        # Phase 2.2 上下文压缩用它做精确 token 计数——
+        # usage.prompt_tokens 就是模型这次实际看到的上下文大小
+        # (含 system prompt + 工具定义),比任何字符估算都可靠。
+        # 首次调用前为 None,should_compress 会跳过。
+        # -------------------------------------------------------
+        self.last_usage = None
+
     def chat(
         self,
         messages: list,
@@ -225,6 +234,13 @@ class LLMClient:
         # SDK 默认超时 60 秒，可以通过 timeout 参数调整。
         # -------------------------------------------------------
         response = self.client.chat.completions.create(**kwargs)
+
+        # -------------------------------------------------------
+        # 记录本次调用的 usage(token 计数),供上下文压缩做触发判断。
+        # getattr 防御:极少数 provider / 流式场景可能不返回 usage,
+        # 此时 last_usage 为 None,压缩逻辑会跳过(安全降级)。
+        # -------------------------------------------------------
+        self.last_usage = getattr(response, "usage", None)
 
         return response.choices[0].message
 
