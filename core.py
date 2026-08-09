@@ -88,7 +88,12 @@ from llm import LLMClient
 from tools import ToolRegistry
 from prompt import build_system_prompt
 from session_store import SessionStore
-from compressor import ContextCompressor, CompressionConfig, CompressionResult
+from compressor import (
+    ContextCompressor,
+    CompressionConfig,
+    CompressionResult,
+    strip_meta,
+)
 
 
 # ===========================================================
@@ -240,8 +245,10 @@ class DummyAgent:
             # 2a. 调用 LLM
             # 传入当前完整历史 + 工具定义
             # LLM 返回的 message 可能包含 content 或 tool_calls
+            # strip_meta:压缩摘要消息携带的 _meta 是内部元数据,
+            # 发 API 前必须剥离(DeepSeek 对未知顶层字段严格,见 D6)
             response_message = self.llm.chat(
-                messages=self.history,
+                messages=strip_meta(self.history),
                 tools=self.tool_definitions,
                 temperature=0.3,  # 工具调用时低温度更稳定
             )
@@ -369,8 +376,10 @@ class DummyAgent:
             print(f"⚠️ 压缩异常({type(e).__name__}): 已跳过,对话继续")
             return
 
+        persist_error = None
         if result.success:
             self.history = result.history
+            self.compressor.register_success()
             try:
                 self._persist_history()
                 # 决策 C:persist 重写已删掉折叠前的 tool 原文,这里补回归档表
@@ -379,12 +388,20 @@ class DummyAgent:
                         self.current_session_id, result.folded_originals
                     )
             except Exception as e:
+                persist_error = str(e)
                 print(f"⚠️ 压缩后落库失败: {e}(内存已更新,下次 persist 重写)")
         else:
             self.compressor.register_failure()
             print(f"⚠️ 压缩失败({result.error_type}): 已跳过,对话继续")
 
-        self._log_compression_event(result, last_tokens)
+        # 事件日志:成败都记;落库/归档失败也写入 error_type=persist_failed,
+        # 使"落库失败率"可统计(plan 6.5,print 不可追溯,error_type 可统计)
+        self._log_compression_event(
+            result,
+            last_tokens,
+            error_type="persist_failed" if persist_error else None,
+            error_msg=persist_error,
+        )
 
     def _log_compression_event(
         self,

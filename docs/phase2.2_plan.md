@@ -206,14 +206,21 @@ if self.compressor.should_compress(
 ```python
 def _summarize_prefix(self, history) -> tuple[list, int]:
     """旧摘要 + 新块 → 新摘要。返回 (新历史, covers)。
-    失败返回 (原 history, 0),由调用方决定降级。"""
+    失败抛 SummaryError,由 compress() 降级为 L1-only。"""
     # 1. 找已有摘要(_meta.compressed),取旧摘要 + 旧 covers
     # 2. 找 cut 点:user 消息倒数的 recent_turns_keep 个,cut 在 user 边界
     #    (保证 tool_calls/tool 配对完整)
-    # 3. 待压块 = 摘要之后到 cut 之前;空则跳过
-    # 4. 调 LLM(见 _call_summary_llm,含重试与内容校验)
-    # 5. 新历史 = system 消息 + [摘要消息(role=user, _meta.covers)] + 最近 N 轮
+    # 3. 待压块 = 摘要之后到 cut 之前(system prompt 永不被摘要);空则跳过
+    # 4. 调 LLM(见 _call_summary_llm:瞬时错误重试 summary_retry 次,
+    #    空摘要不重试;失败抛 SummaryError)
+    # 5. 新历史 = system 消息 + [摘要消息(role=system, _meta.covers)] + 最近 N 轮
 ```
+
+> 实现记录(2026-08-07):
+> - 摘要消息 role 用 `system`(见 context-compression.md D4 修订):
+>   避免与最近轮第一条 user 消息连续,违反 role 交替约束
+> - **strip_meta 从 Step 6 前置到 Step 5**:L2 摘要消息一落地就带 _meta,
+>   发 API 前必须剥离(否则 DeepSeek 可能拒收),依赖顺序决定提前
 
 ```python
 def _call_summary_llm(self, old_summary, block) -> str:
