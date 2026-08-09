@@ -37,7 +37,8 @@
 | `compressor.py` | 新增 | 压缩逻辑 + 容错(全部纯逻辑,可单测) |
 | `tests/test_compression.py` | 新增 | 测试集 + 容错用例 |
 | `llm.py` | 修改 | `chat()` 暴露 `last_usage`(1 行) |
-| `core.py` | 修改 | 触发点 + strip_meta + 事件日志(约 30 行) |
+| `core.py` | 修改 | 触发点 + strip_meta + 事件日志 + 折叠原文归档(约 40 行) |
+| `session_store.py` | 修改 | 新增 `tool_result_archive` 表 + 归档写入/查询方法(决策 C) |
 | `.gitignore` | 修改 | 追加 `logs/compression.jsonl`(若 logs/ 已忽略则无需) |
 
 ## 4. 架构总览
@@ -108,26 +109,61 @@ def should_compress(last_prompt_tokens) -> bool:
 
 验证:边界测试(临界值上下各 1 token)、断路器暂停时返回 False。
 
-### Step 3 · L1 ToolResult 折叠(30 分钟)—— 核心,先做零成本的
+### Step 3 · L1 ToolResult 折叠 + 原文归档(1 小时)—— 核心,先做零成本的
+
+决策 C 落地:折叠时捕获被截断的原文,交 session_store 写入归档表。
 
 ```python
-def _fold_tool_results(self, history) -> tuple[list, int]:
+# compressor.py
+def _fold_tool_results(self, history) -> tuple[list, int, list[dict]]:
     """只改 role=tool 且超长的消息 content,不动结构(配对天然安全)。
-    返回 (新历史, 折叠条数)。"""
+
+    返回 (新历史, 折叠条数, 折叠原文列表)。
+    折叠原文 = [{"tool_call_id":..., "content": 完整原文}],供调用方归档(决策 C)。"""
     folded = 0
+    originals: list[dict] = []
     out = [dict(m) for m in history]          # 浅拷贝,保持原子性
     for msg in out:
         if msg.get("role") == "tool" and isinstance(msg.get("content"), str):
             c = msg["content"]
             if len(c) > self.config.tool_result_max_chars:
+                originals.append({"tool_call_id": msg.get("tool_call_id"), "content": c})
                 msg["content"] = (c[:self.config.tool_result_keep_head]
-                    + f"\n...[ToolResult 已截断: 原文 {len(c)} 字符, 完整内容见 SQLite session.db]...\n"
+                    + f"\n...[ToolResult 已截断: 原文 {len(c)} 字符, 完整内容见归档表 tool_result_archive]...\n"
                     + c[-self.config.tool_result_keep_tail:])
                 folded += 1
-    return out, folded
+    return out, folded, originals
 ```
 
-验证:1000 字 tool 消息 → 断言截断格式;短消息原样;其他 role 不碰。
+CompressionResult 增加字段(决策 C):
+
+```python
+folded_originals: list[dict] | None = None  # 折叠的 tool 原文,交调用方归档
+```
+
+session_store.py 新增(决策 C):
+
+```sql
+CREATE TABLE IF NOT EXISTS tool_result_archive (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    tool_call_id TEXT,           -- 稳定键:压缩重写不改变 tool_call_id
+    folded_at TEXT NOT NULL,     -- 折叠时间
+    original_len INTEGER NOT NULL,  -- 原文长度
+    content TEXT NOT NULL        -- 完整原文
+)
+```
+
+```python
+def archive_tool_results(self, session_id, items) -> None:
+    """写入归档表;同 (session_id, tool_call_id) 覆盖旧值(幂等)。"""
+
+def get_archived_tool_result(self, session_id, tool_call_id) -> str | None:
+    """按需取回折叠前的完整原文。"""
+```
+
+验证:1000 字 tool 消息 → 断言截断格式 + originals 捕获正确;短消息不折叠不捕获;
+其他 role 不碰;归档表写入后按 tool_call_id 取回 == 原文。
 
 ### Step 4 · core.py 触发点接入(20 分钟)
 
@@ -140,6 +176,10 @@ if self.compressor.should_compress(
         self.history = result.history
         try:
             self._persist_history()
+            # 决策 C:折叠原文归档(重写已删掉折叠前的 tool 原文,这里补回)
+            if result.folded_originals:
+                self.session_store.archive_tool_results(
+                    self.current_session_id, result.folded_originals)
         except Exception as e:
             print(f"⚠️ 压缩后落库失败: {e}(内存已更新,下次 persist 重写)")
     else:
