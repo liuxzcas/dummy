@@ -16,12 +16,16 @@ docs/phase2.2_plan.md 第 6 节容错设计):
 - 自定义字段收在 _meta 下,发 API 前由 strip_meta 剥离
 - 断路器:连续失败达阈值后暂停压缩,避免白烧 token
 
-本文件当前为 Step 2 骨架:配置 + 结果对象 + 触发判断 + 断路器状态。
-L1 折叠(L1)与增量摘要(L2)分别在后续 Step 3 / Step 5 实现。
+进度:
+- Step 2: 配置 + 结果对象 + 触发判断 + 断路器状态
+- Step 3: L1 ToolResult 折叠 + 折叠原文捕获(决策 C:原文交归档表)
+- Step 5: L2 增量摘要(enable_l2=True 时 compress() 显式报错,防静默跳过)
 """
 
 from __future__ import annotations
 
+import json
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -34,11 +38,16 @@ class CompressionConfig:
     - window_tokens: 模型上下文窗口,DeepSeek-V3 按 64K 起步,按实际模型调整
     - threshold_ratio: 触发阈值,留 30% 余量给单次工具结果和摘要消息
     - recent_turns_keep: 保留最近 N 轮原文(按 user 消息计数)
+    - enable_l1/enable_l2: 两阶段独立开关,分阶段验证与调试用
     """
 
     window_tokens: int = 64000          # 模型上下文窗口
     threshold_ratio: float = 0.7        # 触发阈值:窗口的 70%
     recent_turns_keep: int = 6          # 保留最近 N 轮原文(按 user 消息计数)
+
+    # 阶段开关:L1/L2 独立可开关(分阶段验证与调试用)
+    enable_l1: bool = True
+    enable_l2: bool = True
 
     # L1 ToolResult 折叠参数
     tool_result_max_chars: int = 600    # 超过才折叠
@@ -83,14 +92,15 @@ class CompressionResult:
     error_type: str | None = None   # "summary_timeout"/"empty_summary"/"invalid_history"/...
     error_msg: str | None = None
     duration_ms: int = 0
+    folded_originals: list[dict] | None = None  # 折叠的 tool 原文,交调用方归档(决策 C)
 
 
 class ContextCompressor:
-    """两级压缩器。Step 2 只提供骨架与触发判断,压缩逻辑后续实现。"""
+    """两级压缩器。"""
 
     def __init__(self, llm: Any, config: CompressionConfig | None = None):
-        # llm 目前只是占位:Step 2 的触发判断不依赖它,
-        # Step 5 的增量摘要才真正调用(llm.chat)。
+        # llm 在 Step 5 的增量摘要中才会真正用到(llm.chat),
+        # Step 3 的 L1 折叠不依赖它。
         self.llm = llm
         self.config = config or CompressionConfig()
 
@@ -136,14 +146,73 @@ class ContextCompressor:
         return last_prompt_tokens > threshold
 
     # ---------------------------------------------------------------
-    # 压缩入口(Step 3 / Step 5 实现)
+    # L1: ToolResult 折叠(Step 3,零 LLM 成本)
+    # ---------------------------------------------------------------
+    def _fold_tool_results(self, history: list[dict]) -> tuple[list[dict], int, list[dict]]:
+        """折叠超长的 tool 结果,只改 content,不动消息结构(配对天然安全)。
+
+        返回 (新历史, 折叠条数, 折叠原文列表)。
+        - 原子性:浅拷贝,原 history 不被修改
+        - 头尾保留:keep_head + keep_tail。启发式依据:命令输出/文件内容的
+          关键信息通常在头部概要或尾部结果/错误,中间是过程噪音
+        - 决策 C:被截断的完整原文捕获进 originals,交调用方写入归档表
+        - 标记文本面向未来的 agent 工具:含 tool_call_id,可按需取回原文
+        """
+        folded = 0
+        originals: list[dict] = []
+        out = [dict(m) for m in history]
+        for msg in out:
+            if msg.get("role") == "tool" and isinstance(msg.get("content"), str):
+                c = msg["content"]
+                if len(c) > self.config.tool_result_max_chars:
+                    tool_call_id = msg.get("tool_call_id")
+                    originals.append({"tool_call_id": tool_call_id, "content": c})
+                    msg["content"] = (
+                        c[: self.config.tool_result_keep_head]
+                        + f"\n...[ToolResult 已截断: 原文 {len(c)} 字符, "
+                          f"完整内容可查询归档表 tool_result_archive(tool_call_id={tool_call_id})]...\n"
+                        + c[-self.config.tool_result_keep_tail :]
+                    )
+                    folded += 1
+        return out, folded, originals
+
+    # ---------------------------------------------------------------
+    # 压缩入口
     # ---------------------------------------------------------------
     def compress(self, history: list[dict]) -> CompressionResult:
-        """执行压缩。Step 2 阶段为占位,防止误用半成品。
+        """执行压缩:先 L1 折叠(零成本),再 L2 增量摘要(Step 5 实现)。
 
-        完成后将依次接入:
-        - L1 ToolResult 折叠(Step 3,零 LLM 成本)
-        - L2 增量摘要(Step 5,失败降级 L1-only)
-        - 压缩后校验 _validate_history(Step 6)
+        不变量:
+        - 原子性:全程不修改原 history(浅拷贝);任何失败 success=False,
+          调用方继续用原历史
+        - 没活干时返回 strategy="none" 的成功结果(不是失败)
         """
-        raise NotImplementedError("compressor.compress(): Step 3 实现 L1 折叠")
+        start = time.perf_counter()
+        chars_before = sum(len(json.dumps(m, ensure_ascii=False)) for m in history)
+
+        result = CompressionResult(
+            success=True,
+            history=list(history),  # 浅拷贝起点
+            strategy_used="none",
+            chars_before=chars_before,
+        )
+
+        # L1: 折叠超长 tool 结果(确定性最强的一环,零 LLM)
+        if self.config.enable_l1:
+            folded, folded_count, originals = self._fold_tool_results(history)
+            if folded_count:
+                result.history = folded
+                result.strategy_used = "L1"
+                result.folded_count = folded_count
+                result.folded_originals = originals
+
+        # L2: 增量摘要(Step 5 实现;未实现前显式报错,防止静默跳过)
+        if self.config.enable_l2:
+            raise NotImplementedError("compressor.compress(): L2 增量摘要待 Step 5 实现")
+
+        result.chars_after = sum(
+            len(json.dumps(m, ensure_ascii=False)) for m in result.history
+        )
+        result.duration_ms = int((time.perf_counter() - start) * 1000)
+        self.register_success()
+        return result

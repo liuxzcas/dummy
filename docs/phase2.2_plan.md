@@ -80,9 +80,13 @@ return response.choices[0].message
 ```python
 @dataclass
 class CompressionConfig:
-    window_tokens: int = 64000        # DeepSeek-V3 起步值,按实际模型调整
+    window_tokens: int = 64000        # 模型上下文窗口,DeepSeek-V3 起步值,按实际模型调整
     threshold_ratio: float = 0.7      # 触发阈值:窗口的 70%
     recent_turns_keep: int = 6        # 保留最近 N 轮原文(按 user 消息计数)
+
+    # 阶段开关:L1/L2 独立可开关(分阶段验证与调试用)
+    enable_l1: bool = True
+    enable_l2: bool = True
     tool_result_max_chars: int = 600  # 超过才折叠
     tool_result_keep_head: int = 200
     tool_result_keep_tail: int = 100
