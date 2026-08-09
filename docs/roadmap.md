@@ -79,12 +79,31 @@
 
 #### Phase 2.3 — Session 持久化与搜索（已完成基础版）
 
+> 后续执行顺序（2026-08-10 定）：**Phase 2.3b（FTS 全文搜索）→ Phase 2.4（跨 Session 记忆）→ Phase 2 综合测试集**
+
 | 功能 | 状态 | 说明 |
 |------|------|------|
 | SQLite 存储 | ✅ 完成 | `sessions` / `messages` 表，`chat()` 自动写入数据库 |
 | 退出恢复 | ✅ 完成 | `/resume` 恢复最近一次会话，支持指定 `session_id` |
 | Session 列表 | ✅ 完成 | `/sessions` 查看会话列表与消息数量统计 |
-| 全文搜索 | ⬜ 待做 | 后续可接 FTS5 索引，支持按关键词搜索历史对话 |
+| 全文搜索（2.3b） | ⬜ 下一步 | FTS5 + trigram tokenizer（标准 unicode61 对中文只能整句匹配，trigram 方案经 Hermes state.db 双索引实证）；提供 /search 命令 |
+
+#### Phase 2.4 — 跨 Session 记忆（规划）
+
+> 设计来源：[memory-research.md](./memory-research.md)（PlugMem 简化版：事实抽取 → 结构化条目 → 按需注入）
+
+| 功能 | 状态 | 说明 |
+|------|------|------|
+| memories 表 | ⬜ 待做 | 事实条目：category / confidence / source_session |
+| 写入管线 | ⬜ 待做 | 对话后抽取事实；冲突处理"新覆盖旧 + 置信度裁决" |
+| 按需注入 | ⬜ 待做 | top-k 相关事实注入 system prompt（≤500 token） |
+| 回归集 | ⬜ 待做 | LongMemEval 五类题型转 20-30 题 |
+
+#### Phase 2 综合测试集（规划）
+
+> 2.3b 与 2.4 完成后实施：设计 comprehensive test cases 覆盖整个 Phase 2——
+> 持久化（upsert / 恢复 / 时间本地化）+ 压缩（现有 30 项套件 + 质量门 + 冒烟）+
+> 全文搜索（trigram 召回 / 中文检索）+ 跨 Session 记忆（注入 / 冲突 / 置信度）
 
 ### Phase 3 — 自主学习
 
@@ -93,7 +112,6 @@
 | 功能 | 说明 |
 |------|------|
 | Skills 系统 | 把复杂任务流程固化为可复用的 SKILL.md，下次自动加载 |
-| 跨 Session 记忆 | 持久化用户偏好、项目事实（SQLite + 向量 DB） |
 | Curator | 自动管理技能库：合并重复、标记过时、归档废弃 |
 
 ### Phase 4 — 自主运行
