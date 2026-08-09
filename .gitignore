@@ -28,3 +28,6 @@ tmp-*.db
 # Runtime artifacts
 session.db
 logs/
+
+# 冒烟测试临时目录(smoke_compress.py)
+.smoke-tmp-*/

@@ -14,10 +14,9 @@
 """
 import json
 import os
-import re
 import sys
-import tempfile
 import time
+import uuid
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -65,12 +64,13 @@ CONVO = [
 ]
 
 # 压缩后召回(答案必须在压缩后的上下文中可找到)
+# 期望用列表:多段事实必须全部出现在答案里(如"哪两级"→ L1 和 L2 都要)
 RECALL = [
-    ("上线日期是哪天?", "8 月 20 日"),
-    ("项目预算是多少?", "3000"),
-    ("技术讨论用什么语言?", "中文"),
-    ("压缩策略用哪两级?", "L1"),
-    ("错误日志放在哪里?", "errors.log"),
+    ("上线日期是哪天?", ["8 月 20 日"]),
+    ("项目预算是多少?", ["3000"]),
+    ("技术讨论用什么语言?", ["中文"]),
+    ("压缩策略用哪两级?", ["L1", "L2"]),
+    ("错误日志放在哪里?", ["errors.log"]),
 ]
 
 
@@ -89,6 +89,15 @@ def read_event_lines() -> list[dict]:
     return events
 
 
+def git_status() -> set[str]:
+    """仓库工作区快照(modified/untracked 文件集),用于检测 agent 运行期的副作用。"""
+    import subprocess
+    out = subprocess.run(
+        ["git", "status", "--porcelain"], capture_output=True, text=True, cwd=REPO
+    ).stdout
+    return set(l.strip() for l in out.splitlines() if l.strip())
+
+
 def main() -> int:
     api_key = os.environ.get("DUMMY_API") or os.environ.get("DUMMY_AGENT_API_KEY", "")
     if not api_key:
@@ -98,69 +107,106 @@ def main() -> int:
     llm = LLMClient(api_key=api_key, base_url=base_url or None, model="deepseek-chat") if base_url \
         else LLMClient(api_key=api_key, model="deepseek-chat")
 
-    agent = DummyAgent(llm_client=llm, tool_registry=create_default_registry())
-    tmp = tempfile.mkdtemp(prefix="smoke-")
-    agent.session_store = SessionStore(os.path.join(tmp, "smoke.db"))
-    agent.compressor = ContextCompressor(llm, CompressionConfig(window_tokens=8000))
+    # 临时 db 放项目本地(不用 %TEMP%):避开 Windows 临时目录清理器/扫描器
+    # 对运行中文件的瞬态干扰(实测出现过 unable to open database file)
+    tmp = os.path.join(REPO, ".smoke-tmp-" + uuid.uuid4().hex[:8])
+    os.makedirs(tmp, exist_ok=True)
+    db_path = os.path.join(tmp, "smoke.db")
 
     events_before = len(read_event_lines())
     conv_before = set(f for f in os.listdir(LOG_DIR) if f.startswith("conversation_")) if os.path.isdir(LOG_DIR) else set()
+    status_before = git_status()
 
-    print(f"=== 冒烟开始: {len(CONVO)} 轮 + {len(RECALL)} 个召回问题,窗口 8000(阈值 5600) ===")
-    t_start = time.time()
-    errors = []
-    for i, prompt in enumerate(CONVO):
-        t0 = time.time()
-        try:
-            reply = agent.chat(prompt)
-            print(f"[{i+1:02d}/{len(CONVO)}] ok {time.time()-t0:.1f}s | 历史 {len(agent.history)} 条 | tokens={llm.last_usage.prompt_tokens if llm.last_usage else '?'}")
-        except Exception as e:
-            errors.append((i, type(e).__name__, str(e)))
-            print(f"[{i+1:02d}/{len(CONVO)}] ❌ {type(e).__name__}: {str(e)[:100]}")
-    duration_total = time.time() - t_start
+    def cleanup() -> None:
+        # 清理:临时 db、事件日志、本次对话快照
+        agent.session_store = None
+        import shutil
+        shutil.rmtree(tmp, ignore_errors=True)
+        if os.path.isdir(tmp):
+            print(f"  ⚠️ 临时目录清理失败(可能被占用): {tmp}")
+        # agent 可能通过 write_file 等工具改仓库文件(实测改过 .env.example):
+        # 检测并告警,由操作者决定是否还原
+        new_dirty = git_status() - status_before
+        if new_dirty:
+            print(f"  ⚠️ 冒烟期间仓库出现新的文件改动(agent 工具副作用),请检查: {sorted(new_dirty)}")
+        if os.path.exists(EVENT_LOG):
+            lines = open(EVENT_LOG, encoding="utf-8").read().splitlines()
+            with open(EVENT_LOG, "w", encoding="utf-8") as f:
+                f.write("\n".join(lines[:events_before]) + ("\n" if lines[:events_before] else ""))
+        for f in os.listdir(LOG_DIR):
+            if f.startswith("conversation_") and f not in conv_before:
+                os.remove(os.path.join(LOG_DIR, f))
 
-    events = read_event_lines()[events_before:]
-    print(f"\n=== 压缩事件: {len(events)} 次 ===")
-    for ev in events:
-        ratio = ev["chars_after"] / ev["chars_before"] if ev.get("chars_before") else 0
-        print(f"  {ev['ts']} | strategy={ev['strategy']:<5} folded={ev['folded']} covers={ev['covers']} "
-              f"chars {ev['chars_before']}→{ev['chars_after']} ({ratio:.0%}) | {ev['duration_ms']}ms | success={ev['success']} err={ev['error_type']}")
+    def make_agent() -> DummyAgent:
+        agent = DummyAgent(llm_client=llm, tool_registry=create_default_registry())
+        agent.session_store = SessionStore(db_path)
+        agent.compressor = ContextCompressor(llm, CompressionConfig(window_tokens=8000))
+        return agent
 
-    print(f"\n=== 压缩后事实召回 ===")
-    recall_ok = 0
-    for q, expect in RECALL:
-        try:
-            ans = agent.chat(q)
-            ok = expect.lower() in ans.lower()
-            recall_ok += ok
-            print(f"  {'✅' if ok else '❌'} Q: {q}  →  {ans[:60].strip()}")
-        except Exception as e:
-            print(f"  ❌ Q: {q} → 异常 {type(e).__name__}")
-    recall_total = len(RECALL)
+    agent = make_agent()
 
-    print(f"\n=== 汇总 ===")
-    print(f"轮数: {len(CONVO)} | 总耗时: {duration_total:.0f}s | 调用错误: {len(errors)}")
-    if events:
-        ratios = [ev["chars_after"] / ev["chars_before"] for ev in events if ev.get("chars_before")]
-        lat = [ev["duration_ms"] for ev in events]
-        print(f"压缩率(压缩后/前): {min(ratios):.0%} ~ {max(ratios):.0%} | 摘要延迟: {sum(lat)/len(lat):.0f}ms 平均")
-    print(f"召回: {recall_ok}/{recall_total} | 压缩触发: {'✅ ' + str(len(events)) + ' 次' if events else '❌ 未触发'}")
+    def chat_with_retry(prompt: str, retries: int = 2) -> str:
+        """瞬态 db 错误(锁/扫描器)重试;真实 LLM/工具错误不重试。"""
+        for attempt in range(retries + 1):
+            try:
+                return agent.chat(prompt)
+            except Exception as e:
+                if "unable to open database file" not in str(e) or attempt == retries:
+                    raise
+                print(f"    (db 瞬态错误,重试 {attempt + 1}/{retries})")
+                time.sleep(2)
+        raise RuntimeError("unreachable")
 
-    # 清理:临时 db、事件日志、本次对话快照
-    agent.session_store = None
-    import shutil
-    shutil.rmtree(tmp, ignore_errors=True)
-    if os.path.exists(EVENT_LOG):
-        lines = open(EVENT_LOG, encoding="utf-8").read().splitlines()
-        with open(EVENT_LOG, "w", encoding="utf-8") as f:
-            f.write("\n".join(lines[:events_before]) + ("\n" if lines[:events_before] else ""))
-    for f in os.listdir(LOG_DIR):
-        if f.startswith("conversation_") and f not in conv_before:
-            os.remove(os.path.join(LOG_DIR, f))
+    try:
+        print(f"=== 冒烟开始: {len(CONVO)} 轮 + {len(RECALL)} 个召回问题,窗口 8000(阈值 5600) ===")
+        t_start = time.time()
+        errors = []
+        for i, prompt in enumerate(CONVO):
+            t0 = time.time()
+            try:
+                reply = chat_with_retry(prompt)
+                print(f"[{i + 1:02d}/{len(CONVO)}] ok {time.time() - t0:.1f}s | 历史 {len(agent.history)} 条 | tokens={llm.last_usage.prompt_tokens if llm.last_usage else '?'}")
+            except Exception as e:
+                errors.append((i, type(e).__name__, str(e)))
+                if "database" in str(e).lower():
+                    print(f"[诊断] db={db_path} 目录存在={os.path.isdir(tmp)} 文件存在={os.path.isfile(db_path)}")
+                print(f"[{i + 1:02d}/{len(CONVO)}] ❌ {type(e).__name__}: {str(e)[:100]}")
+        duration_total = time.time() - t_start
 
-    ok = bool(events) and recall_ok >= recall_total * 0.9 and not errors
-    print(f"\n冒烟结论: {'PASS' if ok else 'FAIL'}(触发={len(events)}, 召回={recall_ok}/{recall_total}, 错误={len(errors)})")
-    return 0 if ok else 1
+        events = read_event_lines()[events_before:]
+        print(f"\n=== 压缩事件: {len(events)} 次 ===")
+        for ev in events:
+            ratio = ev["chars_after"] / ev["chars_before"] if ev.get("chars_before") else 0
+            print(f"  {ev['ts']} | strategy={ev['strategy']:<5} folded={ev['folded']} covers={ev['covers']} "
+                  f"chars {ev['chars_before']}→{ev['chars_after']} ({ratio:.0%}) | {ev['duration_ms']}ms | success={ev['success']} err={ev['error_type']}")
+
+        print(f"\n=== 压缩后事实召回 ===")
+        recall_ok = 0
+        for q, expects in RECALL:
+            try:
+                ans = chat_with_retry(q)
+                ok = all(e.lower() in ans.lower() for e in expects)  # 全部期望子串必须出现
+                recall_ok += ok
+                missing = [e for e in expects if e.lower() not in ans.lower()]
+                print(f"  {'✅' if ok else '❌'} Q: {q}  →  {ans[:60].strip()}" + (f"  [缺: {missing}]" if missing else ""))
+            except Exception as e:
+                print(f"  ❌ Q: {q} → 异常 {type(e).__name__}")
+        recall_total = len(RECALL)
+
+        print(f"\n=== 汇总 ===")
+        print(f"轮数: {len(CONVO)} | 总耗时: {duration_total:.0f}s | 调用错误: {len(errors)}")
+        if events:
+            ratios = [ev["chars_after"] / ev["chars_before"] for ev in events if ev.get("chars_before")]
+            lat = [ev["duration_ms"] for ev in events]
+            print(f"压缩率(压缩后/前): {min(ratios):.0%} ~ {max(ratios):.0%} | 摘要延迟: {sum(lat) / len(lat):.0f}ms 平均")
+        print(f"召回: {recall_ok}/{recall_total} | 压缩触发: {'✅ ' + str(len(events)) + ' 次' if events else '❌ 未触发'}")
+
+        ok = bool(events) and recall_ok >= recall_total * 0.9 and not errors
+        print(f"\n冒烟结论: {'PASS' if ok else 'FAIL'}(触发={len(events)}, 召回={recall_ok}/{recall_total}, 错误={len(errors)})")
+        return 0 if ok else 1
+    finally:
+        agent.session_store = None
+        cleanup()
 
 
 if __name__ == "__main__":
