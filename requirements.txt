@@ -23,3 +23,6 @@ json5>=0.15
 
 # Phase 2.1 : .env 文件自动加载
 python-dotenv>=1.0
+
+# Phase 2.2 : 压缩模块测试集(tests/test_compression.py)
+pytest>=7.0

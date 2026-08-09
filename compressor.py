@@ -347,6 +347,19 @@ class ContextCompressor:
                 result.error_type = e.error_type
                 result.error_msg = str(e)
 
+        # 压缩后结构校验(容错设计 6.1 #4):非法则回滚,压缩不能比不压缩更糟
+        if not _validate_history(result.history):
+            result.success = False
+            result.history = None
+            result.strategy_used = "none"
+            result.error_type = "invalid_history"
+            result.error_msg = "压缩结果结构非法(配对不完整),已回滚用原历史"
+            # 关键:被回滚的折叠绝不能归档——否则归档表与历史不一致
+            result.folded_count = 0
+            result.summary_covers = 0
+            result.folded_originals = None
+            return result
+
         result.chars_after = sum(
             len(json.dumps(m, ensure_ascii=False)) for m in result.history
         )
@@ -362,3 +375,44 @@ def strip_meta(history: list[dict]) -> list[dict]:
     tool_calls/tool_call_id)原样保留。
     """
     return [{k: v for k, v in m.items() if k != "_meta"} for m in history]
+
+
+def _validate_history(history: list[dict]) -> bool:
+    """压缩后结构校验:role 合法 + assistant tool_calls / tool 配对完整。
+
+    顺序扫描(比集合比对更严格,能抓"复用 id 的多余 tool 消息"):
+    1. 非空,首条 role=system
+    2. role 只允许 system / user / assistant / tool
+    3. assistant 带 tool_calls 后必须紧跟对应的 tool 消息:
+       pending 集合记账,任何非 tool 消息插入(pending 非空)→ 非法
+    4. tool 消息必须命中 pending:无主 / 多余 / 缺 id 都拒绝
+    5. 结尾 pending 必须清空(不允许未响应的 tool_calls)
+
+    为什么在校验:压缩器的任何 bug(如 cut 点切错、摘要替换错位)都可能
+    产生坏结构;发 API 前拦截的成本远低于 API 报错后排查。
+    """
+    if not history or history[0].get("role") != "system":
+        return False
+    valid_roles = {"system", "user", "assistant", "tool"}
+    pending: set[str] = set()
+    for m in history:
+        role = m.get("role")
+        if role not in valid_roles:
+            return False
+        if role == "tool":
+            cid = m.get("tool_call_id")
+            if cid is None or cid not in pending:
+                return False          # 无主 / 多余 / 缺 id
+            pending.discard(cid)
+        else:
+            if pending:
+                return False          # tool_calls 响应未配对就被打断
+            if role == "assistant":
+                ids = {
+                    tc.get("id") for tc in (m.get("tool_calls") or [])
+                    if tc.get("type") == "function"
+                }
+                if None in ids:
+                    return False
+                pending = set(ids)
+    return not pending                 # 不允许未响应的 tool_calls
