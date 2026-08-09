@@ -134,6 +134,12 @@ L1 先实现、先验证;L2 在 L1 之上叠加。两者独立可开关。
 - save_history 的"逐条 upsert + 删除超出新长度的尾部"逻辑正好承接
   历史缩水场景(7d60e11 已就绪)
 - 摘要消息本身也入库(带 _meta),`/resume` 恢复后格式依然合法
+- **决策 C(2026-08-07 定)**:压缩重写会 DELETE 被替换的原文,所以"磁盘
+  全文保留"只对未压缩部分成立。为兑现可逆性承诺中价值最高的部分:
+  **只归档 L1 折叠掉的 tool 结果原文**(纯截断、恢复价值大),写入独立的
+  `tool_result_archive` 表(键:session_id + tool_call_id);
+  L2 摘要替换的对话原文不保留(有意为之的提炼,恢复价值低)。
+  折叠标记文本指向归档表:`完整内容见归档表 tool_result_archive`
 
 ## 5. 模块设计:compressor.py(代码骨架)
 
@@ -217,7 +223,7 @@ class ContextCompressor:
                     msg["content"] = (
                         content[: cfg.tool_result_keep_head]
                         + f"\n...[ToolResult 已截断: 原文 {len(content)} 字符, "
-                          f"完整内容见 SQLite session.db]...\n"
+                          f"完整内容见归档表 tool_result_archive]...\n"
                         + content[-cfg.tool_result_keep_tail :]
                     )
                     folded += 1
