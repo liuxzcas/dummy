@@ -61,6 +61,22 @@ class SessionStore:
             ON messages(session_id, sequence)
             """
         )
+        # 折叠原文归档表(决策 C 2026-08-07):
+        # L1 折叠掉的超长 tool 结果原文,供未来的 agent 工具按需取回。
+        # 键 = (session_id, tool_call_id):tool_call_id 在压缩重写后保持稳定。
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS tool_result_archive (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                tool_call_id TEXT NOT NULL,
+                folded_at TEXT NOT NULL,
+                original_len INTEGER NOT NULL,
+                content TEXT NOT NULL,
+                UNIQUE(session_id, tool_call_id)
+            )
+            """
+        )
         conn.commit()
         conn.close()
 
@@ -205,3 +221,51 @@ class SessionStore:
         for row in rows:
             history.append(json.loads(row["payload"]))
         return history
+
+    def archive_tool_results(self, session_id: str, items: list[dict[str, Any]]) -> None:
+        """归档被 L1 折叠的 tool 结果原文(决策 C)。
+
+        键 = (session_id, tool_call_id):同一键重复写入覆盖旧值(幂等,
+        多次压缩不会产生重复归档)。单事务 + busy_timeout,与 save_history 一致。
+        """
+        if not items:
+            return
+        conn = sqlite3.connect(self.db_path)
+        try:
+            conn.execute("PRAGMA busy_timeout = 10000")
+            conn.execute("BEGIN IMMEDIATE")
+            now = self._now_iso()
+            for item in items:
+                tool_call_id = item.get("tool_call_id")
+                content = item.get("content") or ""
+                conn.execute(
+                    """
+                    INSERT INTO tool_result_archive (
+                        session_id, tool_call_id, folded_at, original_len, content
+                    ) VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(session_id, tool_call_id) DO UPDATE SET
+                        folded_at = excluded.folded_at,
+                        original_len = excluded.original_len,
+                        content = excluded.content
+                    """,
+                    (session_id, tool_call_id, now, len(content), content),
+                )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def get_archived_tool_result(self, session_id: str, tool_call_id: str) -> str | None:
+        """取回被折叠前的完整原文;不存在返回 None。"""
+        conn = sqlite3.connect(self.db_path)
+        row = conn.execute(
+            """
+            SELECT content FROM tool_result_archive
+            WHERE session_id = ? AND tool_call_id = ?
+            """,
+            (session_id, tool_call_id),
+        ).fetchone()
+        conn.close()
+        return row[0] if row else None
