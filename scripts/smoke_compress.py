@@ -14,6 +14,7 @@
 """
 import json
 import os
+import re
 import sys
 import time
 import uuid
@@ -72,6 +73,15 @@ RECALL = [
     ("压缩策略用哪两级?", ["L1", "L2"]),
     ("错误日志放在哪里?", ["errors.log"]),
 ]
+
+
+def norm(s: str) -> str:
+    """归一化:小写 + 去所有空白(与 quality_gate 一致)。
+
+    空白差异("8 月 20 日" vs "8月20日")是测量噪音不是质量失败,
+    必须归一化掉——否则严格断言会误报(实测踩过)。
+    """
+    return re.sub(r"\s+", "", (s or "").lower())
 
 
 def read_event_lines() -> list[dict]:
@@ -185,9 +195,10 @@ def main() -> int:
         for q, expects in RECALL:
             try:
                 ans = chat_with_retry(q)
-                ok = all(e.lower() in ans.lower() for e in expects)  # 全部期望子串必须出现
+                # 归一化后判定:全部期望子串必须出现(空白差异不算失败)
+                ok = all(norm(e) in norm(ans) for e in expects)
                 recall_ok += ok
-                missing = [e for e in expects if e.lower() not in ans.lower()]
+                missing = [e for e in expects if norm(e) not in norm(ans)]
                 print(f"  {'✅' if ok else '❌'} Q: {q}  →  {ans[:60].strip()}" + (f"  [缺: {missing}]" if missing else ""))
             except Exception as e:
                 print(f"  ❌ Q: {q} → 异常 {type(e).__name__}")
