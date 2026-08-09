@@ -75,7 +75,7 @@
 
 > 产物：`compressor.py`（两级压缩+容错+校验）、`session_store.py` 归档表、`llm.py` last_usage、
 > `core.py` 触发点接入、`tests/test_compression.py`、`scripts/quality_gate.py`、`scripts/smoke_compress.py`
-> 已知特性：单轮 chat 内长工具循环时 L2 不触发（按 user 边界设计，只有 L1 折叠）——真实窗口（64K）下影响有限，留作后续决策点
+> 已知特性：单轮 chat 内长工具循环时 L2 不触发（user 消息只在 chat() 入口增加，工具迭代不增加 user 计数，`_summarize_prefix` 的 ≤6 轮守卫短路；此时仅 L1 折叠工作）——真实窗口（64K）下影响有限，详细原因与演进方向见 [phase2.2_plan.md 8.1](./phase2.2_plan.md)
 
 #### Phase 2.3 — Session 持久化与搜索（已完成基础版）
 
