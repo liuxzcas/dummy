@@ -178,6 +178,7 @@ if self.compressor.should_compress(
     result = self.compressor.compress(self.history)
     if result.success:
         self.history = result.history
+        persist_error = None
         try:
             self._persist_history()
             # 决策 C:折叠原文归档(重写已删掉折叠前的 tool 原文,这里补回)
@@ -185,10 +186,17 @@ if self.compressor.should_compress(
                 self.session_store.archive_tool_results(
                     self.current_session_id, result.folded_originals)
         except Exception as e:
+            persist_error = str(e)
             print(f"⚠️ 压缩后落库失败: {e}(内存已更新,下次 persist 重写)")
     else:
         print(f"⚠️ 压缩失败({result.error_type}): 已跳过,对话继续")
-    self._log_compression_event(result)   # 见 6.5
+    # 事件日志:成败都记;落库/归档失败也写入 error_type=persist_failed,
+    # 使"落库失败率"与"压缩降级率"一样可统计(可观测性,见 6.5)
+    self._log_compression_event(
+        result,
+        error_type="persist_failed" if persist_error else None,
+        error_msg=persist_error,
+    )
 ```
 
 验证:e2e mock——触发 → 压缩 → 对话继续 → 落库消息数正确。
@@ -288,7 +296,7 @@ C. 格式合法性:压缩后 history 过 API schema 校验(严格 mock 或真实
 | 2 | 摘要空/None/超长 | 模型抽风 | 丢弃,降级 L1-only(不重试) |
 | 3 | L1 折叠异常 | 理论上不会(纯字符串) | try 兜底,记录 |
 | 4 | 压缩结果结构非法 | 意外切断配对 | 压缩后校验,回滚用原历史 |
-| 5 | 压缩后落库失败 | SQLite 锁/磁盘 | 记录错误,内存继续,下次重写 |
+| 5 | 压缩后落库失败 | SQLite 锁/磁盘 | 记录错误(`error_type=persist_failed` 写入事件日志,可统计),内存继续,下次重写 |
 | 6 | 连续失败死循环 | 每次触发每次都失败 | 断路器暂停压缩 |
 
 ### 6.2 设计原则
@@ -332,6 +340,11 @@ C. 格式合法性:压缩后 history 过 API schema 校验(严格 mock 或真实
 ```
 
 用途:复盘"压缩到底发生了什么"、统计失败率、调阈值。
+
+落库/归档失败同样写进事件(不吞掉):`error_type="persist_failed"`。
+原则:**一行 print 警告不可追溯,事件日志里的 error_type 才可统计**——
+这样"落库失败率"和"压缩降级率(summary_timeout)"都能从日志直接数出来,
+而不是靠"感觉是否常见"。
 
 ### 6.6 CLI 可见性
 
