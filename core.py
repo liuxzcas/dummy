@@ -79,6 +79,7 @@ Agent：terminal("pip install flask") → LLM 看到成功
 """
 
 import json
+import os
 import re
 import datetime
 from typing import Optional
@@ -87,6 +88,7 @@ from llm import LLMClient
 from tools import ToolRegistry
 from prompt import build_system_prompt
 from session_store import SessionStore
+from compressor import ContextCompressor, CompressionConfig, CompressionResult
 
 
 # ===========================================================
@@ -139,6 +141,15 @@ class DummyAgent:
         self.tools = tool_registry
         self.session_store = SessionStore()
         self.current_session_id: Optional[str] = None
+
+        # -------------------------------------------------------
+        # 上下文压缩器(Phase 2.2)
+        # 临时关闭 L2(enable_l2=False):L2 增量摘要待 Step 5 实现,
+        # 开启会触发 NotImplementedError 守卫。Step 5 完成后移除覆盖。
+        # -------------------------------------------------------
+        self.compressor = ContextCompressor(
+            self.llm, CompressionConfig(enable_l2=False)
+        )
 
         # -------------------------------------------------------
         # 构建 system prompt
@@ -222,6 +233,10 @@ class DummyAgent:
         #   有则执行并回注 → 继续；无则返回文本。
         # -------------------------------------------------------
         for turn in range(self.MAX_TOOL_TURNS):
+            # Phase 2.2:压缩触发点(每次调 LLM 之前检查,
+            # 压缩只发生在"即将调 LLM"的静止点,绝不在循环中途)
+            self._maybe_compress()
+
             # 2a. 调用 LLM
             # 传入当前完整历史 + 工具定义
             # LLM 返回的 message 可能包含 content 或 tool_calls
@@ -325,6 +340,86 @@ class DummyAgent:
         """把当前内存历史同步持久化到 SQLite。"""
         self._ensure_session()
         self.session_store.save_history(self.current_session_id, self.history)
+
+    def _maybe_compress(self) -> None:
+        """压缩触发点:工具循环每次调 LLM 之前调用(容错设计 6.x)。
+
+        流程:should_compress(最近一次 usage.prompt_tokens)→ compress →
+        成功则替换 history + 落库 + 折叠原文归档(决策 C)→ 事件日志(成败都记)。
+
+        容错原则:压缩失败不能比不压缩更糟——
+        - compress() 返回 success=False → 跳过,继续对话
+        - compress() 抛异常(如 Step 5 守卫)→ 按失败处理,跳过
+        - 落库/归档失败 → 内存已更新,记录警告,下次 persist 重写
+        """
+        last_tokens = (
+            self.llm.last_usage.prompt_tokens if self.llm.last_usage else None
+        )
+        if not self.compressor.should_compress(last_tokens):
+            return
+
+        try:
+            result = self.compressor.compress(self.history)
+        except Exception as e:
+            # 防御:压缩器异常(开发期如 L2 未实现守卫)按失败处理,不拖垮主流程
+            self.compressor.register_failure()
+            self._log_compression_event(
+                None, last_tokens, error_type="compress_exception", error_msg=str(e)
+            )
+            print(f"⚠️ 压缩异常({type(e).__name__}): 已跳过,对话继续")
+            return
+
+        if result.success:
+            self.history = result.history
+            try:
+                self._persist_history()
+                # 决策 C:persist 重写已删掉折叠前的 tool 原文,这里补回归档表
+                if result.folded_originals:
+                    self.session_store.archive_tool_results(
+                        self.current_session_id, result.folded_originals
+                    )
+            except Exception as e:
+                print(f"⚠️ 压缩后落库失败: {e}(内存已更新,下次 persist 重写)")
+        else:
+            self.compressor.register_failure()
+            print(f"⚠️ 压缩失败({result.error_type}): 已跳过,对话继续")
+
+        self._log_compression_event(result, last_tokens)
+
+    def _log_compression_event(
+        self,
+        result: Optional[CompressionResult],
+        trigger_tokens: Optional[int],
+        error_type: Optional[str] = None,
+        error_msg: Optional[str] = None,
+    ) -> None:
+        """压缩事件写 logs/compression.jsonl(成败都记,容错设计 6.5)。
+
+        用途:复盘压缩行为、统计失败率、调阈值。写日志失败不影响主流程。
+        """
+        try:
+            log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
+            os.makedirs(log_dir, exist_ok=True)
+            event = {
+                "ts": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
+                "session": self.current_session_id,
+                "trigger_tokens": trigger_tokens,
+                "strategy": result.strategy_used if result else "none",
+                "folded": result.folded_count if result else 0,
+                "covers": result.summary_covers if result else 0,
+                "chars_before": result.chars_before if result else 0,
+                "chars_after": result.chars_after if result else 0,
+                "success": bool(result and result.success),
+                "error_type": error_type or (result.error_type if result else None),
+                "error_msg": error_msg or (result.error_msg if result else None),
+                "duration_ms": result.duration_ms if result else 0,
+            }
+            with open(
+                os.path.join(log_dir, "compression.jsonl"), "a", encoding="utf-8"
+            ) as f:
+                f.write(json.dumps(event, ensure_ascii=False) + "\n")
+        except Exception as e:
+            print(f"⚠️ 压缩事件日志写入失败: {e}")
 
     def resume_last_session(self) -> bool:
         """恢复数据库中最新的会话历史到当前 Agent。"""
