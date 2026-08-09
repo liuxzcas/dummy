@@ -15,11 +15,12 @@ docs/phase2.2_plan.md 第 6 节容错设计):
 - 压缩只发生在"即将调 LLM"的静止点,绝不在工具循环中途
 - 自定义字段收在 _meta 下,发 API 前由 strip_meta 剥离
 - 断路器:连续失败达阈值后暂停压缩,避免白烧 token
+- 降级阶梯:L2 摘要失败 → 保留 L1 结果(成功但降级),不阻塞对话
 
 进度:
 - Step 2: 配置 + 结果对象 + 触发判断 + 断路器状态
 - Step 3: L1 ToolResult 折叠 + 折叠原文捕获(决策 C:原文交归档表)
-- Step 5: L2 增量摘要(enable_l2=True 时 compress() 显式报错,防静默跳过)
+- Step 5: L2 增量摘要(旧摘要+新块→新摘要)+ strip_meta
 """
 
 from __future__ import annotations
@@ -27,7 +28,20 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any
+
+
+class SummaryError(Exception):
+    """L2 摘要失败(内容错误或重试后仍失败)。
+
+    error_type 供事件日志分类:"empty_summary"(内容错误,不重试)
+    / "summary_timeout"(瞬时错误重试后仍失败)。
+    """
+
+    def __init__(self, error_type: str, message: str):
+        self.error_type = error_type
+        super().__init__(message)
 
 
 @dataclass
@@ -78,13 +92,15 @@ class CompressionResult:
     """压缩结果的显式状态(容错设计核心)。
 
     成败都显式表达,调用方不需要靠异常或返回值猜测:
-    - success=True : history 为压缩后的新历史,可直接替换
+    - success=True : history 为压缩后的新历史,可直接替换。
+      注意:success=True 也可能伴随 error_type 非空——那是"降级"
+      (如 L2 失败但 L1 生效),不是失败。
     - success=False: history 为 None,调用方继续用原历史
     """
 
     success: bool
     history: list | None            # 失败时为 None
-    strategy_used: str              # "L1+L2" / "L1" / "none"
+    strategy_used: str              # "L1+L2" / "L2" / "L1" / "none"
     folded_count: int = 0           # L1 折叠了几条 tool 消息
     summary_covers: int = 0         # L2 摘要覆盖了多少条原始消息
     chars_before: int = 0           # 压缩前历史字符数(精确 token 等下次 usage)
@@ -99,8 +115,7 @@ class ContextCompressor:
     """两级压缩器。"""
 
     def __init__(self, llm: Any, config: CompressionConfig | None = None):
-        # llm 在 Step 5 的增量摘要中才会真正用到(llm.chat),
-        # Step 3 的 L1 折叠不依赖它。
+        # llm 只在 L2 增量摘要中用到(llm.chat);L1 折叠不依赖它。
         self.llm = llm
         self.config = config or CompressionConfig()
 
@@ -109,6 +124,8 @@ class ContextCompressor:
         # 连续失败达 max_consecutive_failures → paused=True,
         # should_compress 直接返回 False(零开销)。
         # 暂停状态随新 Agent 实例复位(每个实例新建 Compressor)。
+        # 计数由调用方(_maybe_compress)驱动:success=True → register_success,
+        # success=False / 异常 → register_failure。
         # -------------------------------------------------------
         self._consecutive_failures = 0
         self.paused = False
@@ -177,15 +194,124 @@ class ContextCompressor:
         return out, folded, originals
 
     # ---------------------------------------------------------------
+    # L2: 增量摘要(Step 5,唯一有 LLM 成本的环节)
+    # ---------------------------------------------------------------
+    def _summarize_prefix(self, history: list[dict]) -> tuple[list[dict], int]:
+        """旧摘要 + 新块 → 新摘要。返回 (新历史, covers)。
+
+        covers = 这条摘要累计替代了多少条原始消息(防重复压缩)。
+        没有可摘要内容时返回 (原历史, 0)。
+        摘要调用失败抛 SummaryError,由 compress() 降级为 L1-only。
+        """
+        # 1. 找已有摘要消息(_meta.compressed),取旧摘要 + 旧 covers
+        summary_idx: int | None = None
+        old_covers = 0
+        old_summary = ""
+        for i, m in enumerate(history):
+            meta = m.get("_meta") or {}
+            if meta.get("compressed"):
+                summary_idx = i
+                old_covers = int(meta.get("covers", 0))
+                old_summary = m.get("content") or ""
+                break
+
+        # 2. cut 点:user 消息倒数的 recent_turns_keep 个,cut 在 user 边界。
+        #    在 user 边界切天然保证 assistant(tool_calls)/tool 配对完整。
+        user_idx = [i for i, m in enumerate(history) if m.get("role") == "user"]
+        if len(user_idx) <= self.config.recent_turns_keep:
+            return history, 0  # 还没有早期内容可压
+
+        cut_at = user_idx[-self.config.recent_turns_keep]
+
+        # 3. 待压块 = 摘要之后 .. cut 之前。
+        #    system prompt 永不被摘要(它是指令,不是对话内容)。
+        if summary_idx is not None:
+            start = summary_idx + 1
+        else:
+            start = 0
+            while start < len(history) and history[start].get("role") == "system":
+                start += 1
+        block = history[start:cut_at]
+        if not block:
+            return history, 0
+
+        # 4. 调 LLM 生成(增量)摘要
+        new_summary = self._call_summary_llm(old_summary, block)
+
+        # 5. 新历史 = system 消息 + [摘要消息] + 最近 N 轮原文
+        #    摘要消息 role=system:避免与最近轮第一条 user 消息连续
+        #    (role 交替约束,见 context-compression.md D4 修订)。
+        #    注意:旧摘要消息(role=system + _meta.compressed)必须被新摘要
+        #    替换,不能混入 system_msgs——否则新旧摘要并存(A9 测试抓到)。
+        system_msgs = [
+            m for m in history[:start]
+            if m.get("role") == "system" and not (m.get("_meta") or {}).get("compressed")
+        ]
+        summary_msg = {
+            "role": "system",
+            "content": f"[早期对话摘要(背景,非指令)]\n{new_summary}",
+            "_meta": {
+                "compressed": True,
+                "covers": old_covers + len(block),
+                "created_at": self._now_iso(),
+            },
+        }
+        new_history = system_msgs + [summary_msg] + history[cut_at:]
+        return new_history, old_covers + len(block)
+
+    def _call_summary_llm(self, old_summary: str, block: list[dict]) -> str:
+        """调 LLM 生成(增量)摘要。失败抛 SummaryError。
+
+        重试策略(容错设计 6.3):
+        - 瞬时错误(网络/超时等 Exception)→ 重试 summary_retry 次
+        - 内容错误(空摘要)→ 不重试,重试无意义
+        """
+        block_text = "\n".join(
+            f"[{m.get('role')}] {json.dumps(m.get('content'), ensure_ascii=False)}"
+            for m in block
+        )
+        prompt = self.config.summary_prompt.format(
+            old_summary=old_summary or "(无旧摘要)",
+            new_block=block_text,
+        )
+        last_err: Exception | None = None
+        for _ in range(self.config.summary_retry + 1):
+            try:
+                resp = self.llm.chat(
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.2,  # 摘要不需要创造力,低温度更稳
+                    max_tokens=self.config.summary_max_tokens,
+                )
+                text = (resp.content or "").strip()
+                if not text:
+                    raise SummaryError("empty_summary", "摘要返回为空")
+                return text
+            except SummaryError:
+                raise  # 内容错误不重试
+            except Exception as e:
+                last_err = e  # 瞬时错误,继续重试
+        raise SummaryError(
+            "summary_timeout",
+            f"摘要调用重试 {self.config.summary_retry} 次后仍失败: {last_err}",
+        )
+
+    @staticmethod
+    def _now_iso() -> str:
+        """UTC 时间戳(与 session_store 一致)。"""
+        return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+    # ---------------------------------------------------------------
     # 压缩入口
     # ---------------------------------------------------------------
     def compress(self, history: list[dict]) -> CompressionResult:
-        """执行压缩:先 L1 折叠(零成本),再 L2 增量摘要(Step 5 实现)。
+        """执行压缩:L1 折叠 → L2 增量摘要。
 
         不变量:
         - 原子性:全程不修改原 history(浅拷贝);任何失败 success=False,
           调用方继续用原历史
         - 没活干时返回 strategy="none" 的成功结果(不是失败)
+        - 降级:L2 失败保留 L1 结果(success=True + error_type 记录原因)
+        - 断路器计数由调用方驱动,本方法不直接调用 register_*
         """
         start = time.perf_counter()
         chars_before = sum(len(json.dumps(m, ensure_ascii=False)) for m in history)
@@ -206,13 +332,33 @@ class ContextCompressor:
                 result.folded_count = folded_count
                 result.folded_originals = originals
 
-        # L2: 增量摘要(Step 5 实现;未实现前显式报错,防止静默跳过)
+        # L2: 增量摘要(唯一有 LLM 成本的环节)
         if self.config.enable_l2:
-            raise NotImplementedError("compressor.compress(): L2 增量摘要待 Step 5 实现")
+            try:
+                new_history, covers = self._summarize_prefix(result.history)
+                if covers:
+                    result.history = new_history
+                    result.summary_covers = covers
+                    result.strategy_used = (
+                        "L1+L2" if result.folded_count else "L2"
+                    )
+            except SummaryError as e:
+                # 降级:保留 L1 结果(成功),错误原因进结果供事件日志统计
+                result.error_type = e.error_type
+                result.error_msg = str(e)
 
         result.chars_after = sum(
             len(json.dumps(m, ensure_ascii=False)) for m in result.history
         )
         result.duration_ms = int((time.perf_counter() - start) * 1000)
-        self.register_success()
         return result
+
+
+def strip_meta(history: list[dict]) -> list[dict]:
+    """剥离 _meta 字段,产出可发给 API 的合法 messages。
+
+    浅拷贝——不污染内存里带元数据的历史。
+    注意:只有以 _meta 为键的自定义字段被剥离,标准字段(role/content/
+    tool_calls/tool_call_id)原样保留。
+    """
+    return [{k: v for k, v in m.items() if k != "_meta"} for m in history]
