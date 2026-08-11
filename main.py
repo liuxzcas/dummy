@@ -75,6 +75,7 @@ def print_help():
       /sessions 列出所有持久化会话
       /tools    列出可用工具
       /history  显示对话历史（调试用）
+      /search <关键词>  全文搜索历史对话与折叠原文（Phase 2.3b）
       /quit     退出 (/exit /q 也可)
 
     用法: 直接输入你的问题或指令，Agent 会自动决定是否调用工具。
@@ -236,6 +237,11 @@ def main():
                 print()
                 continue
 
+            if user_input.lower().startswith("/search"):
+                for line in handle_search_command(user_input, agent.session_store):
+                    print(line)
+                continue
+
             # ---------------------------------------------------
             # 交给 Agent 处理
             # ---------------------------------------------------
@@ -259,6 +265,27 @@ def main():
             print(f"\n❌ 发生错误: {type(e).__name__}: {e}")
             print("   详细信息请看上方 traceback。\n")
             # 不退出，让用户可以继续
+
+
+def handle_search_command(user_input: str, store) -> list[str]:
+    """/search 命令处理(纯函数,可测试)。
+
+    返回要打印的行列表;调用方逐行 print。
+    """
+    query = user_input[len("/search"):].strip()
+    if not query:
+        return ["用法: /search <关键词>  (例如 /search 压缩)", ""]
+    hits = store.search(query)
+    if not hits:
+        return [f"未找到与 '{query}' 相关的结果", ""]
+    lines = [f"🔍 搜索 '{query}' ({len(hits)} 条):"]
+    for h in hits:
+        src_tag = "归档原文" if h["source"] == "archive" else "消息"
+        lines.append(f"  [{src_tag}] session={h['session_id'][:8]} "
+                     f"seq={h['seq']} score={h['score']:.2f}")
+        lines.append(f"      {h['snippet']}")
+    lines.append("")
+    return lines
 
 
 if __name__ == "__main__":

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 import uuid
 from datetime import datetime, timezone
@@ -74,6 +75,28 @@ class SessionStore:
                 original_len INTEGER NOT NULL,
                 content TEXT NOT NULL,
                 UNIQUE(session_id, tool_call_id)
+            )
+            """
+        )
+        # 全文搜索索引(Phase 2.3b 2026-08-10,见 docs/fts-search.md):
+        # 双表方案——FTS5 的 tokenizer 是表级的,无法单表双分词。
+        # fts_en: porter 词干化,服务英文/数字(词级 + 前缀查询)
+        # fts_zh: trigram,服务中文(任意 >=3 字符连续子串)
+        # UNINDEXED 列只存储不参与分词;原文冗余进索引表,
+        # 不依赖 messages 行 id 对齐(压缩重写 sequence 后依然安全)。
+        conn.execute(
+            """
+            CREATE VIRTUAL TABLE IF NOT EXISTS fts_en USING fts5(
+                source UNINDEXED, session_id UNINDEXED, seq UNINDEXED, content,
+                tokenize = 'porter'
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE VIRTUAL TABLE IF NOT EXISTS fts_zh USING fts5(
+                source UNINDEXED, session_id UNINDEXED, seq UNINDEXED, content,
+                tokenize = 'trigram'
             )
             """
         )
@@ -269,3 +292,182 @@ class SessionStore:
         ).fetchone()
         conn.close()
         return row[0] if row else None
+
+    # ---------------------------------------------------------------
+    # Phase 2.3b: 全文搜索(FTS5 双表)
+    # ---------------------------------------------------------------
+    def rebuild_search_index(self) -> None:
+        """全量重建 FTS 索引。
+
+        索引范围(见 docs/fts-search.md §2):
+        - messages.content(折叠后的 tool 结果;排除 system 模板)
+        - tool_result_archive.content(L1 折叠掉的完整原文,决策 C 兑现)
+        数据量小(几千行)毫秒级;搜索前惰性调用,保证索引与库一致。
+        增量同步留作数据量大的演进方向。
+        """
+        conn = sqlite3.connect(self.db_path)
+        conn.execute("PRAGMA busy_timeout = 10000")
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            conn.execute("DELETE FROM fts_en")
+            conn.execute("DELETE FROM fts_zh")
+
+            rows = conn.execute(
+                """
+                SELECT session_id, sequence, content FROM messages
+                WHERE role != 'system' AND content IS NOT NULL AND content != ''
+                """
+            ).fetchall()
+            for session_id, seq, content in rows:
+                conn.execute(
+                    "INSERT INTO fts_en (source, session_id, seq, content) VALUES ('message', ?, ?, ?)",
+                    (session_id, seq, content),
+                )
+                conn.execute(
+                    "INSERT INTO fts_zh (source, session_id, seq, content) VALUES ('message', ?, ?, ?)",
+                    (session_id, seq, content),
+                )
+
+            arows = conn.execute(
+                "SELECT session_id, id, content FROM tool_result_archive"
+            ).fetchall()
+            for session_id, aid, content in arows:
+                conn.execute(
+                    "INSERT INTO fts_en (source, session_id, seq, content) VALUES ('archive', ?, ?, ?)",
+                    (session_id, aid, content),
+                )
+                conn.execute(
+                    "INSERT INTO fts_zh (source, session_id, seq, content) VALUES ('archive', ?, ?, ?)",
+                    (session_id, aid, content),
+                )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def search(
+        self, query: str, source: str | None = None, limit: int = 20
+    ) -> list[dict[str, Any]]:
+        """全文搜索(Phase 2.3b)。
+
+        路由规则(实测修正 2026-08-10,见 docs/fts-search.md §3):
+        - 按**连续同语言片段**拆分查询(混合查询如 "L1 压缩" 拆成
+          "L1" + "压缩" 分别查):
+          * 英文/数字片段 → fts_en(porter,词级 + 前缀 'compre*')
+          * 中文 >=3 字符片段 → fts_zh(trigram)
+          * 中文 2 字符片段 → LIKE 退化(trigram 无法匹配 2 字 token)
+        - 为什么不能整体查:trigram 对 "L1 压缩" 切成 "L1 " / "1 压" /
+          " 压缩"(含空格的窗口),与文本 token 集不一致,必然不命中;
+          porter 表又要求中英片段连续出现。按片段拆分是正确解。
+        查询转义:默认包成短语;用户显式以 * 结尾的片段保留前缀语法。
+        """
+        if not query or not query.strip():
+            return []
+        self.rebuild_search_index()
+
+        zh_parts = [p for p in re.findall(r"[\u4e00-\u9fff]{2,}", query)]
+        en_parts = [p for p in re.findall(r"[A-Za-z0-9_]{2,}", query)]
+        if not zh_parts and not en_parts:
+            en_parts = [query]  # 兜底:无常规片段时整体当英文查
+        # 前缀符号 * 不属于 [A-Za-z0-9_],会被正则吃掉;
+        # 原始查询以 * 结尾时把它还给最后一个英文片段(前缀查询语义)
+        if query.rstrip().endswith("*") and en_parts:
+            en_parts[-1] = en_parts[-1] + "*"
+
+        conn = sqlite3.connect(self.db_path)
+        try:
+            hits: list[dict[str, Any]] = []
+            for part in en_parts:
+                hits += self._fts_query(conn, "fts_en", part, source, limit)
+            for part in zh_parts:
+                if len(part) >= 3:
+                    hits += self._fts_query(conn, "fts_zh", part, source, limit)
+                else:
+                    hits += self._like_query(conn, part, source, limit)
+
+            # 并集去重(同源同序只留一条),按 bm25 升序(越小越相关)
+            seen: set[tuple[str, str, int]] = set()
+            uniq: list[dict[str, Any]] = []
+            for h in sorted(hits, key=lambda h: h["score"]):
+                key = (h["source"], h["session_id"], h["seq"])
+                if key not in seen:
+                    seen.add(key)
+                    uniq.append(h)
+            return uniq[:limit]
+        finally:
+            conn.close()
+
+    def _fts_query(
+        self, conn: sqlite3.Connection, table: str,
+        part: str, source: str | None, limit: int,
+    ) -> list[dict[str, Any]]:
+        """单片段 FTS5 查询(短语化;显式 * 结尾保留前缀语法)。"""
+        if part.rstrip().endswith("*"):
+            match_query = part.rstrip()
+        else:
+            match_query = '"' + part.replace('"', '""') + '"'
+        source_filter = " AND source = ?" if source else ""
+        args: list = [match_query]
+        if source:
+            args.append(source)
+        args.append(limit)
+        rows = conn.execute(
+            f"""
+            SELECT source, session_id, seq,
+                   snippet({table}, 3, '[', ']', '…', 20) AS snip,
+                   bm25({table}) AS score
+            FROM {table} WHERE {table} MATCH ?{source_filter}
+            ORDER BY score LIMIT ?
+            """,
+            args,
+        ).fetchall()
+        return [
+            {"source": s_, "session_id": sid, "seq": seq,
+             "snippet": snip or "", "score": score}
+            for s_, sid, seq, snip, score in rows
+        ]
+
+    def _like_query(
+        self, conn: sqlite3.Connection, part: str,
+        source: str | None, limit: int,
+    ) -> list[dict[str, Any]]:
+        """中文 2 字片段:LIKE 退化(转义 % _ \)。"""
+        esc = part.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        pattern = f"%{esc}%"
+        rows = conn.execute(
+            """
+            SELECT source, session_id, seq, content, 0 AS score FROM (
+                SELECT 'message' AS source, session_id, sequence AS seq, content
+                FROM messages WHERE role != 'system' AND content IS NOT NULL
+                UNION ALL
+                SELECT 'archive' AS source, session_id, id AS seq, content
+                FROM tool_result_archive
+            ) WHERE content LIKE ? ESCAPE '\\'
+              AND (? IS NULL OR source = ?)
+            ORDER BY length(content) LIMIT ?
+            """,
+            (pattern, source, source, limit),
+        ).fetchall()
+        return [
+            self._make_hit(s_, sid, seq, content, part, 0.0)
+            for s_, sid, seq, content, score in rows
+        ]
+
+    @staticmethod
+    def _make_hit(
+        source_: str, session_id: str, seq: int,
+        content: str, query: str, score: float,
+    ) -> dict[str, Any]:
+        """LIKE 退化的结果构造:手动截取命中词附近的上下文作 snippet。"""
+        idx = content.find(query)
+        start = max(0, idx - 40)
+        end = min(len(content), idx + len(query) + 40)
+        snippet = content[start:end]
+        if start > 0:
+            snippet = "…" + snippet
+        if end < len(content):
+            snippet = snippet + "…"
+        return {"source": source_, "session_id": session_id, "seq": seq,
+                "snippet": snippet, "score": score}
