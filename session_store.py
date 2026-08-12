@@ -175,10 +175,14 @@ class SessionStore:
         return [dict(row) for row in rows]
 
     def get_latest_session_id(self) -> str | None:
-        """返回最近更新的会话 ID。"""
+        """返回最近更新的会话 ID。
+
+        排序加 rowid 次级键:created_at/updated_at 是秒级精度,
+        同秒创建的会话排序不稳定(测试抓到),rowid 保证取后插入的。
+        """
         conn = sqlite3.connect(self.db_path)
         row = conn.execute(
-            "SELECT id FROM sessions ORDER BY updated_at DESC LIMIT 1"
+            "SELECT id FROM sessions ORDER BY updated_at DESC, rowid DESC LIMIT 1"
         ).fetchone()
         conn.close()
         return row[0] if row else None
