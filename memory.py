@@ -40,20 +40,22 @@ def parse_terms(text: str) -> list[str]:
         return items
     return []
 
-EXTRACT_PROMPT = """你是记忆抽取器。从用户提供的对话中提取值得长期记住的事实
-(用户偏好、项目决策、关键配置、重要事实),输出 JSON 数组,不要输出任何其他内容。
+EXTRACT_PROMPT = """你是记忆蒸馏器(Hermes 方式)。把对话中值得长期记住的信息
+蒸馏成精炼的事实条目,输出 JSON 数组,不要输出任何其他内容。
 
-已有记忆列表(用于冲突判断):
+已有记忆列表(用于合并与容量管理):
 {existing}
 
 输出格式,每条一个对象:
-{{"fact": "事实文本", "category": "偏好|项目|技术|其他", "confidence": 0.0~1.0, "replace_id": 数字或 null}}
+{{"fact": "精炼事实", "category": "偏好|项目|技术|其他", "confidence": 0.0~1.0, "replace_id": 数字或 null}}
 
-规则:
-- 如果新事实与某条已有记忆语义重复,replace_id 填那条记忆的 id(新事实通常更新);
-- 否则 replace_id 为 null。
-- 只抽取值得长期记住的事实,不抽取临时信息(问候、单次任务细节)。
-- confidence 表示你对该事实可信度的把握。"""
+规则(写入时蒸馏,重要):
+- fact 要精炼、信息密集;同类信息合并成一条
+  (如"预算先定 5000 后来改成 8000" → "最终预算是 8000 元")
+- 新信息与已有条目同主题时,replace_id 填那条 id,并用合并后的精炼
+  表述替换旧条目——不并存
+- 只输出值得长期记住的事实,忽略临时信息(问候、单次任务细节)
+- confidence 表示你对该事实可信度的把握"""
 
 
 def parse_facts_response(text: str) -> list[dict[str, Any]]:
