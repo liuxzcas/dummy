@@ -123,6 +123,34 @@ class SessionStore:
             ON memories(category)
             """
         )
+        # PlugMem 知识单元表(分支 plugmem-v2,按论文 3.1):
+        # 单元 = 命题(semantic)/规范(procedural),概念是路由信号
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS memory_units (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                type TEXT NOT NULL DEFAULT 'semantic',
+                text TEXT NOT NULL,
+                source_session TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS unit_concepts (
+                unit_id INTEGER NOT NULL,
+                concept TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_unit_concepts_concept
+            ON unit_concepts(concept)
+            """
+        )
         conn.commit()
         conn.close()
 
@@ -600,5 +628,140 @@ class SessionStore:
                 [(i,) for i in memory_ids],
             )
             conn.commit()
+        finally:
+            conn.close()
+
+    # ---------------------------------------------------------------
+    # PlugMem 知识单元(分支 plugmem-v2)
+    # ---------------------------------------------------------------
+    def add_unit(
+        self, session_id: str, utype: str, text: str,
+        concepts: list[str], update_unit_id: int | None = None,
+    ) -> int:
+        """写入知识单元(含概念)。
+
+        update_unit_id 非空时更新旧单元(图演化,新证据覆盖旧,保留 id),
+        否则新增。返回单元 id。
+        """
+        now = self._now_iso()
+        conn = sqlite3.connect(self.db_path)
+        conn.execute("PRAGMA busy_timeout = 10000")
+        try:
+            if update_unit_id is not None:
+                conn.execute(
+                    """
+                    UPDATE memory_units SET type = ?, text = ?,
+                        source_session = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (utype, text, session_id, now, update_unit_id),
+                )
+                conn.execute(
+                    "DELETE FROM unit_concepts WHERE unit_id = ?",
+                    (update_unit_id,),
+                )
+                unit_id = update_unit_id
+            else:
+                cur = conn.execute(
+                    """
+                    INSERT INTO memory_units (type, text, source_session,
+                                              created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (utype, text, session_id, now, now),
+                )
+                unit_id = cur.lastrowid
+            conn.executemany(
+                "INSERT INTO unit_concepts (unit_id, concept) VALUES (?, ?)",
+                [(unit_id, c) for c in concepts],
+            )
+            conn.commit()
+            return unit_id
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def list_units(self) -> list[dict[str, Any]]:
+        """列出全部知识单元(含概念)。"""
+        conn = sqlite3.connect(self.db_path)
+        rows = conn.execute(
+            """
+            SELECT u.id, u.type, u.text, u.source_session,
+                   u.created_at, u.updated_at,
+                   (SELECT group_concat(c.concept, '|') FROM unit_concepts c
+                    WHERE c.unit_id = u.id) AS concepts
+            FROM memory_units u ORDER BY u.id DESC
+            """
+        ).fetchall()
+        conn.close()
+        return [
+            {"id": r[0], "type": r[1], "text": r[2], "source_session": r[3],
+             "created_at": r[4], "updated_at": r[5],
+             "concepts": (r[6] or "").split("|") if r[6] else []}
+            for r in rows
+        ]
+
+    def search_units_by_concepts(
+        self, concepts: list[str], limit: int = 4
+    ) -> list[dict[str, Any]]:
+        """概念路由:概念匹配激活单元(论文 3.2 的简化一跳)。
+
+        每个概念 LIKE 匹配 unit_concepts,并集去重,按单元 id 倒序。
+        """
+        if not concepts:
+            return []
+        conn = sqlite3.connect(self.db_path)
+        unit_ids: set[int] = set()
+        try:
+            for c in concepts:
+                esc = c.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+                rows = conn.execute(
+                    """
+                    SELECT unit_id FROM unit_concepts
+                    WHERE concept LIKE ? ESCAPE '\\'
+                    """,
+                    (f"%{esc}%",),
+                ).fetchall()
+                unit_ids.update(r[0] for r in rows)
+                if len(unit_ids) >= limit * 3:  # 候选足够即停
+                    break
+            if not unit_ids:
+                return []
+            ids = list(unit_ids)[: limit * 3]
+            placeholders = ",".join("?" for _ in ids)
+            rows = conn.execute(
+                f"""
+                SELECT u.id, u.type, u.text, u.source_session,
+                       u.created_at, u.updated_at,
+                       (SELECT group_concat(c.concept, '|') FROM unit_concepts c
+                        WHERE c.unit_id = u.id) AS concepts
+                FROM memory_units u WHERE u.id IN ({placeholders})
+                ORDER BY u.id DESC LIMIT ?
+                """,
+                (*ids, limit),
+            ).fetchall()
+            return [
+                {"id": r[0], "type": r[1], "text": r[2], "source_session": r[3],
+                 "created_at": r[4], "updated_at": r[5],
+                 "concepts": (r[6] or "").split("|") if r[6] else []}
+                for r in rows
+            ]
+        finally:
+            conn.close()
+
+    def delete_unit(self, unit_id: int) -> bool:
+        """删除知识单元(连带概念);不存在返回 False。"""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cur = conn.execute(
+                "DELETE FROM memory_units WHERE id = ?", (unit_id,)
+            )
+            conn.execute(
+                "DELETE FROM unit_concepts WHERE unit_id = ?", (unit_id,)
+            )
+            conn.commit()
+            return cur.rowcount > 0
         finally:
             conn.close()

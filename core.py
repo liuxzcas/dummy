@@ -85,7 +85,7 @@ import datetime
 from typing import Optional
 
 from llm import LLMClient
-from memory import MemoryExtractor
+from plugmem import PlugMemMemory
 from tools import ToolRegistry
 from prompt import build_system_prompt
 from session_store import SessionStore
@@ -147,8 +147,8 @@ class DummyAgent:
         self.tools = tool_registry
         self.session_store = SessionStore()
         self.current_session_id: Optional[str] = None
-        # 跨 Session 记忆抽取器(Phase 2.4)
-        self.memory_extractor = MemoryExtractor(self.llm, self.session_store)
+        # PlugMem 记忆(分支 plugmem-v2,论文三组件:结构化/检索/推理)
+        self.memory = PlugMemMemory(self.llm, self.session_store)
 
         # -------------------------------------------------------
         # 上下文压缩器(Phase 2.2)
@@ -462,80 +462,54 @@ class DummyAgent:
     # Phase 2.4: 跨 Session 记忆(注入 + 抽取)
     # ---------------------------------------------------------------
     def _inject_memories(self, user_input: str) -> None:
-        """按当前输入检索记忆,注入 system prompt(决策点 2A/3A + 方案 A)。
+        """PlugMem 检索 + 推理注入(论文 3.2/3.3)。
 
-        每次 chat 先把问句交给 LLM 提炼检索词(PlugMem 意图路由,
-        T5 实测:完整问句与记忆事实无共享关键词,FTS 不命中),
-        再对每个检索词查询 memory 源,去重后 top-k 事实追加到
-        system 消息。提炼失败回退原始问句;检索失败静默——
-        记忆是增强,不是必需品。
+        Retrieval:问句 → LLM 概念集(路由信号)→ 概念匹配激活单元。
+        Reasoning:单元 → LLM 蒸馏成"最终信息"注入 system(不注入原文)。
+        蒸馏失败回退原文拼接;整体失败静默——记忆是增强,不是必需品。
         """
         try:
-            terms = self.memory_extractor.expand_query(user_input)
+            concepts = self.memory.retrieve_concepts(user_input)
+            units = self.memory.retrieve_units(concepts)
         except Exception:
-            terms = [user_input]
-        hits: list[dict] = []
+            return
+        if not units:
+            return
         try:
-            for term in terms[:3]:
-                hits += self.session_store.search(
-                    term, source="memory", limit=3
-                )
+            final_info = self.memory.distill(user_input, units)
         except Exception:
             return
-        if not hits:
+        final_info = (final_info or "").strip()
+        if not final_info:
             return
-        # 多检索词结果去重(同一条记忆被多个词命中只留一次)
-        seen: set[int] = set()
-        unique_hits: list[dict] = []
-        for h in hits:
-            if h["seq"] not in seen:
-                seen.add(h["seq"])
-                unique_hits.append(h)
-
-        mem_map = {m["id"]: m for m in self.session_store.list_memories()}
-        block_lines = ["", "已知事实(记忆):"]
-        total = 0
-        ids = []
-        for h in unique_hits:
-            mem = mem_map.get(h["seq"])
-            if not mem:
-                continue
-            line = f"- [{mem['category']}] {mem['fact']}"
-            if total + len(line) > 400:  # ≤500 token 的保守字符上限
-                break
-            block_lines.append(line)
-            total += len(line)
-            ids.append(mem["id"])
-        if not ids:
-            return
+        if len(final_info) > 400:  # ≤500 token 的保守字符上限
+            final_info = final_info[:400] + "…"
         content = self.history[0]["content"]
         idx = content.find("已知事实(记忆):")
         if idx >= 0:
             content = content[:idx].rstrip()
         self.history[0] = {
             "role": "system",
-            "content": content + "\n" + "\n".join(block_lines),
+            "content": content + "\n\n已知事实(记忆):\n" + final_info,
         }
-        self.session_store.increment_memory_hits(ids)
-        # 可见性:注入条数 + 每条全文(决策:显示粒度 A)
-        print(f"\n  🧠 注入记忆 ({len(ids)}/{len(mem_map)} 条, ~{total} chars):")
-        for line in block_lines[2:]:
+        # 可见性:注入检索到的单元数 + 蒸馏结果
+        print(f"\n  🧠 注入记忆 ({len(units)} 个知识单元, 蒸馏 {len(final_info)} chars):")
+        for line in final_info.splitlines():
             print(f"    {line}")
 
     def _extract_memories(self) -> None:
-        """对话结束抽取记忆(决策点 1A)。
+        """对话结束结构化记忆(论文 3.1,旁路调用)。
 
-        旁路调用:抽取结果不污染对话历史;失败由 extractor 内部降级
-        (记 memory.jsonl 事件,返回 0)。
+        结果不污染对话历史;失败由 memory 内部降级(记 memory.jsonl)。
         """
         try:
-            facts, conflicts = self.memory_extractor.extract_from_history(
+            total, updated = self.memory.structure_from_history(
                 self.history, self.current_session_id
             )
         except Exception:
             return
-        if facts:
-            print(f"  🧠 已抽取 {facts} 条事实({conflicts} 条覆盖旧事实)")
+        if total:
+            print(f"  🧠 已结构化 {total} 个知识单元({updated} 个更新)")
 
     def resume_last_session(self) -> bool:
         """恢复数据库中最新的会话历史到当前 Agent。"""

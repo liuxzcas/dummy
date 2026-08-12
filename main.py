@@ -297,7 +297,7 @@ def handle_search_command(user_input: str, store) -> list[str]:
 def handle_memories_command(user_input: str, store) -> list[str]:
     """/memories 命令处理(纯函数,可测试)。
 
-    支持:/memories(列出)、/memories del <id>(删除)。
+    支持:/memories(列出知识单元)、/memories del <id>(删除)。
     返回要打印的行列表。
     """
     parts = user_input.split()
@@ -306,17 +306,16 @@ def handle_memories_command(user_input: str, store) -> list[str]:
             mid = int(parts[2])
         except ValueError:
             return ["用法: /memories del <id>", ""]
-        ok = store.delete_memory(mid)
-        return [f"已删除记忆 #{mid}" if ok else f"记忆 #{mid} 不存在", ""]
-    mems = store.list_memories()
-    if not mems:
-        return ["🧠 (暂无记忆)", ""]
-    lines = [f"🧠 记忆 ({len(mems)} 条):"]
-    for m in mems:
+        ok = store.delete_unit(mid)
+        return [f"已删除知识单元 #{mid}" if ok else f"知识单元 #{mid} 不存在", ""]
+    units = store.list_units()
+    if not units:
+        return ["🧠 (暂无知识单元)", ""]
+    lines = [f"🧠 知识单元 ({len(units)} 条):"]
+    for u in units:
         lines.append(
-            f"  [{m['id']}] [{m['category']}] {m['fact']} "
-            f"(conf={m['confidence']:.1f}, hits={m['hits']}, "
-            f"来自 {m['session_id'][:8]})"
+            f"  [{u['id']}] ({u['type']}) {u['text']} "
+            f"concepts={u['concepts']} 来自 {u['source_session'][:8]}"
         )
     lines.append("")
     return lines

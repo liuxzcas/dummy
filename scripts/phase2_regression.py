@@ -134,7 +134,7 @@ def make_agent(store: SessionStore) -> DummyAgent:
     )
     agent = DummyAgent(llm, EmptyRegistry(), system_prompt="你是一个助手,用中文简洁回答。")
     agent.session_store = store
-    agent.memory_extractor.store = store
+    agent.memory.store = store  # 同步替换,防测试污染真实库
     agent.current_session_id = store.create_session()
     return agent
 
