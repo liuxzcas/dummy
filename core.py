@@ -462,25 +462,41 @@ class DummyAgent:
     # Phase 2.4: 跨 Session 记忆(注入 + 抽取)
     # ---------------------------------------------------------------
     def _inject_memories(self, user_input: str) -> None:
-        """按当前输入检索记忆,注入 system prompt(决策点 2A/3A)。
+        """按当前输入检索记忆,注入 system prompt(决策点 2A/3A + 方案 A)。
 
-        每次 chat 用用户输入作 FTS 查询(source='memory'),top-k 事实
-        追加到 system 消息。注入前先剥离旧的记忆段(防重复累积)。
-        检索失败静默——记忆是增强,不是必需品。
+        每次 chat 先把问句交给 LLM 提炼检索词(PlugMem 意图路由,
+        T5 实测:完整问句与记忆事实无共享关键词,FTS 不命中),
+        再对每个检索词查询 memory 源,去重后 top-k 事实追加到
+        system 消息。提炼失败回退原始问句;检索失败静默——
+        记忆是增强,不是必需品。
         """
         try:
-            hits = self.session_store.search(
-                user_input, source="memory", limit=3
-            )
+            terms = self.memory_extractor.expand_query(user_input)
+        except Exception:
+            terms = [user_input]
+        hits: list[dict] = []
+        try:
+            for term in terms[:3]:
+                hits += self.session_store.search(
+                    term, source="memory", limit=3
+                )
         except Exception:
             return
         if not hits:
             return
+        # 多检索词结果去重(同一条记忆被多个词命中只留一次)
+        seen: set[int] = set()
+        unique_hits: list[dict] = []
+        for h in hits:
+            if h["seq"] not in seen:
+                seen.add(h["seq"])
+                unique_hits.append(h)
+
         mem_map = {m["id"]: m for m in self.session_store.list_memories()}
         block_lines = ["", "已知事实(记忆):"]
         total = 0
         ids = []
-        for h in hits:
+        for h in unique_hits:
             mem = mem_map.get(h["seq"])
             if not mem:
                 continue
