@@ -148,6 +148,11 @@ class LLMClient:
         # -------------------------------------------------------
         self.last_usage = None
 
+        # last_reasoning: 最近一次响应的思考内容(deepseek-reasoner /
+        # deepseek-chat thinking 模式返回 reasoning_content)。
+        # 供上层显示;不入 history(API 拒收/浪费 token)。
+        self.last_reasoning = None
+
     def chat(
         self,
         messages: list,
@@ -242,7 +247,15 @@ class LLMClient:
         # -------------------------------------------------------
         self.last_usage = getattr(response, "usage", None)
 
-        return response.choices[0].message
+        # 提取思考内容(非标准字段,SDK 可能放 model_extra):
+        # reasoning_content 是 DeepSeek 推理模型在最终回答前的思维链。
+        message = response.choices[0].message
+        self.last_reasoning = getattr(message, "reasoning_content", None)
+        if self.last_reasoning is None:
+            extra = getattr(message, "model_extra", None) or {}
+            self.last_reasoning = extra.get("reasoning_content")
+
+        return message
 
     def get_model_name(self) -> str:
         """返回当前使用的模型名称（用于日志显示）。"""

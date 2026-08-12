@@ -253,6 +253,12 @@ class DummyAgent:
                 temperature=0.3,  # 工具调用时低温度更稳定
             )
 
+            # 显示思考内容(deepseek 推理模型的 reasoning_content,
+            # 非推理模型为 None 时静默跳过)
+            reasoning = getattr(self.llm, "last_reasoning", None)
+            if reasoning:
+                print(f"\n  💭 思考: {reasoning}")
+
             # -------------------------------------------------------
             # 2b. 检查是否有 tool_calls
             # tool_calls 是一个列表，每个元素是一个工具调用请求
@@ -266,7 +272,11 @@ class DummyAgent:
                 # 先把这个包含 tool_calls 的 assistant 消息追加到历史
                 # 这是 OpenAI API 的要求：
                 # tool_calls 必须出现在 assistant message 里
-                self.history.append(response_message.to_dict())
+                # 注意剥离 reasoning_content:发 API 时未知字段会被拒
+                # 或浪费 token(思维链不需要回传)
+                msg_dict = response_message.to_dict()
+                msg_dict.pop("reasoning_content", None)
+                self.history.append(msg_dict)
 
                 # -------------------------------------------------------
                 # 2c. 遍历所有 tool_calls 并执行
