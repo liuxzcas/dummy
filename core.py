@@ -85,6 +85,7 @@ import datetime
 from typing import Optional
 
 from llm import LLMClient
+from memory import MemoryExtractor
 from tools import ToolRegistry
 from prompt import build_system_prompt
 from session_store import SessionStore
@@ -146,6 +147,8 @@ class DummyAgent:
         self.tools = tool_registry
         self.session_store = SessionStore()
         self.current_session_id: Optional[str] = None
+        # 跨 Session 记忆抽取器(Phase 2.4)
+        self.memory_extractor = MemoryExtractor(self.llm, self.session_store)
 
         # -------------------------------------------------------
         # 上下文压缩器(Phase 2.2)
@@ -221,6 +224,10 @@ class DummyAgent:
         """
         # 先确保当前会话已存在（首次 chat 时才创建）
         self._ensure_session()
+
+        # Phase 2.4:按当前输入检索记忆并注入 system prompt
+        # (注入在追加 user 消息之前,LLM 首轮就能看到记忆)
+        self._inject_memories(user_input)
 
         # -------------------------------------------------------
         # Step 1: 追加用户消息
@@ -333,6 +340,9 @@ class DummyAgent:
             # 把最终回答追加到历史（记住 LLM 说了什么）
             self.history.append({"role": "assistant", "content": final_text})
             self._persist_history()
+
+            # Phase 2.4:对话结束抽取记忆(旁路调用,不影响返回)
+            self._extract_memories()
 
             self._save_conversation_log()
             return final_text
@@ -447,6 +457,69 @@ class DummyAgent:
                 f.write(json.dumps(event, ensure_ascii=False) + "\n")
         except Exception as e:
             print(f"⚠️ 压缩事件日志写入失败: {e}")
+
+    # ---------------------------------------------------------------
+    # Phase 2.4: 跨 Session 记忆(注入 + 抽取)
+    # ---------------------------------------------------------------
+    def _inject_memories(self, user_input: str) -> None:
+        """按当前输入检索记忆,注入 system prompt(决策点 2A/3A)。
+
+        每次 chat 用用户输入作 FTS 查询(source='memory'),top-k 事实
+        追加到 system 消息。注入前先剥离旧的记忆段(防重复累积)。
+        检索失败静默——记忆是增强,不是必需品。
+        """
+        try:
+            hits = self.session_store.search(
+                user_input, source="memory", limit=3
+            )
+        except Exception:
+            return
+        if not hits:
+            return
+        mem_map = {m["id"]: m for m in self.session_store.list_memories()}
+        block_lines = ["", "已知事实(记忆):"]
+        total = 0
+        ids = []
+        for h in hits:
+            mem = mem_map.get(h["seq"])
+            if not mem:
+                continue
+            line = f"- [{mem['category']}] {mem['fact']}"
+            if total + len(line) > 400:  # ≤500 token 的保守字符上限
+                break
+            block_lines.append(line)
+            total += len(line)
+            ids.append(mem["id"])
+        if not ids:
+            return
+        content = self.history[0]["content"]
+        idx = content.find("已知事实(记忆):")
+        if idx >= 0:
+            content = content[:idx].rstrip()
+        self.history[0] = {
+            "role": "system",
+            "content": content + "\n" + "\n".join(block_lines),
+        }
+        self.session_store.increment_memory_hits(ids)
+        # 可见性:注入条数 + 每条全文(决策:显示粒度 A)
+        print(f"\n  🧠 注入记忆 ({len(ids)}/{len(mem_map)} 条, ~{total} chars):")
+        for line in block_lines[2:]:
+            print(f"    {line}")
+
+    def _extract_memories(self) -> None:
+        """对话结束抽取记忆(决策点 1A)。
+
+        旁路调用:抽取结果不污染对话历史;失败由 extractor 内部降级
+        (记 memory.jsonl 事件,返回 0)。
+        """
+        try:
+            facts, conflicts = self.memory_extractor.extract_from_history(
+                self.history, self.current_session_id
+            )
+        except Exception:
+            return
+        if facts:
+            print(f"  🧠 已抽取 {facts} 条事实({conflicts} 条覆盖旧事实)")
 
     def resume_last_session(self) -> bool:
         """恢复数据库中最新的会话历史到当前 Agent。"""

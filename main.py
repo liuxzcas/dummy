@@ -76,6 +76,7 @@ def print_help():
       /tools    列出可用工具
       /history  显示对话历史（调试用）
       /search <关键词>  全文搜索历史对话与折叠原文（Phase 2.3b）
+      /memories  查看/删除跨会话记忆（Phase 2.4）
       /quit     退出 (/exit /q 也可)
 
     用法: 直接输入你的问题或指令，Agent 会自动决定是否调用工具。
@@ -242,6 +243,11 @@ def main():
                     print(line)
                 continue
 
+            if user_input.lower().startswith("/memories"):
+                for line in handle_memories_command(user_input, agent.session_store):
+                    print(line)
+                continue
+
             # ---------------------------------------------------
             # 交给 Agent 处理
             # ---------------------------------------------------
@@ -284,6 +290,34 @@ def handle_search_command(user_input: str, store) -> list[str]:
         lines.append(f"  [{src_tag}] session={h['session_id'][:8]} "
                      f"seq={h['seq']} score={h['score']:.2f}")
         lines.append(f"      {h['snippet']}")
+    lines.append("")
+    return lines
+
+
+def handle_memories_command(user_input: str, store) -> list[str]:
+    """/memories 命令处理(纯函数,可测试)。
+
+    支持:/memories(列出)、/memories del <id>(删除)。
+    返回要打印的行列表。
+    """
+    parts = user_input.split()
+    if len(parts) >= 3 and parts[1].lower() == "del":
+        try:
+            mid = int(parts[2])
+        except ValueError:
+            return ["用法: /memories del <id>", ""]
+        ok = store.delete_memory(mid)
+        return [f"已删除记忆 #{mid}" if ok else f"记忆 #{mid} 不存在", ""]
+    mems = store.list_memories()
+    if not mems:
+        return ["🧠 (暂无记忆)", ""]
+    lines = [f"🧠 记忆 ({len(mems)} 条):"]
+    for m in mems:
+        lines.append(
+            f"  [{m['id']}] [{m['category']}] {m['fact']} "
+            f"(conf={m['confidence']:.1f}, hits={m['hits']}, "
+            f"来自 {m['session_id'][:8]})"
+        )
     lines.append("")
     return lines
 

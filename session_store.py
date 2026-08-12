@@ -100,6 +100,29 @@ class SessionStore:
             )
             """
         )
+        # 跨 Session 记忆表(Phase 2.4 2026-08-11,见 docs/cross-session-memory.md):
+        # 对话结束由 LLM 抽取事实存入;后续会话按需检索注入 system prompt。
+        # replace_id 覆盖:保留原 id 与 hits(使用统计),更新事实与置信度。
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS memories (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                fact TEXT NOT NULL,
+                category TEXT NOT NULL DEFAULT 'general',
+                confidence REAL NOT NULL DEFAULT 0.8,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                hits INTEGER NOT NULL DEFAULT 0
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_memories_category
+            ON memories(category)
+            """
+        )
         conn.commit()
         conn.close()
 
@@ -340,6 +363,21 @@ class SessionStore:
                     "INSERT INTO fts_zh (source, session_id, seq, content) VALUES ('archive', ?, ?, ?)",
                     (session_id, aid, content),
                 )
+
+            # memories(Phase 2.4):事实条目作为第三索引源,
+            # 注入时用 source='memory' 过滤检索。
+            mrows = conn.execute(
+                "SELECT session_id, id, fact FROM memories"
+            ).fetchall()
+            for session_id, mid, fact in mrows:
+                conn.execute(
+                    "INSERT INTO fts_en (source, session_id, seq, content) VALUES ('memory', ?, ?, ?)",
+                    (session_id, mid, fact),
+                )
+                conn.execute(
+                    "INSERT INTO fts_zh (source, session_id, seq, content) VALUES ('memory', ?, ?, ?)",
+                    (session_id, mid, fact),
+                )
             conn.commit()
         except Exception:
             conn.rollback()
@@ -444,6 +482,9 @@ class SessionStore:
                 UNION ALL
                 SELECT 'archive' AS source, session_id, id AS seq, content
                 FROM tool_result_archive
+                UNION ALL
+                SELECT 'memory' AS source, session_id, id AS seq, fact AS content
+                FROM memories
             ) WHERE content LIKE ? ESCAPE '\\'
               AND (? IS NULL OR source = ?)
             ORDER BY length(content) LIMIT ?
@@ -471,3 +512,89 @@ class SessionStore:
             snippet = snippet + "…"
         return {"source": source_, "session_id": session_id, "seq": seq,
                 "snippet": snippet, "score": score}
+
+    # ---------------------------------------------------------------
+    # Phase 2.4: 跨 Session 记忆(memories 表 CRUD)
+    # ---------------------------------------------------------------
+    def add_memory(
+        self, session_id: str, fact: str, category: str = "general",
+        confidence: float = 0.8, replace_id: int | None = None,
+    ) -> int:
+        """写入一条记忆。
+
+        replace_id 非空时覆盖旧条目(保留 id 与 hits,更新事实与置信度),
+        返回记忆 id;否则新增并返回新 id。
+        """
+        now = self._now_iso()
+        conn = sqlite3.connect(self.db_path)
+        conn.execute("PRAGMA busy_timeout = 10000")
+        try:
+            if replace_id is not None:
+                conn.execute(
+                    """
+                    UPDATE memories SET fact = ?, category = ?, confidence = ?,
+                        session_id = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (fact, category, confidence, session_id, now, replace_id),
+                )
+                conn.commit()  # UPDATE 分支也要提交(否则连接关闭回滚)
+                return replace_id
+            cur = conn.execute(
+                """
+                INSERT INTO memories (session_id, fact, category, confidence,
+                                      created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (session_id, fact, category, confidence, now, now),
+            )
+            conn.commit()
+            return cur.lastrowid
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def list_memories(self) -> list[dict[str, Any]]:
+        """列出全部记忆(按创建时间倒序)。"""
+        conn = sqlite3.connect(self.db_path)
+        rows = conn.execute(
+            """
+            SELECT id, session_id, fact, category, confidence,
+                   created_at, updated_at, hits
+            FROM memories ORDER BY id DESC
+            """
+        ).fetchall()
+        conn.close()
+        return [
+            {"id": r[0], "session_id": r[1], "fact": r[2], "category": r[3],
+             "confidence": r[4], "created_at": r[5], "updated_at": r[6],
+             "hits": r[7]}
+            for r in rows
+        ]
+
+    def delete_memory(self, memory_id: int) -> bool:
+        """删除一条记忆;不存在返回 False。"""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cur = conn.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
+            conn.commit()
+            return cur.rowcount > 0
+        finally:
+            conn.close()
+
+    def increment_memory_hits(self, memory_ids: list[int]) -> None:
+        """注入命中计数(使用统计,供 /memories 展示)。"""
+        if not memory_ids:
+            return
+        conn = sqlite3.connect(self.db_path)
+        try:
+            conn.execute("PRAGMA busy_timeout = 10000")
+            conn.executemany(
+                "UPDATE memories SET hits = hits + 1 WHERE id = ?",
+                [(i,) for i in memory_ids],
+            )
+            conn.commit()
+        finally:
+            conn.close()
