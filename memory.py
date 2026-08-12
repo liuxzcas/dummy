@@ -15,6 +15,31 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 
+EXPAND_PROMPT = """你是查询扩展器。把用户的提问转成 2-4 个用于检索记忆库的检索词
+(名词性概念,1-8 字)。要求:提取主题名词,去掉问句语气词
+(什么/是/分别/用/吗/呢/怎么样/请),不要疑问句,不要解释。
+只输出 JSON 数组,例如:["前端框架", "后端框架", "技术选型"]。
+用户提问:{question}"""
+
+
+def parse_terms(text: str) -> list[str]:
+    """解析检索词 JSON 数组(容错:标准 JSON → 围栏 → 双引号正则兜底)。
+
+    非法输入返回空列表,调用方回退到原始问句。
+    """
+    t = (text or "").strip()
+    m = re.search(r"```(?:json)?\s*(.*?)```", t, re.S)
+    if m:
+        t = m.group(1).strip()
+    try:
+        data = json.loads(t)
+        if isinstance(data, list):
+            return [str(x).strip()[:20] for x in data if str(x).strip()]
+    except json.JSONDecodeError:
+        items = re.findall(r'"([^"]{1,20})"', t)
+        return items
+    return []
+
 EXTRACT_PROMPT = """你是记忆抽取器。从用户提供的对话中提取值得长期记住的事实
 (用户偏好、项目决策、关键配置、重要事实),输出 JSON 数组,不要输出任何其他内容。
 
@@ -74,6 +99,28 @@ class MemoryExtractor:
             base = os.path.dirname(os.path.abspath(__file__))
             log_path = os.path.join(base, "logs", "memory.jsonl")
         self.log_path = log_path
+
+    def expand_query(self, question: str) -> list[str]:
+        """LLM 把问句扩展成检索词(PlugMem 意图路由,方案 A 2026-08-11)。
+
+        T5 回归实测:完整问句做 FTS 短语查询与记忆事实无共享关键词,
+        检索不命中(8/30)。改为先提炼名词性概念("技术栈?" →
+        ["前端框架","后端框架","技术选型"]),命中率大增。
+        任何失败(调用异常/解析失败/空)回退 [question],不中断。
+        """
+        try:
+            resp = self.llm.chat(
+                messages=[
+                    {"role": "system",
+                     "content": EXPAND_PROMPT.format(question=question)},
+                    {"role": "user", "content": question},
+                ],
+                temperature=0.0,
+            )
+            terms = parse_terms(getattr(resp, "content", ""))
+        except Exception:
+            return [question]
+        return terms or [question]
 
     def extract_from_history(
         self, history: list[dict], session_id: str
