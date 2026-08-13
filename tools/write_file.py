@@ -13,6 +13,14 @@ tools/write_file.py — write_file 工具实现
 覆盖已有文件时，自动对比新旧内容并展示差异供用户确认。
 这是防止误覆盖的关键安全环节。
 
+=== 确认机制（2026-08-14 定稿） ===
+
+所有修改已有文件的动作（overwrite / line / append / 路径外）都要确认。
+确认交互在 handler 内（diff/行级预览），输入收集与 '/p' 拦截由
+core 注入的 _confirm 函数统一处理。_confirm 为 None 时跳过确认。
+确认前置、零副作用：所有有副作用的操作严格排在确认之后，
+打断（InterruptSignal）发生时没有需要回滚的状态。
+
 === 原子写入 ===
 
 先写入 .tmp 文件再 rename 到目标路径。
@@ -55,8 +63,12 @@ VERIFIERS[".py"] = _verify_python
 # VERIFIERS[".json"] = _verify_json   # Phase 2+
 
 
-def _show_diff(old: str, new: str, path: str) -> bool:
-    """展示新旧内容差异，询问用户是否确认。返回 True 表示确认写入。"""
+def _show_diff(old: str, new: str, path: str, _confirm) -> bool:
+    """展示新旧内容差异，询问用户是否确认。返回 True 表示确认写入。
+
+    输入收集由 core 注入的 _confirm 处理(命中 /p 抛 InterruptSignal，
+    不返回)；handler 只负责 y/n/d 语义判断。
+    """
     old_lines = old.splitlines(keepends=True)
     new_lines = new.splitlines(keepends=True)
 
@@ -81,28 +93,27 @@ def _show_diff(old: str, new: str, path: str) -> bool:
     else:
         for line in diff:
             print(f"  {line.rstrip()}")
-            
+
     # 统计变更量
     added = sum(1 for l in diff if l.startswith("+") and not l.startswith("+++"))
-    removed = sum(1 for l in diff if l.startswith("-") and not l.startswith("---"))            
+    removed = sum(1 for l in diff if l.startswith("-") and not l.startswith("---"))
     print(f"\n📝 write_file 将覆盖: {path}")
     print(f"  旧: {len(old_lines)} 行 → 新: {len(new_lines)} 行 (+{added}/-{removed})")
     print()
     choice = ""
     while choice not in ("y", "n", "d"):
-        choice = input("  输入 y 确认写入 / n 拒绝 / d 查看完整 diff: ").strip().lower()
+        choice = _confirm("  输入 y 确认写入 / n 拒绝 / d 查看完整 diff: ").strip().lower()
     if choice == "d":
         # 显示完整 diff（通过分页）
         for line in diff:
-            
             print(f"  {line.rstrip()}")
         print()
-        choice = input("  输入 y 确认写入 / n 拒绝: ").strip().lower()
+        choice = _confirm("  输入 y 确认写入 / n 拒绝: ").strip().lower()
 
     return choice == "y"
 
 
-def write_file_handler(path: str, content: str, mode: str = "overwrite", verify: bool = True, line: int | None = None, line_end: int | None = None) -> str:
+def write_file_handler(path: str, content: str, mode: str = "overwrite", verify: bool = True, line: int | None = None, line_end: int | None = None, _confirm=None) -> str:
     """写入内容到文件。自动创建父目录，路径安全受控。
 
     参数：
@@ -114,18 +125,20 @@ def write_file_handler(path: str, content: str, mode: str = "overwrite", verify:
               分多次写入时，最后一次设 True，之前设 False。
     - line: 仅 mode="line" 时有效。指定要替换的起始行号（从 1 开始）。
     - line_end: 仅 mode="line" 时有效。指定要替换的结束行号（含两端，默认等于 line）。
+    - _confirm: core 注入的确认函数(diff/行级/路径外确认用);None 时跳过确认
     """
     project_root = os.path.abspath(os.getcwd())
     full_path = os.path.abspath(path)
 
-    # ---- 路径安全检测 ----
+    # ---- 路径安全检测（确认由注入的 _confirm 收集输入） ----
     if not full_path.startswith(project_root):
         print(f"   项目: {project_root}")
         print(f"\n⚠️  write_file 试图写到项目目录之外:")
         print(f"   目标: {full_path}")
         choice = 0
-        while choice not in ("y", "n"):
-            choice = input("  输入 y 确认写入 / n 拒绝: ").strip().lower()
+        if _confirm is not None:
+            while choice not in ("y", "n"):
+                choice = _confirm("  输入 y 确认写入 / n 拒绝: ").strip().lower()
         if choice != "y":
             return f"[用户拒绝将内容写到项目目录之外] 写入已取消: {path}"
         print()  # 空行，让后续输出不挤在一起
@@ -147,17 +160,28 @@ def write_file_handler(path: str, content: str, mode: str = "overwrite", verify:
         else:
             return f"[错误] 不支持的 mode 参数: {mode}（可选: overwrite, append, line）"
 
-        # ---- Diff 预览（仅覆盖已有文件时） ----
+        # ---- Diff 预览（覆盖已有文件时；确认输入由 _confirm 收集） ----
         if mode == "overwrite" and os.path.exists(full_path):
             with open(full_path, "r", encoding="utf-8") as f:
                 old_content = f.read()
-            if not _show_diff(old_content, content, path):
+            if _confirm is None:
+                if old_content == content:
+                    return "[跳过] 文件内容无变化"
+            elif not _show_diff(old_content, content, path, _confirm):
                 return "[跳过] 文件内容无变化"
 
         # ---- 追加模式：合并原内容 ----
         if mode == "append" and os.path.exists(full_path):
             with open(full_path, "r", encoding="utf-8") as f:
                 old_content = f.read()
+            # 追加确认(零副作用:确认通过才合并)
+            if _confirm is not None:
+                print(f"  write_file 追加模式: 将追加 {len(content)} 字符到 {path}")
+                for nl in content.splitlines():
+                    print(f"  + {nl}")
+                choice = _confirm("  输入 y 确认追加 / n 拒绝: ").strip().lower()
+                if choice != "y":
+                    return "[用户拒绝] 追加已取消"
             content = old_content + content
 
         # ---- 行替换模式：替换指定行或行范围 ----
@@ -181,6 +205,16 @@ def write_file_handler(path: str, content: str, mode: str = "overwrite", verify:
             old_range = old_lines[line - 1:end]
             old_text = "".join(old_range)
             new_text = "".join(new_lines)
+            # ---- 行级确认（替换前，零副作用） ----
+            if _confirm is not None:
+                print(f"  write_file line 模式: 修改第{line}~{end}行 ({len(old_range)}行 → {len(new_lines)}行)")
+                for ol in old_range:
+                    print(f"  - {ol.rstrip()}")
+                for nl in new_lines:
+                    print(f"  + {nl.rstrip()}")
+                choice = _confirm("  输入 y 确认修改 / n 拒绝: ").strip().lower()
+                if choice != "y":
+                    return "[用户拒绝] 行修改已取消"
             # 替换范围
             old_lines[line - 1:end] = new_lines
             content = "".join(old_lines)

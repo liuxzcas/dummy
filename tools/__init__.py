@@ -4,7 +4,7 @@
 集中式注册：所有注册调用在 create_default_registry() 中完成。
 """
 
-from .registry import Tool, ToolRegistry
+from .registry import Tool, ToolRegistry, InterruptSignal
 from .terminal import terminal_handler
 from .read_file import read_file_handler
 from .write_file import write_file_handler
@@ -33,6 +33,7 @@ def create_default_registry() -> ToolRegistry:
             }
         },
         handler=terminal_handler,
+        confirm=True,  # 执行本地命令,需用户确认(确认交互在 handler 内)
     )
 
     # ---- read_file ----
@@ -58,6 +59,7 @@ def create_default_registry() -> ToolRegistry:
             },
         },
         handler=read_file_handler,
+        confirm=True,  # 读取本地文件,需用户确认(含隐私提示)
     )
 
     # ---- write_file ----
@@ -98,6 +100,7 @@ def create_default_registry() -> ToolRegistry:
             },
         },
         handler=write_file_handler,
+        confirm=True,  # 写入本地文件,需用户确认(diff/行级预览)
     )
 
     # ---- web_search ----

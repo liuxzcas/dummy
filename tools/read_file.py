@@ -20,26 +20,33 @@ tools/read_file.py — read_file 工具实现
 
 注意：终端上用户看到的预览被 core.py 第 262 行的 300 字符截断限制，
 但回注给 LLM 的是完整结果。翻页机制在 LLM 侧工作，不在终端侧。
+
+=== 确认机制（2026-08-14 定稿） ===
+
+文件内容会随工具结果回注给 LLM(在线 API)，读取前必须让用户知情。
+确认交互在 handler 内（路径 + 隐私提示），输入收集与 '/p' 拦截由
+core 注入的 _confirm 函数统一处理。_confirm 为 None 时跳过确认。
 """
 
 import os
 
 
-def read_file_handler(path: str, offset: int = 1, limit: int | None = None) -> str:
+def read_file_handler(path: str, offset: int = 1, limit: int | None = None, _confirm=None) -> str:
     """读取文件内容并返回。
 
     参数：
     - path: 文件路径
     - offset: 起始行号（1-indexed，默认 1）
     - limit: 最大行数（默认 None，表示全部）
+    - _confirm: core 注入的确认函数(输入收集 + /p 拦截);None 时跳过确认
     """
     # ---- 读取前确认 ----
-    # 文件内容会随工具结果回注给 LLM(在线 API),读取前必须让用户知情
-    print(f"\n  📖 即将读取文件: {path}")
-    print("     ⚠️ 隐私提示: 文件内容将发送给在线模型(LLM API),请确认不含敏感信息。")
-    choice = input("     按 Enter 允许读取, 输入 n 取消: ").strip().lower()
-    if choice == "n":
-        return "[用户取消] 文件未读取"
+    if _confirm is not None:
+        print(f"\n  📖 即将读取文件: {path}")
+        print("     ⚠️ 隐私提示: 文件内容将发送给在线模型(LLM API),请确认不含敏感信息。")
+        choice = _confirm("     按 Enter 允许读取, 输入 n 取消: ").strip().lower()
+        if choice == "n":
+            return "[用户取消] 文件未读取"
 
     try:
         with open(path, "r", encoding="utf-8") as f:
