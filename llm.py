@@ -3,7 +3,8 @@
 llm.py — LLM API 封装模块
 ============================================================
 
-本模块封装了对 DeepSeek API（兼容 OpenAI 格式）的调用，
+本模块封装了对 OpenAI 兼容格式 LLM API 的调用(默认 DeepSeek,
+base_url/api_key/model 均可配置,任意兼容服务可接入),
 重点关注 Chat Completions 接口中的 Tool/Function Calling 功能。
 
 === 背景知识：什么是 OpenAI 兼容 API？===
@@ -110,20 +111,21 @@ class LLMClient:
         model: str = "deepseek-chat",
     ):
         """
-        初始化 LLM 客户端。
-
+        初始化 LLM 客户端(OpenAI 兼容 API)。
+ 
         参数说明：
-        - api_key: DeepSeek API 密钥。在 https://platform.deepseek.com/api_keys 获取。
+        - api_key: API 密钥。任意 OpenAI 兼容服务均可——
+                   DeepSeek: https://platform.deepseek.com/api_keys
+                   OpenAI / Ollama 本地 / vLLM 等按其服务获取。
                    注意：密钥应当通过环境变量传入，而不是硬编码在代码里。
-                   Phase 0 为了简单从终端输入，后续会改为环境变量。
-        - base_url: API 基础地址。
+        - base_url: API 基础地址。指向任意 OpenAI 兼容端点：
                    DeepSeek 官方: https://api.deepseek.com
-                   （如果你是其他 provider，改这个就行）
-        - model: 模型名称。
+                   Ollama 本地: http://localhost:11434/v1
+                   其他 provider 改这个即可，无需改代码。
+        - model: 模型名称。按服务提供方的模型名填写：
                  DeepSeek-V3: "deepseek-chat"
-                 DeepSeek-R1: "deepseek-reasoner"
-                 Phase 0 使用 deepseek-chat，因为 R1 的 reasoning 模式
-                 对 tool calling 的支持与标准 Chat 模型不同。
+                 OpenAI: "gpt-4o" 等
+                 Ollama: "qwen2.5:7b" 等
         """
         # -------------------------------------------------------
         # OpenAI 客户端初始化

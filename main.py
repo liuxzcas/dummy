@@ -105,6 +105,9 @@ def main():
 
     # ===========================================================
     # Step 1: 获取凭证
+    # 本工具兼容任何 OpenAI 格式的 LLM API——DeepSeek / OpenAI /
+    # Ollama 本地 / vLLM / 其他兼容服务均可,只需配置
+    # base_url + api_key + model 三个参数
     # ===========================================================
     # 优先级：环境变量 > 用户输入
     # 环境变量方式更安全（不小心分享代码时不会泄露 API Key）
@@ -116,7 +119,7 @@ def main():
     if not api_key:
         api_key = os.environ.get("DUMMY_AGENT_API_KEY", "").strip()
     if not api_key:
-        api_key = input("请输入你的 DeepSeek API Key: ").strip()
+        api_key = input("请输入你的 API Key (DeepSeek / OpenAI / 其他兼容服务): ").strip()
         if not api_key:
             print("错误: API Key 不能为空。")
             print("你可以设置环境变量 DUMMY_API 或 DUMMY_AGENT_API_KEY 避免每次都输入。")
@@ -125,11 +128,13 @@ def main():
     # 尝试从环境变量读取 Base URL
     base_url = os.environ.get("DUMMY_AGENT_BASE_URL", "").strip()
     if not base_url:
-        base_url = input("请输入 API Base URL (直接回车使用 DeepSeek 官方地址): ").strip()
+        base_url = input("请输入 API Base URL (直接回车使用默认 DeepSeek 地址): ").strip()
         if not base_url:
             base_url = "https://api.deepseek.com"
 
-    model = "deepseek-v4-flash"  # Phase 0 固定使用此模型
+    # 模型名:优先环境变量 DUMMY_AGENT_MODEL,默认 deepseek-v4-flash。
+    # 任何 OpenAI 兼容服务的模型名都可以(如 gpt-4o / qwen2.5 / llama3 等)。
+    model = os.environ.get("DUMMY_AGENT_MODEL", "deepseek-v4-flash").strip()
 
     print(f"\n  模型: {model}")
     print(f"  地址: {base_url}")
