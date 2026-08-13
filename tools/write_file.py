@@ -20,7 +20,6 @@ tools/write_file.py — write_file 工具实现
 """
 
 import os
-import difflib
 import py_compile
 
 
@@ -55,53 +54,6 @@ VERIFIERS[".py"] = _verify_python
 # VERIFIERS[".json"] = _verify_json   # Phase 2+
 
 
-def _show_diff(old: str, new: str, path: str) -> bool:
-    """展示新旧内容差异，询问用户是否确认。返回 True 表示确认写入。"""
-    old_lines = old.splitlines(keepends=True)
-    new_lines = new.splitlines(keepends=True)
-
-    if old_lines == new_lines:
-        print(f"  文件内容无变化，跳过写入: {path}")
-        return False
-
-    diff = list(difflib.unified_diff(
-        old_lines, new_lines,
-        fromfile="旧", tofile="新",
-        n=2,  # 每个差异块上下各 2 行上下文
-    ))
-
-    # 展示 diff（截断显示，太长的话只显示头尾）
-    MAX_DIFF_LINES = 40
-    if len(diff) > MAX_DIFF_LINES:
-        for line in diff[:MAX_DIFF_LINES // 2]:
-            print(f"  {line.rstrip()}")
-        print(f"  ... (省略 {len(diff) - MAX_DIFF_LINES} 行)")
-        for line in diff[-MAX_DIFF_LINES // 2:]:
-            print(f"  {line.rstrip()}")
-    else:
-        for line in diff:
-            print(f"  {line.rstrip()}")
-            
-    # 统计变更量
-    added = sum(1 for l in diff if l.startswith("+") and not l.startswith("+++"))
-    removed = sum(1 for l in diff if l.startswith("-") and not l.startswith("---"))            
-    print(f"\n📝 write_file 将覆盖: {path}")
-    print(f"  旧: {len(old_lines)} 行 → 新: {len(new_lines)} 行 (+{added}/-{removed})")
-    print()
-    choice = ""
-    while choice not in ("y", "n", "d"):
-        choice = input("  输入 y 确认写入 / n 拒绝 / d 查看完整 diff: ").strip().lower()
-    if choice == "d":
-        # 显示完整 diff（通过分页）
-        for line in diff:
-            
-            print(f"  {line.rstrip()}")
-        print()
-        choice = input("  输入 y 确认写入 / n 拒绝: ").strip().lower()
-
-    return choice == "y"
-
-
 def write_file_handler(path: str, content: str, mode: str = "overwrite", verify: bool = True, line: int | None = None, line_end: int | None = None) -> str:
     """写入内容到文件。自动创建父目录，路径安全受控。
 
@@ -117,18 +69,6 @@ def write_file_handler(path: str, content: str, mode: str = "overwrite", verify:
     """
     project_root = os.path.abspath(os.getcwd())
     full_path = os.path.abspath(path)
-
-    # ---- 路径安全检测 ----
-    if not full_path.startswith(project_root):
-        print(f"   项目: {project_root}")
-        print(f"\n⚠️  write_file 试图写到项目目录之外:")
-        print(f"   目标: {full_path}")
-        choice = 0
-        while choice not in ("y", "n"):
-            choice = input("  输入 y 确认写入 / n 拒绝: ").strip().lower()
-        if choice != "y":
-            return f"[用户拒绝将内容写到项目目录之外] 写入已取消: {path}"
-        print()  # 空行，让后续输出不挤在一起
 
     # ---- 写入 ----
     try:
@@ -147,11 +87,11 @@ def write_file_handler(path: str, content: str, mode: str = "overwrite", verify:
         else:
             return f"[错误] 不支持的 mode 参数: {mode}（可选: overwrite, append, line）"
 
-        # ---- Diff 预览（仅覆盖已有文件时） ----
+        # ---- 内容无变化检查（纯函数,无交互;diff 预览由 core 确认 UI 承担） ----
         if mode == "overwrite" and os.path.exists(full_path):
             with open(full_path, "r", encoding="utf-8") as f:
                 old_content = f.read()
-            if not _show_diff(old_content, content, path):
+            if old_content == content:
                 return "[跳过] 文件内容无变化"
 
         # ---- 追加模式：合并原内容 ----

@@ -107,6 +107,49 @@ from compressor import (
 # 类是最自然的方式。后续可以加数据库持久化。=================
 
 
+class _InterruptListener:
+    """非阻塞监听用户输入(Windows console 轮询)。
+
+    工具运行中/LLM 等待时,用户随时敲 "/p xxxx + Enter":
+    字符进 console 缓冲,由 chat() 循环的检查点 drain() 消费,
+    在下一轮工具调用前作出反应。
+    非 Windows / 非 console 环境自动退化(drain 恒返回 None)。
+    """
+
+    def __init__(self):
+        self._buffer = ""
+        self._msvcrt = None
+        try:
+            import msvcrt  # Windows console 专用
+            self._msvcrt = msvcrt
+        except ImportError:
+            pass
+
+    def drain(self) -> str | None:
+        """非阻塞收集用户输入;完整行(以换行结束)返回,否则 None。"""
+        if self._msvcrt is None:
+            return None
+        try:
+            while self._msvcrt.kbhit():
+                ch = self._msvcrt.getwch()
+                if ch in ("\r", "\n"):
+                    line, self._buffer = self._buffer, ""
+                    return line.strip() or None
+                if ch == "\x03":  # Ctrl+C
+                    raise KeyboardInterrupt
+                if ch in ("\b", "\x7f"):  # 退格(带回显)
+                    self._buffer = self._buffer[:-1]
+                    print("\b \b", end="", flush=True)
+                else:  # 逐字符回显,用户能看见自己敲的内容
+                    self._buffer += ch
+                    print(ch, end="", flush=True)
+        except KeyboardInterrupt:
+            raise
+        except Exception:
+            return None
+        return None
+
+
 class DummyAgent:
     """
     Dummy Agent — 最小可用的 Tool-Calling Agent。
@@ -184,6 +227,9 @@ class DummyAgent:
 
         # Tool 定义（缓存起来，每次调用都传给 LLM）
         self.tool_definitions = self.tools.get_tool_definitions()
+
+        # 随时打断监听器(工具运行中/LLM 等待时用户可输入 /p xxxx)
+        self._interrupt_listener = _InterruptListener()
 
         # 不在 __init__ 时创建新 session；
         # 只有真正进入 chat() 或 reset() 时才开始持久化。
@@ -290,6 +336,7 @@ class DummyAgent:
                 # 一个 LLM 响应可能包含多个 tool_calls（虽然 Phase 0 的模型通常一次只调一个）
                 # 每个 tool_call 独立执行
                 # -------------------------------------------------------
+                interrupt_prompt = None
                 for tool_call in response_message.tool_calls:
                     # 从 LLM 返回中提取信息
                     tool_name = tool_call.function.name
@@ -306,12 +353,43 @@ class DummyAgent:
                     # 打印工具调用日志
                     print(f"\n  🛠  Agent 调用了 [{tool_name}] 参数={tool_args}")
 
+                    # ---------------------------------------------------
+                    # 统一确认(仅确认类工具;确认 UI 由 core 管理,工具纯函数)
+                    # 用户输入:Enter 允许 / n 拒绝 / /p <提示词> 打断
+                    # ---------------------------------------------------
+                    if self.tools.requires_confirm(tool_name):
+                        decision, prompt = self._confirm_tool(tool_name, tool_args)
+                        if decision == "interrupt":
+                            interrupt_prompt = prompt
+                            self.history.append({
+                                "role": "tool", "tool_call_id": tool_call_id,
+                                "content": "[用户打断,工具未执行]"})
+                            break
+                        if decision == "cancel":
+                            self.history.append({
+                                "role": "tool", "tool_call_id": tool_call_id,
+                                "content": "[用户拒绝] 用户拒绝执行此工具"})
+                            self._persist_history()
+                            continue
+
                     # 分发执行工具（dispatch 内部已做异常兜底和结果规范化）
                     result = self.tools.dispatch(tool_name, tool_args)
 
                     # 打印执行结果摘要
                     result_preview = result[:300] + "..." if len(result) > 300 else result
                     print(f"  📝  {tool_name} 返回: {result_preview}")
+
+                    # ---------------------------------------------------
+                    # 检查点 A:工具执行后,非阻塞监听用户 /p 打断
+                    # (工具运行中用户敲 /p xxxx,执行完立即消费)
+                    # ---------------------------------------------------
+                    if interrupt_prompt is None:
+                        interrupt_prompt = self._drain_interrupt()
+                    if interrupt_prompt is not None:
+                        self.history.append({
+                            "role": "tool", "tool_call_id": tool_call_id,
+                            "content": "[用户打断,工具未执行]"})
+                        break
 
                     # -------------------------------------------------------
                     # 2d. 将工具结果以 tool role 回注给 LLM
@@ -325,6 +403,29 @@ class DummyAgent:
                         "content": result,
                     })
                     self._persist_history()
+
+                # -------------------------------------------------------
+                # 检查点 B:整轮 tool_calls 执行完后(continue 前)
+                # -------------------------------------------------------
+                if interrupt_prompt is None:
+                    interrupt_prompt = self._drain_interrupt()
+
+                if interrupt_prompt is not None:
+                    # 剩余未执行的 tool_calls 补取消消息(消息结构完整,API 不报错)
+                    executed_ids = {
+                        m.get("tool_call_id")
+                        for m in self.history if m.get("role") == "tool"
+                    }
+                    for tc in response_message.tool_calls:
+                        if tc.id not in executed_ids:
+                            self.history.append({
+                                "role": "tool", "tool_call_id": tc.id,
+                                "content": "[用户打断,工具未执行]"})
+                    # 提示词作为用户消息注入,LLM 下一轮看到插话重新规划
+                    print(f"\n  🧭 用户打断: {interrupt_prompt}")
+                    self.history.append({"role": "user", "content": interrupt_prompt})
+                    self._persist_history()
+                    continue
 
                 # 工具执行完后，回到循环顶部，再次调 LLM
                 # 这次 LLM 能看到工具的执行结果，可以决定下一步
@@ -671,6 +772,64 @@ class DummyAgent:
 
         # 全部失败
         return {"_error": f"参数 JSON 解析失败: {raw[:100]}"}
+
+    # ---------------------------------------------------------------
+    # 统一确认与随时打断(core 层唯一交互点;工具保持纯函数)
+    # ---------------------------------------------------------------
+    # 常见命令的简单说明(确认 UI 显示,帮助用户快速理解命令作用)
+    COMMAND_HINTS = [
+        (("ls", "dir", "tree", "ll"), "📂", "查看目录/文件列表"),
+        (("grep", "rg", "findstr", "find"), "🔍", "在文件中搜索文本"),
+        (("rm", "del", "erase", "rmdir"), "🗑️", "删除文件/目录(不可恢复,请谨慎)"),
+    ]
+
+    def _command_hint(self, command: str) -> str | None:
+        """返回命令的说明文字(带 emoji);无法识别时返回 None。"""
+        cmd0 = command.strip().split()[0].lower() if command.strip() else ""
+        for names, emoji, desc in self.COMMAND_HINTS:
+            if cmd0 in names:
+                return f"{emoji} {desc}"
+        return None
+
+    def _confirm_tool(self, tool_name: str, args: dict) -> tuple[str, str | None]:
+        """统一确认 UI:core 层唯一阻塞式用户交互点。
+
+        返回 (decision, interrupt_prompt):
+          - ("ok", None):      用户允许执行
+          - ("cancel", None):  用户拒绝(工具返回拒绝结果给 LLM)
+          - ("interrupt", p): 用户 /p 打断,提示词 p 注入下一轮
+        """
+        print(f"\n  🛠  Agent 请求调用工具: {tool_name}")
+        preview = json.dumps(args, ensure_ascii=False)
+        if len(preview) > 300:
+            preview = preview[:300] + "..."
+        print(f"     参数: {preview}")
+        if tool_name == "terminal":
+            cmd = (args.get("command") or "").strip()
+            hint = self._command_hint(cmd)
+            if hint:
+                print(f"     {hint}")
+        elif tool_name == "read_file":
+            print("     ⚠️ 隐私提示: 文件内容将发送给在线模型(LLM API),请确认不含敏感信息。")
+        raw = input("     按 Enter 允许, 输入 n 拒绝, 或 /p <提示词> 打断并给出建议: ").strip()
+        if raw.lower() == "n":
+            return ("cancel", None)
+        if raw.startswith("/p "):
+            return ("interrupt", raw[3:].strip())
+        return ("ok", None)
+
+    def _drain_interrupt(self) -> str | None:
+        """检查点调用:非阻塞监听用户 /p 打断。
+
+        工具运行中/LLM 等待时用户敲 "/p xxxx",检查点消费后返回提示词;
+        非 /p 输入或无可读输入返回 None。
+        """
+        line = self._interrupt_listener.drain()
+        if not line:
+            return None
+        if line.startswith("/p "):
+            return line[3:].strip()
+        return None
 
     def get_history(self) -> list[dict]:
         """

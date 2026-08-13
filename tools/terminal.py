@@ -16,34 +16,12 @@ Windows 中文版默认编码是 GBK，而 git-bash 输出可能是 UTF-8。
 import subprocess
 
 
-# 常见命令的简单说明(确认提示处显示,帮助用户快速理解命令作用)
-COMMAND_HINTS = [
-    (("ls", "dir", "tree", "ll"), "📂", "查看目录/文件列表"),
-    (("grep", "rg", "findstr", "find"), "🔍", "在文件中搜索文本"),
-    (("rm", "del", "erase", "rmdir"), "🗑️", "删除文件/目录(不可恢复,请谨慎)"),
-]
-
-
-def _command_hint(command: str) -> str | None:
-    """返回命令的说明文字(带 emoji);无法识别时返回 None。"""
-    cmd0 = command.strip().split()[0].lower() if command.strip() else ""
-    for names, emoji, desc in COMMAND_HINTS:
-        if cmd0 in names:
-            return f"{emoji} {desc}"
-    return None
-
-
 def terminal_handler(command: str) -> str:
-    """在本地 shell 中执行命令，返回输出。"""
-    # ---- 执行前确认 ----
-    print(f"\n  ⚠️  即将执行: {command}")
-    hint = _command_hint(command)
-    if hint:
-        print(f"     {hint}")
-    choice = input("    按 Enter 确认执行, 输入 n 取消: ").strip().lower()
-    if choice == "n":
-        return "[用户取消] 命令未执行"
+    """在本地 shell 中执行命令，返回输出。
 
+    纯函数:确认由 core 统一管理(dispatch 前 requires_confirm 检查),
+    handler 自身不接触任何用户交互。
+    """
     # ---- 执行 ----
     try:
         # 注意：不用 text=True（Windows GBK 编码会崩）

@@ -33,6 +33,7 @@ class Tool:
     - schema: OpenAI 格式的工具定义（发给 LLM）
     - handler: 实际执行工具的函数
     - timeout: 超时秒数（None=无限制，可用于防止 handler 卡死）
+    - confirm: 是否需要用户确认（确认由 core 统一管理，工具自身不接触交互）
     """
 
     def __init__(
@@ -41,11 +42,13 @@ class Tool:
         schema: dict,
         handler: Callable[..., str],
         timeout: Optional[int] = None,
+        confirm: bool = False,
     ):
         self.name = name
         self.schema = schema
         self.handler = handler
         self.timeout = timeout
+        self.confirm = confirm
 
 
 class ToolRegistry:
@@ -67,12 +70,15 @@ class ToolRegistry:
         parameters: dict[str, Any],
         handler: Callable[..., str],
         timeout: Optional[int] = None,
+        confirm: bool = False,
     ):
         """注册一个新工具。
 
         新增参数：
         - timeout: 可选，该工具的超时秒数。
                    超过此时间未返回会被强制中断。
+        - confirm: 可选，是否需要用户确认。确认 UI 由 core 统一管理
+                   (dispatch 前检查 requires_confirm),handler 保持纯函数。
         """
         schema = {
             "type": "function",
@@ -91,7 +97,13 @@ class ToolRegistry:
             schema=schema,
             handler=handler,
             timeout=timeout,
+            confirm=confirm,
         )
+
+    def requires_confirm(self, name: str) -> bool:
+        """该工具是否需要用户确认(core 在 dispatch 前调用)。"""
+        tool = self._tools.get(name)
+        return bool(tool and tool.confirm)
 
     def get_tool_definitions(self) -> list[dict]:
         """获取所有工具定义列表（发给 LLM 的 tools 参数）。"""
