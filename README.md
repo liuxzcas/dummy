@@ -1,0 +1,79 @@
+# Dummy Agent
+
+一个带持久记忆的 LLM Agent 学习项目:工具调用循环 + 上下文压缩 + 全文搜索 + 跨会话记忆。
+
+> EN TL;DR: A teaching-grade LLM agent with tool-calling loop, context
+> compression, full-text search, and cross-session memory.
+
+## 快速开始
+
+**1. 克隆并进入目录**
+
+```bash
+git clone https://github.com/liuxzcas/dummy.git
+cd dummy
+```
+
+**2. 配置环境变量**(Windows 用户建议设为用户级环境变量,或直接启动时输入)
+
+| 变量 | 必填 | 说明 |
+|------|------|------|
+| `DUMMY_API` | 是 | API Key(DeepSeek / OpenAI / 其他兼容服务均可) |
+| `DUMMY_AGENT_BASE_URL` | 否 | API 地址,默认 `https://api.deepseek.com` |
+| `DUMMY_AGENT_MODEL` | 否 | 模型名,默认 `deepseek-v4-flash` |
+
+> 本项目兼容**任何 OpenAI 格式的 LLM API**(DeepSeek / OpenAI / Ollama 本地 / vLLM 等),只需配置上述三个变量。前提:服务端支持 tool calling。
+
+**3. 启动**
+
+Windows:双击 `start.bat`,或在目录内运行 `start.bat`
+其他平台:
+
+```bash
+python main.py
+```
+
+启动后直接输入文字对话即可,agent 会自动调用工具。
+
+## 基本命令
+
+| 命令 | 作用 |
+|------|------|
+| `/search <关键词>` | 全文搜索历史对话(支持中英文) |
+| `/memories` | 查看已记住的事实;`/memories del <id>` 删除 |
+| `/resume` | 恢复最近一次会话 |
+| `/help` | 查看全部命令 |
+
+## 项目结构
+
+```
+main.py          入口(CLI)
+core.py          Agent 主循环(工具调用 + 记忆注入)
+llm.py           LLM 客户端(OpenAI 兼容)
+tools/           内置工具
+session_store.py SQLite 存储 + FTS5 全文搜索
+memory.py        记忆抽取(写入时蒸馏)
+compressor.py    上下文压缩
+tests/           pytest 测试套件(72 项)
+docs/            设计文档(memory-system.md 等)
+```
+
+## 学习路线
+
+- 想理解记忆系统:`docs/memory-system.md`(双通道注入设计)
+- 想理解压缩机制:`docs/` 下的压缩设计文档
+- 想跑回归测试:`python -m pytest tests/`;T5 回归集 `python scripts/phase2_regression.py`(需真实 API)
+
+## 常见问题
+
+**启动时提示输入 API Key?** 设置 `DUMMY_API` 环境变量即可跳过。
+
+**想换模型/换服务?** 设置 `DUMMY_AGENT_BASE_URL` 和 `DUMMY_AGENT_MODEL`:
+
+```bash
+set DUMMY_AGENT_BASE_URL=http://localhost:11434/v1
+set DUMMY_AGENT_MODEL=qwen2.5:7b
+start.bat
+```
+
+**测试要花钱吗?** `pytest` 套件全部 mock,零 API 成本;只有 `phase2_regression.py` 走真实 API(约 0.1 元/轮)。
