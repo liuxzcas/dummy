@@ -462,12 +462,13 @@ class DummyAgent:
     # Phase 2.4: 跨 Session 记忆(注入 + 抽取)
     # ---------------------------------------------------------------
     def _inject_memories(self, user_input: str) -> None:
-        """Hermes 方式(分支 hermes-memory-v3):全量常驻注入,不做检索。
+        """Hermes 方式(分支 hermes-memory-v3):全量常驻注入 + 历史 FTS 兜底。
 
-        依据 Hermes 实证(2026-08-12 查阅):内置记忆全量注入 system
-        (~1300 token),绕开"问句 vs 事实短语"检索匹配问题;条目在
-        写入时由抽取器蒸馏/合并(见 memory.py EXTRACT_PROMPT),
-        注入侧只做容量保护。user_input 保留签名兼容,不参与检索。
+        主通道:记忆条目全量注入(蒸馏层,写入时合并)。
+        兜底通道:问句提炼词搜完整对话历史(messages 源,无损层)——抽取
+        波动丢实体时,由历史原始片段救回(2026-08-12 实测三轮 26/26/24
+        波动即抽取随机性,历史是唯一永不丢的信息源)。
+        user_input 保留签名兼容,用于提炼词。
         """
         mems = self.session_store.list_memories()
         if not mems:
@@ -479,26 +480,63 @@ class DummyAgent:
         ids = []
         for m in mems:
             line = f"- [{m['category']}] {m['fact']}"
-            if total + len(line) > 400:  # 容量上限(≈500 token 保守值)
+            if total + len(line) > 400:  # 记忆段容量上限
                 break
             block_lines.append(line)
             total += len(line)
             ids.append(m["id"])
         if not ids:
             return
+
+        # 兜底通道:问句提炼词 → FTS 搜完整历史 → 附加注入(≤200 字符)
+        hist_lines = self._retrieve_history_evidence(user_input)
+
         content = self.history[0]["content"]
-        idx = content.find("已知事实(记忆):")
-        if idx >= 0:
-            content = content[:idx].rstrip()
-        self.history[0] = {
-            "role": "system",
-            "content": content + "\n" + "\n".join(block_lines),
-        }
+        for marker in ("已知事实(记忆):", "相关历史记录:"):
+            idx = content.find(marker)
+            if idx >= 0:
+                content = content[:idx].rstrip()
+        new_content = content + "\n" + "\n".join(block_lines)
+        if hist_lines:
+            new_content += "\n\n相关历史记录:\n" + "\n".join(hist_lines)
+        self.history[0] = {"role": "system", "content": new_content}
         self.session_store.increment_memory_hits(ids)
-        # 可见性:注入条数 + 每条全文(全量常驻,无检索)
-        print(f"\n  🧠 注入记忆 ({len(ids)}/{len(mems)} 条, ~{total} chars, 全量常驻):")
+        # 可见性:注入条数 + 历史兜底条数
+        print(f"\n  🧠 注入记忆 ({len(ids)}/{len(mems)} 条, ~{total} chars"
+              f"{f' + 历史 {len(hist_lines)} 条' if hist_lines else ''}):")
         for line in block_lines[2:]:
             print(f"    {line}")
+
+    def _retrieve_history_evidence(self, user_input: str) -> list[str]:
+        """问句提炼词搜完整对话历史(无损兜底层)。
+
+        提炼词失败回退原问句;FTS 失败静默。返回去重片段(≤200 字符)。
+        """
+        try:
+            terms = self.memory_extractor.expand_query(user_input)
+        except Exception:
+            terms = [user_input]
+        hist_lines: list[str] = []
+        seen: set[tuple] = set()
+        try:
+            for term in terms[:2]:
+                hits = self.session_store.search(
+                    term, source="message", limit=2
+                )
+                for h in hits:
+                    key = (h["session_id"], h["seq"])
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    snippet = (h["snippet"] or "").strip()
+                    if not snippet:
+                        continue
+                    if len("".join(hist_lines)) + len(snippet) > 200:
+                        break
+                    hist_lines.append(f"- {snippet}")
+        except Exception:
+            return []
+        return hist_lines
 
     def _extract_memories(self) -> None:
         """对话结束抽取记忆(决策点 1A)。

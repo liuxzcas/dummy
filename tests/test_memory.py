@@ -174,9 +174,10 @@ def test_inject_full_injection(tmp_path):
     store = make_store(tmp_path)
     store.add_memory("s1", "前端框架用 Vue", "项目", 0.9)
     store.add_memory("s1", "后端用 FastAPI", "项目", 0.9)
-    agent = make_agent([FakeMsg("好的")], store)  # 无 expand 调用
+    # chat 序列:expand_query(兜底通道) + 主循环;store 无历史 → 无历史段
+    agent = make_agent([FakeMsg('["技术栈"]'), FakeMsg("好的")], store)
     out, printed = chat_and_capture(agent, "前后端技术栈?")
-    assert "🧠 注入记忆" in printed and "全量常驻" in printed
+    assert "🧠 注入记忆" in printed
     content = agent.history[0]["content"]
     assert "Vue" in content and "FastAPI" in content
     assert out == "好的"
@@ -187,7 +188,7 @@ def test_inject_hits_all_injected(tmp_path):
     store = make_store(tmp_path)
     store.add_memory("s1", "用户偏好中文", "偏好", 0.9)
     store.add_memory("s1", "项目使用 pytest", "项目", 0.8)
-    agent = make_agent([FakeMsg("好的")], store)
+    agent = make_agent([FakeMsg('["偏好"]'), FakeMsg("好的")], store)
     chat_and_capture(agent, "随便问")
     hits = {m["id"]: m["hits"] for m in store.list_memories()}
     assert hits == {1: 1, 2: 1}
@@ -196,12 +197,13 @@ def test_inject_hits_all_injected(tmp_path):
 def test_inject_no_accumulation_across_chats(tmp_path):
     store = make_store(tmp_path)
     store.add_memory("s1", "项目使用 pytest", "项目", 0.8)
-    agent = make_agent([FakeMsg("好的")], store)
+    agent = make_agent([FakeMsg('["pytest"]'), FakeMsg("好的")], store)
     chat_and_capture(agent, "问题一")
-    agent.llm.seq = [FakeMsg("好的2"),
+    agent.llm.seq = [FakeMsg('["pytest"]'), FakeMsg("好的2"),
                      FakeMsg('[{"fact": "二次抽取", "category": "其他", "confidence": 0.5, "replace_id": null}]')]
     chat_and_capture(agent, "问题二")
     assert agent.history[0]["content"].count("已知事实(记忆):") == 1
+    assert agent.history[0]["content"].count("相关历史记录:") == 0
 
 
 def test_inject_char_cap(tmp_path):
@@ -209,7 +211,7 @@ def test_inject_char_cap(tmp_path):
     store = make_store(tmp_path)
     store.add_memory("s1", "很长的记忆" * 100, "偏好", 0.8)  # 500 字符
     store.add_memory("s1", "重要事实", "项目", 0.95)
-    agent = make_agent([FakeMsg("好的")], store)
+    agent = make_agent([FakeMsg('["记忆"]'), FakeMsg("好的")], store)
     chat_and_capture(agent, "记忆相关")
     block = agent.history[0]["content"]
     idx = block.find("已知事实(记忆):")
@@ -217,6 +219,24 @@ def test_inject_char_cap(tmp_path):
     assert len(block[idx:]) <= 420  # 段总长 ≤ 400 + 标题余量
     # confidence 0.95 的短条目先注入(长条目被截断)
     assert "重要事实" in block[idx:]
+
+
+def test_inject_history_fallback(tmp_path):
+    """兜底通道:抽取丢失时,问句提炼词 FTS 搜历史片段附加注入。"""
+    store = make_store(tmp_path)
+    sid = store.create_session()
+    store.save_history(sid, [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "数据库名定为 mydb"},
+    ])
+    store.add_memory(sid, "团队有三个分部", "项目", 0.8)  # 记忆不含实体
+    # expand 提炼词命中历史"数据库名定为 mydb"
+    agent = make_agent([FakeMsg('["数据库名"]'), FakeMsg("好的")], store)
+    _, printed = chat_and_capture(agent, "数据库名叫什么?")
+    content = agent.history[0]["content"]
+    assert "相关历史记录:" in content
+    assert "mydb" in content
+    assert "🧠 注入记忆" in printed
 
 
 # ---- 旁路与 CLI ----
