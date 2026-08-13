@@ -18,6 +18,7 @@
 
 import argparse
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -109,11 +110,20 @@ CASES = [
 ]
 
 
-def norm(s: str) -> str:
-    """归一化:小写 + 去所有空白(与质量门一致)。"""
-    import re
+CN_DIGITS = {"零": "0", "一": "1", "两": "2", "二": "2", "三": "3",
+             "四": "4", "五": "5", "六": "6", "七": "7", "八": "8", "九": "9"}
 
-    return re.sub(r"\s+", "", (s or "").lower())
+
+def norm(s: str) -> str:
+    """归一化:小写 + 去所有空白 + 中文数字转阿拉伯(与质量门一致)。
+
+    数字形态差异("三个" vs "3 个")是测量噪音不是质量失败,
+    统计题实测踩过——必须归一化掉。
+    """
+    out = re.sub(r"\s+", "", (s or "").lower())
+    for cn, d in CN_DIGITS.items():
+        out = out.replace(cn, d)
+    return out
 
 
 class EmptyRegistry(ToolRegistry):
