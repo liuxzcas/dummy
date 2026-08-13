@@ -88,16 +88,18 @@
 | Session 列表 | ✅ 完成 | `/sessions` 查看会话列表与消息数量统计 |
 | 全文搜索（2.3b） | ⬜ 下一步 | FTS5 + trigram tokenizer（标准 unicode61 对中文只能整句匹配，trigram 方案经 Hermes state.db 双索引实证）；提供 /search 命令 |
 
-#### Phase 2.4 — 跨 Session 记忆（规划）
+#### Phase 2.4 — 跨 Session 记忆（已完成 ✅，方案 4 定稿）
 
-> 设计来源：[memory-research.md](./memory-research.md)（PlugMem 简化版：事实抽取 → 结构化条目 → 按需注入）
+> 设计文档：[memory-system.md](./memory-system.md)（双通道注入:全量常驻 + 历史 FTS 兜底）
+> 演进:检索注入 63% → PlugMem 简化 50% → 全量常驻 80-87% → +历史兜底 **93%** (T5 30 题)
 
 | 功能 | 状态 | 说明 |
 |------|------|------|
-| memories 表 | ⬜ 待做 | 事实条目：category / confidence / source_session |
-| 写入管线 | ⬜ 待做 | 对话后抽取事实；冲突处理"新覆盖旧 + 置信度裁决" |
-| 按需注入 | ⬜ 待做 | top-k 相关事实注入 system prompt（≤500 token） |
-| 回归集 | ⬜ 待做 | LongMemEval 五类题型转 20-30 题 |
+| memories 表 | ✅ 完成 | 事实条目:fact / category / confidence / hits |
+| 写入管线 | ✅ 完成 | 写入时蒸馏:同类合并 + 精确值保留 + replace_id 覆盖 |
+| 全量注入 | ✅ 完成 | 全部记忆注入 system(≤400 字符,confidence 排序) |
+| 历史兜底 | ✅ 完成 | 问句提炼词 FTS 搜完整对话附加注入(≤200 字符,无损层) |
+| 回归集 | ✅ 完成 | T5 五类 30 题 28/30 = 93%;LongMemEval 题型适配 |
 
 #### Phase 2 综合测试集（规划）
 
