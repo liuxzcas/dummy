@@ -33,6 +33,14 @@ def read_file_handler(path: str, offset: int = 1, limit: int | None = None) -> s
     - offset: 起始行号（1-indexed，默认 1）
     - limit: 最大行数（默认 None，表示全部）
     """
+    # ---- 读取前确认 ----
+    # 文件内容会随工具结果回注给 LLM(在线 API),读取前必须让用户知情
+    print(f"\n  📖 即将读取文件: {path}")
+    print("     ⚠️ 隐私提示: 文件内容将发送给在线模型(LLM API),请确认不含敏感信息。")
+    choice = input("     按 Enter 允许读取, 输入 n 取消: ").strip().lower()
+    if choice == "n":
+        return "[用户取消] 文件未读取"
+
     try:
         with open(path, "r", encoding="utf-8") as f:
             lines = f.readlines()
