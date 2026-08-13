@@ -82,11 +82,14 @@ import json
 import os
 import re
 import datetime
+import threading
+import time
 from typing import Optional
 
 from llm import LLMClient
 from memory import MemoryExtractor
 from tools import ToolRegistry
+from tools.registry import InterruptSignal
 from prompt import build_system_prompt
 from session_store import SessionStore
 from compressor import (
@@ -105,6 +108,75 @@ from compressor import (
 # 为什么不设计成纯函数？
 # 对话历史需要累积，状态需要保持。
 # 类是最自然的方式。后续可以加数据库持久化。=================
+
+
+class _InterruptListener:
+    """随时打断监听器(后台线程,无回显)。
+
+    工具运行中/LLM 等待时,用户随时敲 "/p + Enter" 触发打断:
+    - 后台线程持续轮询 msvcrt.kbhit(),字符累积到 buffer(无回显,
+      用户输入不可见,像密码输入),完整行以换行标记结束
+    - chat() 循环检查点 take_line() 消费完整行,在下一轮工具调用
+      前作出反应
+    - pause()/resume():确认 input() 期间暂停轮询,避免与 input
+      竞争 stdin(输入由 input 统一收集,仍走 /p 拦截)
+    非 Windows / 非 console 环境自动退化(take_line 恒返回 None)。
+    """
+
+    def __init__(self):
+        self._buffer = ""
+        self._paused = False
+        self._stop = False
+        self._lock = threading.Lock()  # 保护 buffer(线程写/检查点读)
+        self._msvcrt = None
+        try:
+            import msvcrt  # Windows console 专用
+            self._msvcrt = msvcrt
+            self._thread = threading.Thread(
+                target=self._poll_loop, daemon=True, name="interrupt-listener")
+            self._thread.start()
+        except ImportError:
+            pass
+
+    def _poll_loop(self) -> None:
+        """后台轮询:字符进 buffer(无回显),完整行累积。"""
+        while not self._stop:
+            if not self._paused:
+                try:
+                    while self._msvcrt.kbhit():
+                        ch = self._msvcrt.getwch()
+                        if ch in (chr(13), chr(10)):  # CR/LF:行结束标记
+                            with self._lock:
+                                self._buffer += chr(10)
+                            continue
+                        if ch == chr(3):  # Ctrl+C
+                            self._stop = True
+                            return
+                        if ch in (chr(8), chr(127)):  # 退格/删除(不回显)
+                            with self._lock:
+                                self._buffer = self._buffer[:-1]
+                        else:  # 字符进 buffer,不回显
+                            with self._lock:
+                                self._buffer += ch
+                except Exception:
+                    pass
+            time.sleep(0.02)
+
+    def pause(self) -> None:
+        """暂停轮询(确认 input() 期间调用,避免抢占 stdin)。"""
+        self._paused = True
+
+    def resume(self) -> None:
+        """恢复轮询。"""
+        self._paused = False
+
+    def take_line(self) -> str | None:
+        """消费累积的完整行(检查点调用);无完整行返回 None。"""
+        with self._lock:
+            if chr(10) in self._buffer:
+                line, self._buffer = self._buffer.split(chr(10), 1)
+                return line.strip() or None
+        return None
 
 
 class DummyAgent:
@@ -184,6 +256,13 @@ class DummyAgent:
 
         # Tool 定义（缓存起来，每次调用都传给 LLM）
         self.tool_definitions = self.tools.get_tool_definitions()
+
+        # 随时打断监听器(工具运行中/LLM 等待时用户可输入 /p 触发)
+        self._interrupt_listener = _InterruptListener()
+
+        # 注入确认函数提供者:handler 的 _confirm 参数从这里来
+        # (输入收集 + /p 拦截在 core,确认语义判断留在 handler)
+        self.tools.set_confirm_provider(self._make_confirm())
 
         # 不在 __init__ 时创建新 session；
         # 只有真正进入 chat() 或 reset() 时才开始持久化。
@@ -290,6 +369,7 @@ class DummyAgent:
                 # 一个 LLM 响应可能包含多个 tool_calls（虽然 Phase 0 的模型通常一次只调一个）
                 # 每个 tool_call 独立执行
                 # -------------------------------------------------------
+                interrupt_triggered = False
                 for tool_call in response_message.tool_calls:
                     # 从 LLM 返回中提取信息
                     tool_name = tool_call.function.name
@@ -306,12 +386,36 @@ class DummyAgent:
                     # 打印工具调用日志
                     print(f"\n  🛠  Agent 调用了 [{tool_name}] 参数={tool_args}")
 
+                    # ---------------------------------------------------
                     # 分发执行工具（dispatch 内部已做异常兜底和结果规范化）
-                    result = self.tools.dispatch(tool_name, tool_args)
+                    # 确认类工具:dispatch 注入 _confirm(输入收集 + /p 拦截)
+                    # InterruptSignal 穿透 dispatch,在这里捕获处理打断
+                    # ---------------------------------------------------
+                    try:
+                        result = self.tools.dispatch(tool_name, tool_args)
+                    except InterruptSignal:
+                        # 用户 /p 打断(发生在 handler 确认输入时)
+                        interrupt_triggered = True
+                        self.history.append({
+                            "role": "tool", "tool_call_id": tool_call_id,
+                            "content": "[用户打断,工具未执行]"})
+                        break
 
                     # 打印执行结果摘要
                     result_preview = result[:300] + "..." if len(result) > 300 else result
                     print(f"  📝  {tool_name} 返回: {result_preview}")
+
+                    # ---------------------------------------------------
+                    # 检查点 A:工具执行后,检查监听线程累积的 /p 触发
+                    # (工具运行中用户敲 /p,执行完立即消费)
+                    # ---------------------------------------------------
+                    if not interrupt_triggered:
+                        interrupt_triggered = self._drain_interrupt()
+                    if interrupt_triggered:
+                        self.history.append({
+                            "role": "tool", "tool_call_id": tool_call_id,
+                            "content": "[用户打断,工具未执行]"})
+                        break
 
                     # -------------------------------------------------------
                     # 2d. 将工具结果以 tool role 回注给 LLM
@@ -325,6 +429,36 @@ class DummyAgent:
                         "content": result,
                     })
                     self._persist_history()
+
+                # -------------------------------------------------------
+                # 检查点 B:整轮 tool_calls 执行完后(continue 前)
+                # -------------------------------------------------------
+                if not interrupt_triggered:
+                    interrupt_triggered = self._drain_interrupt()
+
+                if interrupt_triggered:
+                    # 统一收集提示词(所有打断路径:确认处 /p 与检查点 /p 汇合)
+                    prompt = input(
+                        "  🧭 检测到 /p 打断,请输入提示词(Enter 取消): "
+                    ).strip()
+                    if prompt:
+                        # 剩余未执行的 tool_calls 补取消消息(消息结构完整)
+                        executed_ids = {
+                            m.get("tool_call_id")
+                            for m in self.history if m.get("role") == "tool"
+                        }
+                        for tc in response_message.tool_calls:
+                            if tc.id not in executed_ids:
+                                self.history.append({
+                                    "role": "tool", "tool_call_id": tc.id,
+                                    "content": "[用户打断,工具未执行]"})
+                        # 提示词作为用户消息注入,LLM 下一轮看到插话重新规划
+                        print(f"\n  🧭 用户打断: {prompt}")
+                        self.history.append({"role": "user", "content": prompt})
+                        self._persist_history()
+                        continue
+                    # 提示词为空:取消打断——取消消息已保留(工具未执行),
+                    # 不注入用户消息,继续正常循环(LLM 会自行处理)
 
                 # 工具执行完后，回到循环顶部，再次调 LLM
                 # 这次 LLM 能看到工具的执行结果，可以决定下一步
@@ -671,6 +805,45 @@ class DummyAgent:
 
         # 全部失败
         return {"_error": f"参数 JSON 解析失败: {raw[:100]}"}
+
+    # ---------------------------------------------------------------
+    # 统一确认与随时打断(core 只做输入收集与 /p 拦截,语义在 handler)
+    # ---------------------------------------------------------------
+    def _make_confirm(self):
+        """创建注入给 handler 的确认函数(dispatch 时注入 _confirm 参数)。
+
+        职责(两条):
+        1. 输入收集:所有确认输入统一经此函数(单点 /p 检查)
+        2. /p 拦截:命中 '/p' 前缀抛 InterruptSignal(纯触发,后缀忽略),
+           普通输入原样返回,由 handler 处理(y/n/d 等工具语义)
+
+        设计决策(2026-08-14 定稿):确认语义归 handler(每种工具展示
+        内容不同),/p 拦截归 core(全局一致)——handler 不裸调 input(),
+        打断不可能被 handler 内部逻辑误用。打断触发后提示词由 chat
+        循环打断处理点统一收集(阻塞式 input)。
+        """
+        def confirm(prompt: str) -> str:
+            self._interrupt_listener.pause()  # 暂停轮询,避免与 input 竞争
+            try:
+                print(prompt)
+                raw = input(
+                    "     或输入 /p 打断(随后输入提示词): "
+                ).strip()
+            finally:
+                self._interrupt_listener.resume()
+            if raw.startswith("/p"):
+                raise InterruptSignal()  # 纯触发,提示词在打断处理点统一收集
+            return raw
+        return confirm
+
+    def _drain_interrupt(self) -> bool:
+        """检查点调用:监听线程累积的行中是否有 /p 触发。
+
+        实时监听只认 '/p' 前缀(后面的内容全部忽略,不解析为提示词);
+        触发后提示词由打断处理点统一收集(阻塞式 input)。
+        """
+        line = self._interrupt_listener.take_line()
+        return bool(line and line.startswith("/p"))
 
     def get_history(self) -> list[dict]:
         """

@@ -11,6 +11,12 @@ Windows 中文版默认编码是 GBK，而 git-bash 输出可能是 UTF-8。
 
 修复方案：用 text=False（返回 bytes），手动 decode("utf-8", errors="replace")，
 非法字符被替换为 �，不会崩溃。
+
+=== 确认机制（2026-08-14 定稿） ===
+
+确认交互在 handler 内（展示命令 + 命令说明），但输入收集与 '/p'
+拦截由 core 注入的 _confirm 函数统一处理（命中 /p 抛 InterruptSignal，
+不返回给 handler）。_confirm 为 None（直接调用/测试）时跳过确认。
 """
 
 import subprocess
@@ -33,16 +39,22 @@ def _command_hint(command: str) -> str | None:
     return None
 
 
-def terminal_handler(command: str) -> str:
-    """在本地 shell 中执行命令，返回输出。"""
+def terminal_handler(command: str, _confirm=None) -> str:
+    """在本地 shell 中执行命令，返回输出。
+
+    确认交互在 handler 内,但输入收集与 '/p' 拦截由 core 注入的
+    _confirm 函数统一处理(命中 /p 抛 InterruptSignal,不返回给 handler)。
+    _confirm 为 None(直接调用/测试)时跳过确认。
+    """
     # ---- 执行前确认 ----
-    print(f"\n  ⚠️  即将执行: {command}")
-    hint = _command_hint(command)
-    if hint:
-        print(f"     {hint}")
-    choice = input("    按 Enter 确认执行, 输入 n 取消: ").strip().lower()
-    if choice == "n":
-        return "[用户取消] 命令未执行"
+    if _confirm is not None:
+        print(f"\n  ⚠️  即将执行: {command}")
+        hint = _command_hint(command)
+        if hint:
+            print(f"     {hint}")
+        choice = _confirm("    按 Enter 确认执行, 输入 n 取消: ").strip().lower()
+        if choice == "n":
+            return "[用户取消] 命令未执行"
 
     # ---- 执行 ----
     try:
