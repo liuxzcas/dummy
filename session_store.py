@@ -588,6 +588,34 @@ class SessionStore:
         finally:
             conn.close()
 
+    def delete_session(self, session_id: str) -> bool:
+        """删除一个会话(连带消息、归档、该会话产生的记忆)。
+
+        事务内删除四张表,并重建全文索引(数据量小,全量重建简单可靠)。
+        返回 False 表示会话不存在。
+        """
+        conn = sqlite3.connect(self.db_path)
+        try:
+            conn.execute("PRAGMA busy_timeout = 10000")
+            conn.execute("BEGIN IMMEDIATE")
+            cur = conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+            conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
+            conn.execute(
+                "DELETE FROM tool_result_archive WHERE session_id = ?",
+                (session_id,),
+            )
+            conn.execute("DELETE FROM memories WHERE session_id = ?", (session_id,))
+            conn.commit()
+            if cur.rowcount:
+                # 同步全文索引(被删内容不再可搜索)
+                self.rebuild_search_index()
+            return cur.rowcount > 0
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
     def increment_memory_hits(self, memory_ids: list[int]) -> None:
         """注入命中计数(使用统计,供 /memories 展示)。"""
         if not memory_ids:
