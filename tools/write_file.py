@@ -174,12 +174,14 @@ def write_file_handler(path: str, content: str, mode: str = "overwrite", verify:
         if mode == "append" and os.path.exists(full_path):
             with open(full_path, "r", encoding="utf-8") as f:
                 old_content = f.read()
-            # 追加确认(零副作用:确认通过才合并)
+            # 追加确认(零副作用:确认通过才合并;非 y/n 输入重新等待)
             if _confirm is not None:
                 print(f"  write_file 追加模式: 将追加 {len(content)} 字符到 {path}")
                 for nl in content.splitlines():
                     print(f"  + {nl}")
-                choice = _confirm("  输入 y 确认追加 / n 拒绝: ").strip().lower()
+                choice = ""
+                while choice not in ("y", "n"):
+                    choice = _confirm("  输入 y 确认追加 / n 拒绝: ").strip().lower()
                 if choice != "y":
                     return "[用户拒绝] 追加已取消"
             content = old_content + content
@@ -205,14 +207,16 @@ def write_file_handler(path: str, content: str, mode: str = "overwrite", verify:
             old_range = old_lines[line - 1:end]
             old_text = "".join(old_range)
             new_text = "".join(new_lines)
-            # ---- 行级确认（替换前，零副作用） ----
+            # ---- 行级确认（替换前，零副作用；非 y/n 输入重新等待） ----
             if _confirm is not None:
                 print(f"  write_file line 模式: 修改第{line}~{end}行 ({len(old_range)}行 → {len(new_lines)}行)")
                 for ol in old_range:
                     print(f"  - {ol.rstrip()}")
                 for nl in new_lines:
                     print(f"  + {nl.rstrip()}")
-                choice = _confirm("  输入 y 确认修改 / n 拒绝: ").strip().lower()
+                choice = ""
+                while choice not in ("y", "n"):
+                    choice = _confirm("  输入 y 确认修改 / n 拒绝: ").strip().lower()
                 if choice != "y":
                     return "[用户拒绝] 行修改已取消"
             # 替换范围
