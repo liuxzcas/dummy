@@ -76,7 +76,8 @@ def print_help():
       /tools    列出可用工具
       /history  显示对话历史（调试用）
       /search <关键词>  全文搜索历史对话与折叠原文（Phase 2.3b）
-      /memories  查看/删除跨会话记忆（Phase 2.4）
+      /memories         查看跨会话记忆
+      /memories del <id> 删除指定记忆（不可恢复）
       /quit     退出 (/exit /q 也可)
 
     用法: 直接输入你的问题或指令，Agent 会自动决定是否调用工具。

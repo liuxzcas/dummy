@@ -48,6 +48,41 @@ automatically.
 | `/resume` | Resume the most recent session |
 | `/help` | Show all commands |
 
+## Memory Management (/memories)
+
+When a conversation ends, noteworthy facts are extracted automatically
+(write-time distillation: same-topic merge, exact-value preservation,
+conflict overwrite). `/memories` lets you view and manage them:
+
+**List all memories**
+
+```
+/memories
+🧠 记忆 (3 条):
+  [3] [偏好] 用户偏好中文交流 (conf=0.9, hits=4, 来自 a1b2c3d4)
+  [2] [项目] 测试框架为 pytest (conf=0.8, hits=2, 来自 9f8e7d6c)
+  [1] [技术] 部署环境为 Linux (conf=0.7, hits=0, 来自 9f8e7d6c)
+```
+
+| Field | Meaning |
+|-------|---------|
+| `[id]` | Memory ID, used for deletion |
+| `[category]` | Category: 偏好 (preference) / 项目 (project) / 技术 (tech) / 其他 (other) |
+| `conf` | Confidence (0~1): extractor's confidence in the fact |
+| `hits` | Times injected into context (0 = never used) |
+| `来自` | Source session id (first 8 chars) |
+
+**Delete a memory** (irreversible)
+
+```
+/memories del 3      → 已删除记忆 #3
+/memories del 999    → 记忆 #999 不存在
+/memories del abc    → 用法: /memories del <id>
+```
+
+Note: memory writes happen automatically during conversation; `/memories`
+is view/management only.
+
 ## Interrupt & Confirm
 
 - Confirmation-required tools (terminal / read_file / write_file) ask
