@@ -40,81 +40,21 @@
 
 ---
 
+### Phase 2 — 持久化与记忆（已完成 ✅）
+
+目标：Agent 退出后能恢复对话、跨会话记住事实。四个子阶段 + 综合测试集全部落地：
+
+| 子阶段 | 状态 | 说明 |
+|--------|------|------|
+| 2.1 环境配置 | ✅ | `DUMMY_API` / `DUMMY_AGENT_BASE_URL` / `.env` 自动加载 |
+| 2.2 Context 压缩 | ✅ | 两级压缩（ToolResult 折叠 + 增量摘要）、质量门 8/8、真实冒烟 5/5 — [context-compression.md](./context-compression.md) |
+| 2.3 Session 持久化与全文搜索 | ✅ | SQLite 持久化、`/resume` `/sessions`、FTS5 双表（英文词干 + 中文 trigram）`/search` — [fts-search.md](./fts-search.md) |
+| 2.4 跨 Session 记忆 | ✅ | 方案 4 定稿：全量常驻注入 + 历史 FTS 兜底，T5 28/30 = 93% — [memory-system.md](./memory-system.md) |
+| 综合测试集 | ✅ | T1-T4 pytest 72 项全绿 + T5 LongMemEval 真实模型 30 题 93% — [phase2-test-suite.md](./phase2-test-suite.md) |
+
+> 关键决策沉淀：两级压缩 L1/L2 分工与有损边界、FTS 双表方案、记忆方案 4（四轮实验 63%→93%，见 memory-system.md）、工具确认与 /p 打断（docs/experiences/tool-interrupt-star.md）
+
 ## 规划中
-
-### Phase 2 — 持久化与记忆
-
-目标：Agent 退出后能恢复对话，不再丢失上下文。分三个子阶段：
-
-#### Phase 2.1 — .env 配置（已完成）
-
-| 功能 | 状态 | 说明 |
-|------|------|------|
-| `DUMMY_API` 环境变量 | ✅ 完成 | 从 `DUMMY_API` / `DUMMY_AGENT_API_KEY` 读取 API Key |
-| Base URL 配置 | ✅ 完成 | 支持 `DUMMY_AGENT_BASE_URL` 环境变量 |
-| `.env` 文件自动加载 | ✅ 完成 | 启动时使用 `load_dotenv()` 自动读取 `.env` 文件 |
-
-#### Phase 2.2 — Context 压缩（已完成 ✅）
-
-> 设计文档：[context-compression.md](./context-compression.md) · 实施计划：[phase2.2_plan.md](./phase2.2_plan.md)
-> 两级策略：ToolResult 折叠（零 LLM 成本）+ 增量摘要（旧摘要+新块→新摘要）
-> 关键决策（实现中修订）：摘要消息 role=system（role 交替约束，D4 修订）；
-> 折叠原文只归档 L1 部分（决策 C，"磁盘全文保留"修正为"折叠原文可追溯"）
-
-| 功能 | 状态 | 说明 |
-|------|------|------|
-| Token 计数 | ✅ 完成 | `llm.last_usage` 暴露 API 返回的 `usage.prompt_tokens`，精确不估算 |
-| ToolResult 折叠（L1） | ✅ 完成 | 超长 tool 结果截断（头200+标记+尾100），零 LLM 成本；原文归档 `tool_result_archive` 表（决策 C） |
-| 增量摘要（L2） | ✅ 完成 | 旧摘要+新块→新摘要，covers 累加防重复压缩；瞬时错误重试、空摘要不重试 |
-| 压缩触发 | ✅ 完成 | `should_compress`：usage.prompt_tokens 严格大于窗口 70% 才触发；断路器暂停零开销短路 |
-| 容错 | ✅ 完成 | 降级阶梯（L2→L1→跳过）、断路器（连续 3 次暂停）、事件日志 `logs/compression.jsonl`（12 字段） |
-| 结构校验 | ✅ 完成 | `_validate_history` role 合法性 + tool_calls/tool 配对校验，非法回滚且绝不归档 |
-| 测试集 | ✅ 完成 | `tests/test_compression.py` 30 项全过（含 8 题事实召回 + 5 容错用例） |
-| 质量门 | ✅ 完成 | `scripts/quality_gate.py`：真实 DeepSeek 8/8 = 100%（≥90% 门） |
-| 真实冒烟 | ✅ 完成 | `scripts/smoke_compress.py`：25 轮长对话自然触发压缩，压缩后召回 5/5 |
-
-> 产物：`compressor.py`（两级压缩+容错+校验）、`session_store.py` 归档表、`llm.py` last_usage、
-> `core.py` 触发点接入、`tests/test_compression.py`、`scripts/quality_gate.py`、`scripts/smoke_compress.py`
-> 已知特性：单轮 chat 内长工具循环时 L2 不触发（user 消息只在 chat() 入口增加，工具迭代不增加 user 计数，`_summarize_prefix` 的 ≤6 轮守卫短路；此时仅 L1 折叠工作）——真实窗口（64K）下影响有限，详细原因与演进方向见 [phase2.2_plan.md 8.1](./phase2.2_plan.md)
-
-#### Phase 2.3 — Session 持久化与搜索（已完成基础版）
-
-> 后续执行顺序（2026-08-10 定）：**Phase 2.3b（FTS 全文搜索）→ Phase 2.4（跨 Session 记忆）→ Phase 2 综合测试集**
-
-| 功能 | 状态 | 说明 |
-|------|------|------|
-| SQLite 存储 | ✅ 完成 | `sessions` / `messages` 表，`chat()` 自动写入数据库 |
-| 退出恢复 | ✅ 完成 | `/resume` 恢复最近一次会话，支持指定 `session_id` |
-| Session 列表 | ✅ 完成 | `/sessions` 查看会话列表与消息数量统计 |
-| 全文搜索（2.3b） | ⬜ 下一步 | FTS5 + trigram tokenizer（标准 unicode61 对中文只能整句匹配，trigram 方案经 Hermes state.db 双索引实证）；提供 /search 命令 |
-
-#### Phase 2.4 — 跨 Session 记忆（已完成 ✅，方案 4 定稿）
-
-> 设计文档：[memory-system.md](./memory-system.md)（双通道注入:全量常驻 + 历史 FTS 兜底）
-> 演进:检索注入 63% → PlugMem 简化 50% → 全量常驻 80-87% → +历史兜底 **93%** (T5 30 题)
-
-| 功能 | 状态 | 说明 |
-|------|------|------|
-| memories 表 | ✅ 完成 | 事实条目:fact / category / confidence / hits |
-| 写入管线 | ✅ 完成 | 写入时蒸馏:同类合并 + 精确值保留 + replace_id 覆盖 |
-| 全量注入 | ✅ 完成 | 全部记忆注入 system(≤400 字符,confidence 排序) |
-| 历史兜底 | ✅ 完成 | 问句提炼词 FTS 搜完整对话附加注入(≤200 字符,无损层) |
-| 回归集 | ✅ 完成 | T5 五类 30 题 28/30 = 93%;LongMemEval 题型适配 |
-
-#### Phase 2 综合测试集（已完成 ✅）
-
-> 覆盖整个 Phase 2:持久化 + 压缩 + 全文搜索 + 跨 Session 记忆。
-> 五层套件全部落地:T1 持久化 11 项 + T2 压缩(30 项 + 质量门 8/8 + 冒烟 5/5)
-> + T3 搜索 15 项 + T4 记忆 15 项(pytest 72 项全绿)+ T5 LongMemEval 回归集
-> (真实 DeepSeek 30 题,五类题型,最终成绩 28/30 = 93%,见 [phase2-test-suite.md](./phase2-test-suite.md))
-
-| 功能 | 状态 | 说明 |
-|------|------|------|
-| T1 持久化 | ✅ 完成 | pytest 11 项(upsert/恢复/UTC/并发/归档) |
-| T2 压缩 | ✅ 完成 | 30 项套件 + 质量门 8/8 + 真实冒烟 5/5 |
-| T3 全文搜索 | ✅ 完成 | pytest 15 项(词级/词干/trigram/退化/归档找回) |
-| T4 跨会话记忆 | ✅ 完成 | pytest 15 项(CRUD/蒸馏/双通道注入/兜底) |
-| T5 LongMemEval 回归 | ✅ 完成 | 30 题真实模型,28/30 = 93%(演进 63%→93%) |
 
 ### Phase 3 — 自主学习
 
