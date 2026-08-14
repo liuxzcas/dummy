@@ -21,6 +21,8 @@ Windows 中文版默认编码是 GBK，而 git-bash 输出可能是 UTF-8。
 
 import subprocess
 
+from colors import paint, YELLOW, CYAN
+
 
 # 常见命令的简单说明(确认提示处显示,帮助用户快速理解命令作用)
 COMMAND_HINTS = [
@@ -48,7 +50,7 @@ def terminal_handler(command: str, _confirm=None) -> str:
     """
     # ---- 执行前确认 ----
     if _confirm is not None:
-        print(f"\n  ⚠️  即将执行: {command}")
+        print(f"\n  {paint('⚠️ 即将执行:', YELLOW)} {command}")
         hint = _command_hint(command)
         if hint:
             print(f"     {hint}")

@@ -92,6 +92,7 @@ from tools import ToolRegistry
 from tools.registry import InterruptSignal
 from prompt import build_system_prompt
 from session_store import SessionStore
+from colors import paint, GRAY, BLUE, SLATE, PURPLE, YELLOW
 from compressor import (
     ContextCompressor,
     CompressionConfig,
@@ -343,7 +344,7 @@ class DummyAgent:
             # 非推理模型为 None 时静默跳过)
             reasoning = getattr(self.llm, "last_reasoning", None)
             if reasoning:
-                print(f"\n  💭 思考: {reasoning}")
+                print(f"\n  {paint('💭 思考:', GRAY)} {reasoning}")
 
             # -------------------------------------------------------
             # 2b. 检查是否有 tool_calls
@@ -384,7 +385,7 @@ class DummyAgent:
                     tool_args = self._parse_tool_arguments(tool_call.function.arguments)
 
                     # 打印工具调用日志
-                    print(f"\n  🛠  Agent 调用了 [{tool_name}] 参数={tool_args}")
+                    print(f"\n  {paint('🛠 Agent 调用了', BLUE)} [{tool_name}] 参数={tool_args}")
 
                     # ---------------------------------------------------
                     # 分发执行工具（dispatch 内部已做异常兜底和结果规范化）
@@ -403,7 +404,7 @@ class DummyAgent:
 
                     # 打印执行结果摘要
                     result_preview = result[:300] + "..." if len(result) > 300 else result
-                    print(f"  📝  {tool_name} 返回: {result_preview}")
+                    print(f"  {paint(f'📝 {tool_name} 返回:', SLATE)} {result_preview}")
 
                     # ---------------------------------------------------
                     # 检查点 A:工具执行后,检查监听线程累积的 /p 触发
@@ -453,7 +454,7 @@ class DummyAgent:
                                     "role": "tool", "tool_call_id": tc.id,
                                     "content": "[用户打断,工具未执行]"})
                         # 提示词作为用户消息注入,LLM 下一轮看到插话重新规划
-                        print(f"\n  🧭 用户打断: {prompt}")
+                        print(f"\n  {paint('🧭 用户打断:', YELLOW)} {prompt}")
                         self.history.append({"role": "user", "content": prompt})
                         self._persist_history()
                         continue
@@ -527,7 +528,7 @@ class DummyAgent:
             self._log_compression_event(
                 None, last_tokens, error_type="compress_exception", error_msg=str(e)
             )
-            print(f"⚠️ 压缩异常({type(e).__name__}): 已跳过,对话继续")
+            print(f"{paint('⚠️ 压缩异常', YELLOW)}({type(e).__name__}): 已跳过,对话继续")
             return
 
         persist_error = None
@@ -543,10 +544,10 @@ class DummyAgent:
                     )
             except Exception as e:
                 persist_error = str(e)
-                print(f"⚠️ 压缩后落库失败: {e}(内存已更新,下次 persist 重写)")
+                print(f"{paint('⚠️ 压缩后落库失败', YELLOW)}: {e}(内存已更新,下次 persist 重写)")
         else:
             self.compressor.register_failure()
-            print(f"⚠️ 压缩失败({result.error_type}): 已跳过,对话继续")
+            print(f"{paint('⚠️ 压缩失败', YELLOW)}({result.error_type}): 已跳过,对话继续")
 
         # 事件日志:成败都记;落库/归档失败也写入 error_type=persist_failed,
         # 使"落库失败率"可统计(plan 6.5,print 不可追溯,error_type 可统计)
@@ -590,7 +591,7 @@ class DummyAgent:
             ) as f:
                 f.write(json.dumps(event, ensure_ascii=False) + "\n")
         except Exception as e:
-            print(f"⚠️ 压缩事件日志写入失败: {e}")
+            print(f"{paint('⚠️ 压缩事件日志写入失败', YELLOW)}: {e}")
 
     # ---------------------------------------------------------------
     # Phase 2.4: 跨 Session 记忆(注入 + 抽取)
@@ -636,7 +637,7 @@ class DummyAgent:
         self.history[0] = {"role": "system", "content": new_content}
         self.session_store.increment_memory_hits(ids)
         # 可见性:注入条数 + 历史兜底条数
-        print(f"\n  🧠 注入记忆 ({len(ids)}/{len(mems)} 条, ~{total} chars"
+        print(f"\n  {paint('🧠 注入记忆', PURPLE)} ({len(ids)}/{len(mems)} 条, ~{total} chars"
               f"{f' + 历史 {len(hist_lines)} 条' if hist_lines else ''}):")
         for line in block_lines[2:]:
             print(f"    {line}")
@@ -685,7 +686,7 @@ class DummyAgent:
         except Exception:
             return
         if facts:
-            print(f"  🧠 已抽取 {facts} 条事实({conflicts} 条覆盖旧事实)")
+            print(f"  {paint('🧠 已抽取', PURPLE)} {facts} 条事实({conflicts} 条覆盖旧事实)")
 
     def resume_last_session(self) -> bool:
         """恢复数据库中最新的会话历史到当前 Agent。"""

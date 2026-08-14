@@ -31,6 +31,8 @@ import os
 import difflib
 import py_compile
 
+from colors import paint, YELLOW, NEUTRAL
+
 
 # ---- 文件类型验证器注册表 ----
 # 扩展方法：加一个验证函数，注册到这里即可
@@ -97,7 +99,7 @@ def _show_diff(old: str, new: str, path: str, _confirm) -> bool:
     # 统计变更量
     added = sum(1 for l in diff if l.startswith("+") and not l.startswith("+++"))
     removed = sum(1 for l in diff if l.startswith("-") and not l.startswith("---"))
-    print(f"\n📝 write_file 将覆盖: {path}")
+    print(f"\n{paint('📝 write_file 将覆盖', NEUTRAL)}: {path}")
     print(f"  旧: {len(old_lines)} 行 → 新: {len(new_lines)} 行 (+{added}/-{removed})")
     print()
     choice = ""
@@ -133,7 +135,7 @@ def write_file_handler(path: str, content: str, mode: str = "overwrite", verify:
     # ---- 路径安全检测（确认由注入的 _confirm 收集输入） ----
     if not full_path.startswith(project_root):
         print(f"   项目: {project_root}")
-        print(f"\n⚠️  write_file 试图写到项目目录之外:")
+        print(f"{paint('⚠️ write_file 试图写到项目目录之外', YELLOW)}:")
         print(f"   目标: {full_path}")
         choice = 0
         if _confirm is not None:
@@ -176,7 +178,7 @@ def write_file_handler(path: str, content: str, mode: str = "overwrite", verify:
                 old_content = f.read()
             # 追加确认(零副作用:确认通过才合并;非 y/n 输入重新等待)
             if _confirm is not None:
-                print(f"  write_file 追加模式: 将追加 {len(content)} 字符到 {path}")
+                print(f"  {paint('write_file 追加模式', NEUTRAL)}: 将追加 {len(content)} 字符到 {path}")
                 for nl in content.splitlines():
                     print(f"  + {nl}")
                 choice = ""
@@ -209,7 +211,7 @@ def write_file_handler(path: str, content: str, mode: str = "overwrite", verify:
             new_text = "".join(new_lines)
             # ---- 行级确认（替换前，零副作用；非 y/n 输入重新等待） ----
             if _confirm is not None:
-                print(f"  write_file line 模式: 修改第{line}~{end}行 ({len(old_range)}行 → {len(new_lines)}行)")
+                print(f"  {paint('write_file line 模式', NEUTRAL)}: 修改第{line}~{end}行 ({len(old_range)}行 → {len(new_lines)}行)")
                 for ol in old_range:
                     print(f"  - {ol.rstrip()}")
                 for nl in new_lines:
