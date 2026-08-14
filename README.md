@@ -48,6 +48,17 @@ automatically.
 | `/resume` | Resume the most recent session |
 | `/help` | Show all commands |
 
+## Interrupt & Confirm
+
+- Confirmation-required tools (terminal / read_file / write_file) ask
+  before running: **Enter** to allow, **n** to reject.
+- Type **`/p`** at any time to interrupt the agent — while a tool is
+  running, while waiting for a response, or at a confirm prompt. After
+  interrupting, enter your instruction and the agent re-plans
+  accordingly; plain Enter cancels the interrupt.
+- Live-listener input has no echo (invisible while typing; the prompt
+  is entered separately after the interrupt).
+
 ## Project Structure
 
 ```
