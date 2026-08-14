@@ -73,8 +73,10 @@ def print_help():
       /resume   恢复上一个持久化会话（默认恢复最新）
       /resume <session_id>  恢复指定会话
       /sessions 列出所有持久化会话
+      /sessions del <id>  删除指定会话（消息/归档/记忆级联清除）
       /tools    列出可用工具
       /history  显示对话历史（调试用）
+      /history del <序号>  删除当前会话中指定记录（含关联消息）
       /search <关键词>  全文搜索历史对话与折叠原文（Phase 2.3b）
       /memories         查看跨会话记忆
       /memories del <id> 删除指定记忆（不可恢复）
@@ -206,7 +208,23 @@ def main():
                     print(f"⚠️ 无法恢复会话: {session_id}\n")
                 continue
 
-            if user_input.lower() == "/sessions":
+            if user_input.lower().startswith("/sessions"):
+                # /sessions del <id>:删除会话(连带消息/归档/记忆)
+                parts = user_input.split()
+                if len(parts) >= 3 and parts[1].lower() == "del":
+                    sid = parts[2]
+                    if sid == agent.current_session_id:
+                        # 删除当前会话:删库后自动开启新会话,避免悬空
+                        agent.session_store.delete_session(sid)
+                        agent.reset()
+                        print(f"🗑️ 已删除当前会话 {sid},并已开启新会话。\n")
+                    else:
+                        ok = agent.session_store.delete_session(sid)
+                        if ok:
+                            print(f"🗑️ 已删除会话 {sid}(消息/归档/记忆已级联清除)。\n")
+                        else:
+                            print(f"⚠️ 会话 {sid} 不存在。\n")
+                    continue
                 sessions = agent.session_store.list_sessions()
                 if not sessions:
                     print("🗂️ 当前没有任何持久化会话。\n")
@@ -233,7 +251,55 @@ def main():
                 print()
                 continue
 
-            if user_input.lower() == "/history":
+            if user_input.lower().startswith("/history"):
+                parts = user_input.split()
+                # /history del <N>:删除当前会话第 N 条记录(含关联消息)
+                if len(parts) >= 3 and parts[1].lower() == "del":
+                    try:
+                        idx = int(parts[2])
+                    except ValueError:
+                        print("用法: /history del <序号>(序号见 /history 列表)")
+                        print()
+                        continue
+                    if idx < 0 or idx >= len(agent.history):
+                        print(
+                            f"序号越界: 历史共 {len(agent.history)} 条"
+                            f" (0-{len(agent.history) - 1})"
+                        )
+                        print()
+                        continue
+                    if idx == 0:
+                        print("不能删除 system prompt(第 0 条)。")
+                        print()
+                        continue
+                    to_delete = {idx}
+                    role = agent.history[idx]["role"]
+                    if role == "assistant" and agent.history[idx].get("tool_calls"):
+                        # assistant(tool_calls):连带删紧随其后的 tool 响应
+                        ids = {tc["id"] for tc in agent.history[idx]["tool_calls"]}
+                        for i in range(idx + 1, len(agent.history)):
+                            m = agent.history[i]
+                            if m["role"] == "tool" and m.get("tool_call_id") in ids:
+                                to_delete.add(i)
+                    elif role == "tool":
+                        # tool 响应:连带删它之前的 assistant(tool_calls) 父消息
+                        tc_id = agent.history[idx].get("tool_call_id")
+                        for j in range(idx - 1, -1, -1):
+                            m = agent.history[j]
+                            if m["role"] == "assistant" and m.get("tool_calls"):
+                                if any(
+                                    t["id"] == tc_id for t in m["tool_calls"]
+                                ):
+                                    to_delete.add(j)
+                                    break
+                            if m["role"] == "user":
+                                break
+                    for i in sorted(to_delete, reverse=True):
+                        agent.history.pop(i)
+                    agent._persist_history()
+                    print(f"🗑️ 已删除 {len(to_delete)} 条记录(序号 {idx} 及其关联)。")
+                    print()
+                    continue
                 history = agent.get_history()
                 print(f"📝 对话历史 ({len(history)} 条消息):")
                 for i, msg in enumerate(history):
