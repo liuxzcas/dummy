@@ -36,6 +36,7 @@ from dotenv import load_dotenv
 # -------------------------------------------------------
 from llm import LLMClient
 from tools import create_default_registry
+from colors import paint, GREEN, GRAY_DIM, WHITE, YELLOW, RED, NEUTRAL, CYAN, PURPLE
 from core import DummyAgent
 
 
@@ -165,7 +166,7 @@ def main():
     while True:
         try:
             # 读取
-            user_input = input("你 > ").strip()
+            user_input = input(f"{paint('你 > ', GREEN)}").strip()
 
             # ---------------------------------------------------
             # 处理内置命令（不经过 Agent 处理）
@@ -183,7 +184,7 @@ def main():
 
             if user_input.lower() == "/reset":
                 agent.reset()
-                print("✅ 对话历史已重置\n")
+                print(f"{paint('✅ 对话历史已重置', GREEN)}\n")
                 continue
 
             if user_input.lower() == "/resume":
@@ -191,10 +192,10 @@ def main():
                 if ok:
                     restored_session_id = agent.current_session_id
                     restored_count = len(agent.get_history())
-                    print(f"✅ 已恢复上一个会话: {restored_session_id}")
+                    print(f"{paint('✅ 已恢复上一个会话', GREEN)}: {restored_session_id}")
                     print(f"📝 当前会话历史 ({restored_count} 条消息)\n")
                 else:
-                    print("⚠️ 没有可恢复的历史会话。\n")
+                    print(f"{paint('⚠️ 没有可恢复的历史会话', YELLOW)}。\n")
                 continue
 
             if user_input.lower().startswith("/resume "):
@@ -202,10 +203,10 @@ def main():
                 ok = agent.resume_session(session_id)
                 if ok:
                     restored_count = len(agent.get_history())
-                    print(f"✅ 已恢复会话: {agent.current_session_id}")
+                    print(f"{paint('✅ 已恢复会话', GREEN)}: {agent.current_session_id}")
                     print(f"📝 当前会话历史 ({restored_count} 条消息)\n")
                 else:
-                    print(f"⚠️ 无法恢复会话: {session_id}\n")
+                    print(f"{paint('⚠️ 无法恢复会话', YELLOW)}: {session_id}\n")
                 continue
 
             if user_input.lower().startswith("/sessions"):
@@ -217,19 +218,19 @@ def main():
                         # 删除当前会话:删库后自动开启新会话,避免悬空
                         agent.session_store.delete_session(sid)
                         agent.reset()
-                        print(f"🗑️ 已删除当前会话 {sid},并已开启新会话。\n")
+                        print(f"{paint('🗑️ 已删除当前会话', NEUTRAL)} {sid},并已开启新会话。\n")
                     else:
                         ok = agent.session_store.delete_session(sid)
                         if ok:
-                            print(f"🗑️ 已删除会话 {sid}(消息/归档/记忆已级联清除)。\n")
+                            print(f"{paint('🗑️ 已删除会话', NEUTRAL)} {sid}(消息/归档/记忆已级联清除)。\n")
                         else:
-                            print(f"⚠️ 会话 {sid} 不存在。\n")
+                            print(f"{paint('⚠️ 会话不存在', YELLOW)}: {sid}\n")
                     continue
                 sessions = agent.session_store.list_sessions()
                 if not sessions:
-                    print("🗂️ 当前没有任何持久化会话。\n")
+                    print(f"{paint('🗂️ 当前没有任何持久化会话', NEUTRAL)}。\n")
                 else:
-                    print("🗂️ 持久化会话列表:")
+                    print(f"{paint('🗂️ 持久化会话列表', NEUTRAL)}:")
                     for idx, session in enumerate(sessions, start=1):
                         message_count = int(session.get("message_count", 0))
                         created_at = format_local_time(session.get("created_at", ""))
@@ -245,7 +246,7 @@ def main():
 
             if user_input.lower() == "/tools":
                 tool_list = registry.list_tools()
-                print(f"📦 可用工具 ({len(tool_list)}):")
+                print(f"{paint('📦 可用工具', NEUTRAL)} ({len(tool_list)}):")
                 for name in tool_list:
                     print(f"   - {name}")
                 print()
@@ -297,11 +298,11 @@ def main():
                     for i in sorted(to_delete, reverse=True):
                         agent.history.pop(i)
                     agent._persist_history()
-                    print(f"🗑️ 已删除 {len(to_delete)} 条记录(序号 {idx} 及其关联)。")
+                    print(f"{paint('🗑️ 已删除', NEUTRAL)} {len(to_delete)} 条记录(序号 {idx} 及其关联)。\n")
                     print()
                     continue
                 history = agent.get_history()
-                print(f"📝 对话历史 ({len(history)} 条消息):")
+                print(f"{paint('📝 对话历史', NEUTRAL)} ({len(history)} 条消息):")
                 for i, msg in enumerate(history):
                     role = msg["role"]
                     content_preview = (str(msg.get("content", ""))[:100]
@@ -323,9 +324,9 @@ def main():
             # ---------------------------------------------------
             # 交给 Agent 处理
             # ---------------------------------------------------
-            print("  🤔 Agent 思考中...")
+            print(f"  {paint('🤔 Agent 思考中...', GRAY_DIM)}")
             response = agent.chat(user_input)
-            print(f"\n🤖 Agent: {response}\n")
+            print(f"\n{paint('🤖 Agent:', WHITE)} {response}\n")
 
         except KeyboardInterrupt:
             # Ctrl+C 处理 —— 优雅退出
@@ -340,7 +341,7 @@ def main():
         except Exception as e:
             # 捕获并显示未预期的错误
             # 对于 Phase 0 学习项目，显示完整 traceback 更有教育意义
-            print(f"\n❌ 发生错误: {type(e).__name__}: {e}")
+            print(f"\n{paint('❌ 发生错误', RED)}: {type(e).__name__}: {e}")
             print("   详细信息请看上方 traceback。\n")
             # 不退出，让用户可以继续
 
@@ -382,8 +383,8 @@ def handle_memories_command(user_input: str, store) -> list[str]:
         return [f"已删除记忆 #{mid}" if ok else f"记忆 #{mid} 不存在", ""]
     mems = store.list_memories()
     if not mems:
-        return ["🧠 (暂无记忆)", ""]
-    lines = [f"🧠 记忆 ({len(mems)} 条):"]
+        return [f"{paint('🧠 (暂无记忆)', PURPLE)}", ""]
+    lines = [f"{paint('🧠 记忆', PURPLE)} ({len(mems)} 条):"]
     for m in mems:
         lines.append(
             f"  [{m['id']}] [{m['category']}] {m['fact']} "
