@@ -30,6 +30,8 @@ core 注入的 _confirm 函数统一处理。_confirm 为 None 时跳过确认�
 
 import os
 
+from colors import paint, CYAN, YELLOW
+
 
 def read_file_handler(path: str, offset: int = 1, limit: int | None = None, _confirm=None) -> str:
     """读取文件内容并返回。
@@ -42,8 +44,8 @@ def read_file_handler(path: str, offset: int = 1, limit: int | None = None, _con
     """
     # ---- 读取前确认 ----
     if _confirm is not None:
-        print(f"\n  📖 即将读取文件: {path}")
-        print("     ⚠️ 隐私提示: 文件内容将发送给在线模型(LLM API),请确认不含敏感信息。")
+        print(f"\n  {paint('📖 即将读取文件', CYAN)}: {path}")
+        print(f"     {paint('⚠️ 隐私提示', YELLOW)}: 文件内容将发送给在线模型(LLM API),请确认不含敏感信息。")
         choice = _confirm("     按 Enter 允许读取, 输入 n 取消: ").strip().lower()
         if choice == "n":
             return "[用户取消] 文件未读取"
