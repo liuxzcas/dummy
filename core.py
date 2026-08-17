@@ -86,13 +86,13 @@ import threading
 import time
 from typing import Optional
 
-from llm import LLMClient
+from llm import LLMClient, extract_cached_tokens
 from memory import MemoryExtractor
 from tools import ToolRegistry
 from tools.registry import InterruptSignal
 from prompt import build_system_prompt
 from session_store import SessionStore
-from colors import paint, GRAY, BLUE, SLATE, PURPLE, YELLOW
+from colors import paint, GRAY, BLUE, SLATE, PURPLE, YELLOW, NEUTRAL
 from compressor import (
     ContextCompressor,
     CompressionConfig,
@@ -220,6 +220,9 @@ class DummyAgent:
         self.tools = tool_registry
         self.session_store = SessionStore()
         self.current_session_id: Optional[str] = None
+        # 当前会话 token 累计(输入/输出/缓存命中;每次 LLM 调用后累加,
+        # 与 db sessions 表同步,/resume 时从 db 读回)
+        self.session_usage = {"prompt": 0, "completion": 0, "cached": 0}
         # 跨 Session 记忆抽取器(Phase 2.4)
         self.memory_extractor = MemoryExtractor(self.llm, self.session_store)
 
@@ -339,6 +342,7 @@ class DummyAgent:
                 tools=self.tool_definitions,
                 temperature=0.3,  # 工具调用时低温度更稳定
             )
+            self._accumulate_usage()  # 本次调用 token 计入会话累计
 
             # 显示思考内容(deepseek 推理模型的 reasoning_content,
             # 非推理模型为 None 时静默跳过)
@@ -702,6 +706,8 @@ class DummyAgent:
             return False
         self.current_session_id = session_id
         self.history = history
+        # 恢复会话累计用量(/resume 后统计延续)
+        self.session_usage = self.session_store.get_session_usage(session_id)
         return True
 
     def _save_conversation_log(self):
@@ -846,6 +852,59 @@ class DummyAgent:
         line = self._interrupt_listener.take_line()
         return bool(line and line.startswith("/p"))
 
+    # ---------------------------------------------------------------
+    # Token 用量统计(当前会话累计 + 显示行)
+    # ---------------------------------------------------------------
+    # 单价(元/百万 token;2026-08 用户指定,换模型时按实际定价调整)
+    PRICE_INPUT = 3.0
+    PRICE_OUTPUT = 9.0
+    PRICE_CACHED = 0.1
+
+    def _accumulate_usage(self) -> None:
+        """把最近一次 LLM 调用的 usage 计入会话累计(内存 + db)。"""
+        usage = getattr(self.llm, "last_usage", None)
+        if usage is None:
+            return
+        prompt = getattr(usage, "prompt_tokens", 0) or 0
+        completion = getattr(usage, "completion_tokens", 0) or 0
+        cached = extract_cached_tokens(usage)
+        self.session_usage["prompt"] += prompt
+        self.session_usage["completion"] += completion
+        self.session_usage["cached"] += cached
+        if self.current_session_id:
+            try:
+                self.session_store.add_usage(
+                    self.current_session_id, prompt, completion, cached)
+            except Exception:
+                pass  # 统计落库失败不影响对话
+
+    def format_usage_line(self) -> str:
+        """生成当前会话用量显示行(6 项:本次/累计/缓存命中率/成本/窗口占用)。"""
+        usage = getattr(self.llm, "last_usage", None)
+        if usage is None:
+            last_prompt = last_completion = last_cached = 0
+        else:
+            last_prompt = getattr(usage, "prompt_tokens", 0) or 0
+            last_completion = getattr(usage, "completion_tokens", 0) or 0
+            last_cached = extract_cached_tokens(usage)
+        hit_rate = last_cached / last_prompt * 100 if last_prompt else 0.0
+        u = self.session_usage
+        cost = (u["prompt"] * self.PRICE_INPUT
+                + u["completion"] * self.PRICE_OUTPUT
+                + u["cached"] * self.PRICE_CACHED) / 1_000_000
+        window = getattr(self.compressor.config, "window_tokens", 64000) or 64000
+        ratio = last_prompt / window * 100 if window else 0.0
+        try:
+            model = self.llm.get_model_name()
+        except Exception:
+            model = "?"
+        return (
+            f"{paint('📊', NEUTRAL)} [{model}] 本次 in {last_prompt:,} · out {last_completion:,} · "
+            f"cache {last_cached:,} (命中 {hit_rate:.0f}%) · "
+            f"累计 in {u['prompt']:,} / out {u['completion']:,} / cache {u['cached']:,} · "
+            f"≈¥{cost:.4f} · 窗口 {ratio:.1f}%"
+        )
+
     def get_history(self) -> list[dict]:
         """
         获取完整的对话历史（包括 system prompt）。
@@ -863,3 +922,5 @@ class DummyAgent:
         ]
         self.current_session_id = self.session_store.create_session()
         self._persist_history()
+        # 新会话用量归零
+        self.session_usage = {"prompt": 0, "completion": 0, "cached": 0}

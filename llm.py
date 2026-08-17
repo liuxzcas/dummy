@@ -259,6 +259,26 @@ class LLMClient:
 
         return message
 
+
     def get_model_name(self) -> str:
         """返回当前使用的模型名称（用于日志显示）。"""
         return self.model
+
+
+def extract_cached_tokens(usage) -> int:
+    """从 usage 中提取缓存命中 token 数(双字段兼容)。
+
+    DeepSeek 系返回两种形态:
+    - prompt_tokens_details.cached_tokens(标准字段)
+    - prompt_cache_hit_tokens(兼容字段)
+    都缺失时返回 0(provider 未统计缓存)。
+    """
+    if usage is None:
+        return 0
+    details = getattr(usage, "prompt_tokens_details", None)
+    if details is not None:
+        cached = getattr(details, "cached_tokens", None)
+        if cached is not None:
+            return int(cached)
+    cached = getattr(usage, "prompt_cache_hit_tokens", None)
+    return int(cached) if cached else 0
