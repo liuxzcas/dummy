@@ -86,7 +86,7 @@ import threading
 import time
 from typing import Optional
 
-from llm import LLMClient, extract_cached_tokens
+from llm import LLMClient, extract_cached_tokens, resolve_window_tokens, is_local_endpoint, DEFAULT_WINDOW_TOKENS
 from memory import MemoryExtractor
 from tools import ToolRegistry
 from tools.registry import InterruptSignal
@@ -228,11 +228,19 @@ class DummyAgent:
 
         # -------------------------------------------------------
         # 上下文压缩器(Phase 2.2)
-        # 临时关闭 L2(enable_l2=False):L2 增量摘要待 Step 5 实现,
-        # 开启会触发 NotImplementedError 守卫。Step 5 完成后移除覆盖。
-        # -------------------------------------------------------
+        # 两级压缩:L1 折叠超长 tool 结果(零 LLM)+ L2 增量摘要早期对话
+        # (enable_l2 用 compressor 默认 True;曾有一段"待 Step 5 实现"的
+        # 临时覆盖 enable_l2=False,Step 5 早已完成,2026-08-14 移除恢复)
+        # 窗口按模型解析:本地模型(qwen/llama 等)窗口各异,
+        # 云端用全局默认 DEFAULT_WINDOW_TOKENS(128K,匹配不上时回落)
+        try:
+            _model_name = llm_client.get_model_name()
+        except Exception:
+            _model_name = None
         self.compressor = ContextCompressor(
-            self.llm, CompressionConfig(enable_l2=False)
+            self.llm, CompressionConfig(
+                window_tokens=resolve_window_tokens(_model_name),
+            )
         )
 
         # -------------------------------------------------------
@@ -892,7 +900,10 @@ class DummyAgent:
         cost = (u["prompt"] * self.PRICE_INPUT
                 + u["completion"] * self.PRICE_OUTPUT
                 + u["cached"] * self.PRICE_CACHED) / 1_000_000
-        window = getattr(self.compressor.config, "window_tokens", 64000) or 64000
+        # 本地部署(ollama/vllm)无 API 计费,不按云端单价估算
+        local = is_local_endpoint(getattr(self.llm, "base_url", None))
+        cost_text = "本地 (无 API 成本)" if local else f"≈¥{cost:.4f}"
+        window = getattr(self.compressor.config, "window_tokens", DEFAULT_WINDOW_TOKENS) or DEFAULT_WINDOW_TOKENS
         ratio = last_prompt / window * 100 if window else 0.0
         try:
             model = self.llm.get_model_name()
@@ -902,7 +913,7 @@ class DummyAgent:
             f"{paint('📊', NEUTRAL)} [{model}] 本次 in {last_prompt:,} · out {last_completion:,} · "
             f"cache {last_cached:,} (命中 {hit_rate:.0f}%) · "
             f"累计 in {u['prompt']:,} / out {u['completion']:,} / cache {u['cached']:,} · "
-            f"≈¥{cost:.4f} · 窗口 {ratio:.1f}%"
+            f"{cost_text} · 窗口 {ratio:.1f}%"
         )
 
     def get_history(self) -> list[dict]:
