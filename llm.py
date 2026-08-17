@@ -282,3 +282,51 @@ def extract_cached_tokens(usage) -> int:
             return int(cached)
     cached = getattr(usage, "prompt_cache_hit_tokens", None)
     return int(cached) if cached else 0
+
+
+# 默认上下文窗口(全局常量,compressor 与 llm 共用;按主模型调整)。
+# 主模型 deepseek-v4-flash 原生窗口 1M,V4 论文确认 128K 内检索性能
+# 稳定,取 128K 作为压缩阈值基准(压缩过早浪费上下文,过晚成本高)。
+DEFAULT_WINDOW_TOKENS = 128000
+
+# 常见本地/第三方部署模型的上下文窗口(token)。
+# 匹配不上时用 DEFAULT_WINDOW_TOKENS(compressor 的 CompressionConfig.window_tokens)。
+# 作用:本地模型窗口各异,窗口占用比例与压缩阈值需按模型解析。
+MODEL_WINDOWS = {
+    "qwen2.5:0.5b": 32768,
+    "qwen2.5:1.5b": 32768,
+    "qwen2.5:3b": 32768,
+    "qwen2.5:7b": 32768,
+    "qwen2.5:14b": 32768,
+    "qwen2.5:32b": 32768,
+    "qwen2.5:72b": 32768,
+    "llama3": 8192,
+    "llama3.1": 131072,
+    "llama3.2": 131072,
+    "llama3.3": 131072,
+    "deepseek-r1:7b": 65536,
+    "deepseek-r1:14b": 65536,
+    "deepseek-r1:32b": 65536,
+    "deepseek-r1:70b": 65536,
+    "qwen3:8b": 32768,
+    "qwen3:32b": 32768,
+}
+
+
+def resolve_window_tokens(model: str | None, default: int = DEFAULT_WINDOW_TOKENS) -> int:
+    """按模型名解析上下文窗口;匹配不上返回默认值。"""
+    if not model:
+        return default
+    return MODEL_WINDOWS.get(model, default)
+
+
+def is_local_endpoint(base_url: str | None) -> bool:
+    """判断是否为本地部署端点(ollama/vllm 等)。
+
+    本地部署无 API 计费,成本统计应显示"本地"而非按云端单价估算。
+    """
+    if not base_url:
+        return False
+    return any(
+        h in base_url for h in ("localhost", "127.0.0.1", "0.0.0.0", "[::1]")
+    )

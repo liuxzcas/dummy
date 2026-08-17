@@ -100,7 +100,7 @@ def history_text(history) -> str:
 # ============================================================
 def test_config_defaults():
     c = CompressionConfig()
-    assert c.window_tokens == 64000
+    assert c.window_tokens == 128000
     assert c.threshold_ratio == 0.7
     assert c.recent_turns_keep == 6
     assert c.enable_l1 is True and c.enable_l2 is True
