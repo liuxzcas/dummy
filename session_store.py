@@ -37,10 +37,24 @@ class SessionStore:
             CREATE TABLE IF NOT EXISTS sessions (
                 id TEXT PRIMARY KEY,
                 created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
+                updated_at TEXT NOT NULL,
+                prompt_tokens INTEGER NOT NULL DEFAULT 0,
+                completion_tokens INTEGER NOT NULL DEFAULT 0,
+                cached_tokens INTEGER NOT NULL DEFAULT 0
             )
             """
         )
+        # 旧库迁移:早期 sessions 表无 usage 列,缺失时补列
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(sessions)")}
+        for col, ddl in [
+            ("prompt_tokens", "INTEGER NOT NULL DEFAULT 0"),
+            ("completion_tokens", "INTEGER NOT NULL DEFAULT 0"),
+            ("cached_tokens", "INTEGER NOT NULL DEFAULT 0"),
+        ]:
+            if col not in cols:
+                conn.execute(
+                    f"ALTER TABLE sessions ADD COLUMN {col} {ddl}"
+                )
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS messages (
@@ -137,12 +151,45 @@ class SessionStore:
         now = self._now_iso()
         conn = sqlite3.connect(self.db_path)
         conn.execute(
-            "INSERT INTO sessions (id, created_at, updated_at) VALUES (?, ?, ?)",
+            """INSERT INTO sessions (id, created_at, updated_at)
+               VALUES (?, ?, ?)""",
             (session_id, now, now),
         )
         conn.commit()
         conn.close()
         return session_id
+
+    def add_usage(self, session_id: str, prompt: int, completion: int, cached: int) -> None:
+        """累计 token 用量到会话(输入/输出/缓存命中,增量累加)。"""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            conn.execute(
+                """UPDATE sessions SET
+                   prompt_tokens = prompt_tokens + ?,
+                   completion_tokens = completion_tokens + ?,
+                   cached_tokens = cached_tokens + ?,
+                   updated_at = ?
+                   WHERE id = ?""",
+                (prompt, completion, cached, self._now_iso(), session_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def get_session_usage(self, session_id: str) -> dict[str, int]:
+        """读取会话累计用量;会话不存在返回全 0。"""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            row = conn.execute(
+                """SELECT prompt_tokens, completion_tokens, cached_tokens
+                   FROM sessions WHERE id = ?""",
+                (session_id,),
+            ).fetchone()
+            if row is None:
+                return {"prompt": 0, "completion": 0, "cached": 0}
+            return {"prompt": row[0], "completion": row[1], "cached": row[2]}
+        finally:
+            conn.close()
 
     def list_sessions(self) -> list[dict[str, str | int]]:
         """返回最近的会话列表，并附带消息数量统计。

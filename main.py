@@ -327,6 +327,8 @@ def main():
             print(f"  {paint('🤔 Agent 思考中...', GRAY_DIM)}")
             response = agent.chat(user_input)
             print(f"\n{paint('🤖 Agent:', WHITE)} {response}\n")
+            # 用量统计(当前会话累计 + 本次请求 + 成本 + 窗口占用)
+            print(f"{agent.format_usage_line()}\n")
 
         except KeyboardInterrupt:
             # Ctrl+C 处理 —— 优雅退出
