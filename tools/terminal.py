@@ -3,6 +3,18 @@ tools/terminal.py — terminal 工具实现
 
 在本地 shell 中执行命令并返回输出。
 
+=== 执行环境(2026-08-17 修复) ===
+
+早期用 subprocess shell=True:Windows 上 = cmd.exe,而 LLM 被提示为
+bash 习惯(路径 /d/、&&、; 分隔),cmd 不认 → 语法错误 → 返工浪费
+token(实测:一次 mkdir 返工 3 次)。
+
+现在:优先用 git-bash 执行(bash -lc "命令"):
+- LLM 的 bash 知识最丰富,路径/管道/重定向/脚本一致,返工率大降
+- 三平台逻辑统一(Linux/macOS 系统自带 bash),可移植
+- bash 找不到(Windows 无 git)时回退 shell=True(cmd),不更差
+- 输出首行标注 [SHELL: git-bash] / [SHELL: cmd],LLM 知道执行环境
+
 === 编码说明（Windows 兼容） ===
 
 Windows 中文版默认编码是 GBK，而 git-bash 输出可能是 UTF-8。
@@ -19,9 +31,60 @@ Windows 中文版默认编码是 GBK，而 git-bash 输出可能是 UTF-8。
 不返回给 handler）。_confirm 为 None（直接调用/测试）时跳过确认。
 """
 
+import os
+import shutil
 import subprocess
 
 from colors import paint, YELLOW, CYAN
+
+
+def _find_bash() -> str | None:
+    """定位可用的 bash 解释器。
+
+    优先级:PATH(shutil.which)→ Windows 常见安装路径 → None。
+    Linux/macOS 系统自带 bash,which 天然命中;
+    Windows 依赖 git-bash(与 README 描述一致)。
+    """
+    found = shutil.which("bash")
+    if found:
+        return found
+    if os.name == "nt":
+        home = os.path.expanduser("~")
+        candidates = [
+            r"C:\Program Files\Git\bin\bash.exe",
+            r"C:\Program Files (x86)\Git\bin\bash.exe",
+            os.path.join(home, r"AppData\Local\Programs\Git\bin\bash.exe"),
+            r"C:\Git\bin\bash.exe",
+        ]
+        for c in candidates:
+            if os.path.isfile(c):
+                return c
+    return None
+
+
+def _run_shell(command: str, timeout: int = 30):
+    """执行命令:优先 git-bash,回退系统默认 shell。
+
+    返回 (CompletedProcess, shell_name);shell_name 用于输出标注,
+    让 LLM 知道实际执行环境。
+    """
+    bash = _find_bash()
+    if bash:
+        result = subprocess.run(
+            [bash, "-lc", command],
+            capture_output=True,
+            text=False,
+            timeout=timeout,
+        )
+        return result, "git-bash"
+    result = subprocess.run(
+        command,
+        shell=True,
+        capture_output=True,
+        text=False,
+        timeout=timeout,
+    )
+    return result, "cmd" if os.name == "nt" else "sh"
 
 
 # 常见命令的简单说明(确认提示处显示,帮助用户快速理解命令作用)
@@ -60,17 +123,11 @@ def terminal_handler(command: str, _confirm=None) -> str:
 
     # ---- 执行 ----
     try:
-        # 注意：不用 text=True（Windows GBK 编码会崩）
-        # 改为手动用 utf-8 解码，errors='replace' 兜底非法字符
-        result = subprocess.run(
-            command,
-            shell=True,
-            capture_output=True,
-            text=False,   # 返回 bytes，手动解码
-            timeout=30,
-        )
+        # 优先 git-bash(bash -lc),回退系统默认 shell;首行标注执行环境
+        # 注意:不用 text=True(Windows GBK 编码会崩),手动 utf-8 解码
+        result, shell_name = _run_shell(command)
 
-        output_parts = []
+        output_parts = [f"[SHELL: {shell_name}]"]
 
         stdout = result.stdout.decode("utf-8", errors="replace").strip() if result.stdout else ""
         if stdout:

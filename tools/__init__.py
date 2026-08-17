@@ -22,7 +22,9 @@ def create_default_registry() -> ToolRegistry:
         description=(
             "在本地系统 shell 中执行命令，返回命令的输出结果。"
             "当你需要读取文件、运行脚本、安装软件、查询系统信息等操作时使用。"
-            "对 Windows 使用 git-bash（类 Unix shell）环境。"
+            "通过 git-bash 执行（类 Unix shell，bash 语法），"
+            "bash 不可用时回退系统默认 shell。"
+            "路径两种写法都支持：/d/xxx 或 D:/xxx。"
             "每条命令有 30 秒超时限制。"
             "注意：此命令会在用户系统上直接执行，请谨慎使用 rm、del 等破坏性操作。"
         ),
