@@ -31,6 +31,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
+from llm import DEFAULT_WINDOW_TOKENS
+
 
 class SummaryError(Exception):
     """L2 摘要失败(内容错误或重试后仍失败)。
@@ -49,13 +51,14 @@ class CompressionConfig:
     """所有压缩参数集中一处,后续调阈值只改这里。
 
     决策点(phase2.2_plan.md 第 8 节):
-    - window_tokens: 模型上下文窗口,DeepSeek-V3 按 64K 起步,按实际模型调整
+    - window_tokens: 模型上下文窗口(默认 DEFAULT_WINDOW_TOKENS=128K,
+      主模型 deepseek-v4-flash 原生 1M,128K 内检索性能稳定)
     - threshold_ratio: 触发阈值,留 30% 余量给单次工具结果和摘要消息
     - recent_turns_keep: 保留最近 N 轮原文(按 user 消息计数)
     - enable_l1/enable_l2: 两阶段独立开关,分阶段验证与调试用
     """
 
-    window_tokens: int = 64000          # 模型上下文窗口
+    window_tokens: int = DEFAULT_WINDOW_TOKENS  # 模型上下文窗口(全局默认 128K)
     threshold_ratio: float = 0.7        # 触发阈值:窗口的 70%
     recent_turns_keep: int = 6          # 保留最近 N 轮原文(按 user 消息计数)
 
