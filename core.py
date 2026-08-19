@@ -93,6 +93,7 @@ from tools.registry import InterruptSignal
 from prompt import build_system_prompt
 from session_store import SessionStore
 from colors import paint, GRAY, BLUE, SLATE, PURPLE, YELLOW, NEUTRAL
+from skills_manager import build_skills_index
 from compressor import (
     ContextCompressor,
     CompressionConfig,
@@ -319,6 +320,7 @@ class DummyAgent:
         # Phase 2.4:按当前输入检索记忆并注入 system prompt
         # (注入在追加 user 消息之前,LLM 首轮就能看到记忆)
         self._inject_memories(user_input)
+        self._inject_skills()
 
         # -------------------------------------------------------
         # Step 1: 追加用户消息
@@ -653,6 +655,23 @@ class DummyAgent:
               f"{f' + 历史 {len(hist_lines)} 条' if hist_lines else ''}):")
         for line in block_lines[2:]:
             print(f"    {line}")
+
+    def _inject_skills(self) -> None:
+        """注入技能索引到 system prompt(渐进式加载,Phase 3 Step 1)。
+
+        索引只含名称+描述(一行一个,≤MAX_SKILLS 上限);全文由 LLM
+        按需 read_file 读取 skills/<name>/SKILL.md。静态索引不依赖输入,
+        放在记忆注入之后,追加到 system content 尾部(幂等:重复注入
+        时先移除旧索引段)。
+        """
+        index = build_skills_index()
+        if not index:
+            return
+        content = self.history[0]["content"]
+        idx = content.find("## 可用技能")
+        if idx >= 0:
+            content = content[:idx].rstrip()
+        self.history[0] = {"role": "system", "content": content + "\n\n" + index}
 
     def _retrieve_history_evidence(self, user_input: str) -> list[str]:
         """问句提炼词搜完整对话历史(无损兜底层)。

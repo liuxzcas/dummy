@@ -216,9 +216,13 @@ def test_inject_char_cap(tmp_path):
     block = agent.history[0]["content"]
     idx = block.find("已知事实(记忆):")
     assert idx >= 0
-    assert len(block[idx:]) <= 420  # 段总长 ≤ 400 + 标题余量
+    # 记忆段范围:从"已知事实(记忆):"到技能索引段(Phase 3 新增)或末尾
+    end = block.find("## 可用技能", idx)
+    if end < 0:
+        end = len(block)
+    assert len(block[idx:end]) <= 420  # 记忆段总长 ≤ 400 + 标题余量
     # confidence 0.95 的短条目先注入(长条目被截断)
-    assert "重要事实" in block[idx:]
+    assert "重要事实" in block[idx:end]
 
 
 def test_inject_history_fallback(tmp_path):
