@@ -41,24 +41,21 @@ from colors import paint, YELLOW, CYAN
 def _find_bash() -> str | None:
     """定位可用的 bash 解释器。
 
-    优先级:PATH(shutil.which)→ Windows 常见安装路径 → None。
-    Linux/macOS 系统自带 bash,which 天然命中;
-    Windows 依赖 git-bash(与 README 描述一致)。
+    优先级:
+    1. 手动配置的 git-bash(环境变量 DUMMY_BASH_PATH 可覆盖;
+       默认值 = 开发机已验证的 git-bash 路径)——git-bash 是
+       手动配置项,不做自动探测(2026-08-17 用户决策)
+    2. 系统 PATH 中的 bash:其他机器默认命中 WSL 启动器
+       (System32\\bash.exe,WSL 正常时可用);Linux/macOS 命中
+       系统自带 bash
+    3. 都没有 → None(回退 shell=True)
     """
+    configured = os.environ.get("DUMMY_BASH_PATH") or r"C:\Program Files\Git\bin\bash.exe"
+    if configured and os.path.isfile(configured):
+        return configured
     found = shutil.which("bash")
     if found:
         return found
-    if os.name == "nt":
-        home = os.path.expanduser("~")
-        candidates = [
-            r"C:\Program Files\Git\bin\bash.exe",
-            r"C:\Program Files (x86)\Git\bin\bash.exe",
-            os.path.join(home, r"AppData\Local\Programs\Git\bin\bash.exe"),
-            r"C:\Git\bin\bash.exe",
-        ]
-        for c in candidates:
-            if os.path.isfile(c):
-                return c
     return None
 
 
