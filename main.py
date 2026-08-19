@@ -65,6 +65,38 @@ def print_banner():
     """)
 
 
+def handle_skills_command(user_input: str) -> list[str]:
+    """/skills 命令处理(纯函数,可测试,Phase 3 Step 1)。
+
+    支持:/skills(列出)、/skills show <name>(显示全文)、
+    /skills del <name>(删除技能目录,git 可回退)。
+    返回要打印的行列表。
+    """
+    from skills_manager import list_skills, load_skill, delete_skill
+    parts = user_input.split()
+    if len(parts) >= 2 and parts[1].lower() == "show":
+        name = parts[2] if len(parts) > 2 else ""
+        content = load_skill(name) if name else None
+        if content is None:
+            return [f"技能 {name} 不存在", ""]
+        return [content, ""]
+    if len(parts) >= 2 and parts[1].lower() == "del":
+        name = parts[2] if len(parts) > 2 else ""
+        if not name:
+            return ["用法: /skills del <name>", ""]
+        ok = delete_skill(name)
+        return [f"已删除技能 {name}" if ok else f"技能 {name} 不存在", ""]
+    skills = list_skills()
+    if not skills:
+        return ["📦 (暂无技能)", ""]
+    lines = [f"📦 技能 ({len(skills)} 个):"]
+    for s in skills:
+        wf = "[工作流] " if s["type"] == "workflow" else ""
+        lines.append(f"  - {wf}{s['name']}: {s['description'][:80]}")
+    lines.append("")
+    return lines
+
+
 def print_help():
     """打印帮助信息。"""
     print("""
@@ -81,6 +113,9 @@ def print_help():
       /search <关键词>  全文搜索历史对话与折叠原文（Phase 2.3b）
       /memories         查看跨会话记忆
       /memories del <id> 删除指定记忆（不可恢复）
+      /skills           列出可用技能
+      /skills show <name>  显示技能全文
+      /skills del <name>   删除技能（git 可回退）
       /quit     退出 (/exit /q 也可)
 
     用法: 直接输入你的问题或指令，Agent 会自动决定是否调用工具。
@@ -318,6 +353,11 @@ def main():
 
             if user_input.lower().startswith("/memories"):
                 for line in handle_memories_command(user_input, agent.session_store):
+                    print(line)
+                continue
+
+            if user_input.lower().startswith("/skills"):
+                for line in handle_skills_command(user_input):
                     print(line)
                 continue
 
