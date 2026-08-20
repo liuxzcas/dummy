@@ -77,6 +77,68 @@ def load_skill(name: str) -> str | None:
         return f.read()
 
 
+def _parse_steps(content: str) -> list[str]:
+    """从 frontmatter 提取 workflow 的 steps 引用列表。
+
+    steps 是 YAML 块列表(frontmatter 内):
+        steps:
+          - search-literature
+          - organize-notes
+    返回技能名列表;无 steps 段返回空列表。
+    """
+    steps = []
+    in_steps = False
+    for line in content.splitlines():
+        s = line.strip()
+        if s == "steps:":
+            in_steps = True
+            continue
+        if in_steps:
+            if s.startswith("- "):
+                steps.append(s[2:].strip())
+            elif not s.startswith("-") and ":" in s:
+                break  # 下一个 frontmatter key
+            elif s == "---":
+                break  # frontmatter 闭合
+    return steps
+
+
+def validate_skill(name: str) -> tuple[bool, str]:
+    """校验技能:frontmatter 完整、name 合法、description 非空、
+    workflow 的 steps 引用存在。返回 (ok, 消息)。
+
+    用于创建技能后自动校验(create-skill 元技能流程第 4 步);
+    不合法则不应保存/应修正。
+    """
+    path = os.path.join(SKILLS_DIR, name, "SKILL.md")
+    if not os.path.isfile(path):
+        return False, f"技能不存在: {name}"
+    try:
+        with open(path, encoding="utf-8") as f:
+            content = f.read()
+    except OSError as e:
+        return False, f"读取失败: {e}"
+    meta = _parse_frontmatter(path)
+    if not meta or not meta.get("name"):
+        return False, "frontmatter 缺失或 name 为空"
+    if meta["name"] != name:
+        return False, f"frontmatter name({meta['name']})与目录名({name})不一致"
+    if not meta.get("description"):
+        return False, "description 为空(决定技能触发,必填)"
+    stype = meta.get("type", "atomic")
+    if stype not in ("atomic", "workflow"):
+        return False, f"type 非法: {stype}(可选 atomic/workflow)"
+    if stype == "workflow":
+        steps = _parse_steps(content)
+        if not steps:
+            return False, "workflow 技能缺少 steps 引用列表"
+        for ref in steps:
+            ref_path = os.path.join(SKILLS_DIR, ref, "SKILL.md")
+            if not os.path.isfile(ref_path):
+                return False, f"workflow 引用技能不存在: {ref}"
+    return True, "OK"
+
+
 def delete_skill(name: str) -> bool:
     """删除技能目录(自由区,git 可回退);不存在返回 False。"""
     path = os.path.join(SKILLS_DIR, name)
