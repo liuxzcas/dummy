@@ -83,6 +83,60 @@ def test_delete_skill(skills_dir):
     assert sm.delete_skill("nope") is False
 
 
+# ---------------------------------------------------------------
+# validate_skill(Step 2:创建后校验)
+# ---------------------------------------------------------------
+def test_validate_skill_ok(skills_dir):
+    ok, msg = sm.validate_skill("search-literature")
+    assert ok is True, msg
+    ok, msg = sm.validate_skill("literature-review")  # workflow + 引用存在
+    assert ok is True, msg
+
+
+def test_validate_skill_errors(skills_dir):
+    # 不存在
+    assert sm.validate_skill("nope")[0] is False
+    # 缺 description
+    d = skills_dir / "no-desc"
+    d.mkdir()
+    (d / "SKILL.md").write_text(
+        "---\nname: no-desc\ntype: atomic\n---\n正文", encoding="utf-8")
+    ok, msg = sm.validate_skill("no-desc")
+    assert ok is False and "description" in msg
+    # name 与目录不一致
+    d2 = skills_dir / "dir-name"
+    d2.mkdir()
+    (d2 / "SKILL.md").write_text(
+        "---\nname: other-name\ndescription: x\ntype: atomic\n---\n正文",
+        encoding="utf-8")
+    ok, msg = sm.validate_skill("dir-name")
+    assert ok is False and "不一致" in msg
+    # type 非法
+    d3 = skills_dir / "bad-type"
+    d3.mkdir()
+    (d3 / "SKILL.md").write_text(
+        "---\nname: bad-type\ndescription: x\ntype: magic\n---\n正文",
+        encoding="utf-8")
+    ok, msg = sm.validate_skill("bad-type")
+    assert ok is False and "type" in msg
+    # workflow 缺 steps
+    d4 = skills_dir / "wf-nosteps"
+    d4.mkdir()
+    (d4 / "SKILL.md").write_text(
+        "---\nname: wf-nosteps\ndescription: x\ntype: workflow\n---\n正文",
+        encoding="utf-8")
+    ok, msg = sm.validate_skill("wf-nosteps")
+    assert ok is False and "steps" in msg
+    # workflow 引用不存在
+    d5 = skills_dir / "wf-badref"
+    d5.mkdir()
+    (d5 / "SKILL.md").write_text(
+        "---\nname: wf-badref\ndescription: x\ntype: workflow\nsteps:\n  - ghost-skill\n---\n正文",
+        encoding="utf-8")
+    ok, msg = sm.validate_skill("wf-badref")
+    assert ok is False and "ghost-skill" in msg
+
+
 def test_build_skills_index(skills_dir):
     index = sm.build_skills_index()
     assert "search-literature" in index
