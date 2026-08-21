@@ -31,7 +31,7 @@ import os
 import difflib
 import py_compile
 
-from colors import paint, YELLOW, NEUTRAL
+from colors import paint, YELLOW, NEUTRAL, RED, GREEN
 
 
 # ---- 文件类型验证器注册表 ----
@@ -65,6 +65,22 @@ VERIFIERS[".py"] = _verify_python
 # VERIFIERS[".json"] = _verify_json   # Phase 2+
 
 
+def _colorize_diff_line(line: str) -> str:
+    """diff 行着色:旧内容(-)红、新内容(+)绿,其余默认。
+
+    ---/+++(文件头)与 @@(hunk 头)保持默认色;DUMMY_COLOR=0 时
+    paint 原样返回,不影响测试与无色彩终端。
+    """
+    stripped = line.rstrip()
+    if line.startswith("+++") or line.startswith("---") or line.startswith("@@"):
+        return stripped
+    if line.startswith("+"):
+        return paint(stripped, GREEN)
+    if line.startswith("-"):
+        return paint(stripped, RED)
+    return stripped
+
+
 def _show_diff(old: str, new: str, path: str, _confirm) -> bool:
     """展示新旧内容差异，询问用户是否确认。返回 True 表示确认写入。
 
@@ -88,13 +104,13 @@ def _show_diff(old: str, new: str, path: str, _confirm) -> bool:
     MAX_DIFF_LINES = 40
     if len(diff) > MAX_DIFF_LINES:
         for line in diff[:MAX_DIFF_LINES // 2]:
-            print(f"  {line.rstrip()}")
+            print(f"  {_colorize_diff_line(line)}")
         print(f"  ... (省略 {len(diff) - MAX_DIFF_LINES} 行)")
         for line in diff[-MAX_DIFF_LINES // 2:]:
-            print(f"  {line.rstrip()}")
+            print(f"  {_colorize_diff_line(line)}")
     else:
         for line in diff:
-            print(f"  {line.rstrip()}")
+            print(f"  {_colorize_diff_line(line)}")
 
     # 统计变更量
     added = sum(1 for l in diff if l.startswith("+") and not l.startswith("+++"))
@@ -108,7 +124,7 @@ def _show_diff(old: str, new: str, path: str, _confirm) -> bool:
     if choice == "d":
         # 显示完整 diff（通过分页）
         for line in diff:
-            print(f"  {line.rstrip()}")
+            print(f"  {_colorize_diff_line(line)}")
         print()
         choice = _confirm("  输入 y 确认写入 / n 拒绝: ").strip().lower()
 
