@@ -157,7 +157,8 @@ def build_skills_index() -> str:
     if not skills:
         return ""
     lines = [
-        "## 可用技能(需要时用 read_file 读取 skills/<name>/SKILL.md 获取完整步骤)"
+        f"## 可用技能(技能目录: {SKILLS_DIR};用绝对路径读取;"
+        "文件若被移动,先 pwd/find 定位)",
     ]
     for s in skills:
         wf = " [工作流]" if s["type"] == "workflow" else ""

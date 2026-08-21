@@ -143,7 +143,9 @@ def test_build_skills_index(skills_dir):
     assert "检索文献(arXiv)" in index
     assert "[工作流]" in index and "literature-review" in index
     assert "## 可用技能" in index
-    assert "read_file 读取 skills/" in index
+    # 技能目录绝对路径注入(运行时计算,部署自适应,LLM 零定位成本)
+    assert f"技能目录: {sm.SKILLS_DIR}" in index
+    assert "用绝对路径读取" in index
 
 
 def test_build_skills_index_empty(tmp_path, monkeypatch):
@@ -206,3 +208,49 @@ def test_inject_skills_empty(tmp_path, monkeypatch):
     agent.history = [{"role": "system", "content": "基础提示"}]
     agent._inject_skills()
     assert agent.history[0]["content"] == "基础提示"
+
+
+# ---------------------------------------------------------------
+# _inject_datetime(每轮刷新,省去 date 工具调用)
+# ---------------------------------------------------------------
+def test_inject_datetime(tmp_path):
+    agent = DummyAgent(None, create_default_registry(), system_prompt="基础提示")
+    agent.history = [{"role": "system", "content": "基础提示"}]
+    agent._inject_datetime()
+    content = agent.history[0]["content"]
+    assert "当前时间:" in content
+    assert "基础提示" in content
+    # 幂等:重复注入只一个时间段
+    agent._inject_datetime()
+    assert agent.history[0]["content"].count("当前时间:") == 1
+
+
+def test_inject_datetime_refresh(tmp_path, monkeypatch):
+    """跨轮刷新:时间变化后重新注入,值更新。"""
+    import datetime as dt
+    # 注意:monkeypatch 替换的是全局 datetime 模块的 datetime 属性
+    # (core.datetime 与这里 dt 是同一模块对象),先捕获真实类备用
+    _real = dt.datetime
+    agent = DummyAgent(None, create_default_registry(), system_prompt="P")
+    agent.history = [{"role": "system", "content": "P"}]
+    fake = _real(2026, 8, 21, 10, 0)
+    monkeypatch.setattr("core.datetime.datetime", _FakeDatetime(fake))
+    agent._inject_datetime()
+    assert "2026-08-21 10:00" in agent.history[0]["content"]
+    # 时间前进,重新注入刷新
+    fake2 = _real(2026, 8, 22, 9, 30)
+    monkeypatch.setattr("core.datetime.datetime", _FakeDatetime(fake2))
+    agent._inject_datetime()
+    content = agent.history[0]["content"]
+    assert "2026-08-22 09:30" in content
+    assert content.count("当前时间:") == 1
+
+
+class _FakeDatetime:
+    """替换 core.datetime.datetime 的替身(仅提供 now())。"""
+
+    def __init__(self, fixed):
+        self._fixed = fixed
+
+    def now(self):
+        return self._fixed

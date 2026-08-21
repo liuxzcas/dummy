@@ -319,6 +319,7 @@ class DummyAgent:
 
         # Phase 2.4:按当前输入检索记忆并注入 system prompt
         # (注入在追加 user 消息之前,LLM 首轮就能看到记忆)
+        self._inject_datetime()
         self._inject_memories(user_input)
         self._inject_skills()
 
@@ -655,6 +656,26 @@ class DummyAgent:
               f"{f' + 历史 {len(hist_lines)} 条' if hist_lines else ''}):")
         for line in block_lines[2:]:
             print(f"    {line}")
+
+    def _inject_datetime(self) -> None:
+        """注入当前时间到 system prompt(每轮刷新,省去 date 工具调用)。
+
+        真机发现:agent 需要当前日期时 call terminal `date`,浪费 token。
+        当前时间是低频变化、频繁需要的环境事实——每轮 chat 注入
+        system(幂等替换),跨天会话自动刷新。
+        """
+        now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M (%A)")
+        marker = "当前时间:"
+        content = self.history[0]["content"]
+        idx = content.find(marker)
+        if idx >= 0:
+            end = content.find("\n", idx)
+            if end < 0:
+                end = len(content)
+            content = content[:idx] + f"{marker} {now}" + content[end:]
+        else:
+            content = content + f"\n\n{marker} {now}"
+        self.history[0] = {"role": "system", "content": content}
 
     def _inject_skills(self) -> None:
         """注入技能索引到 system prompt(渐进式加载,Phase 3 Step 1)。
