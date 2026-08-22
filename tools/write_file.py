@@ -196,7 +196,7 @@ def write_file_handler(path: str, content: str, mode: str = "overwrite", verify:
             if _confirm is not None:
                 print(f"  {paint('write_file 追加模式', NEUTRAL)}: 将追加 {len(content)} 字符到 {path}")
                 for nl in content.splitlines():
-                    print(f"  + {nl}")
+                    print(f"  {_colorize_diff_line(f'+ {nl}')}")
                 choice = ""
                 while choice not in ("y", "n"):
                     choice = _confirm("  输入 y 确认追加 / n 拒绝: ").strip().lower()
@@ -229,9 +229,9 @@ def write_file_handler(path: str, content: str, mode: str = "overwrite", verify:
             if _confirm is not None:
                 print(f"  {paint('write_file line 模式', NEUTRAL)}: 修改第{line}~{end}行 ({len(old_range)}行 → {len(new_lines)}行)")
                 for ol in old_range:
-                    print(f"  - {ol.rstrip()}")
+                    print(f"  {_colorize_diff_line(f'- {ol.rstrip()}')}")
                 for nl in new_lines:
-                    print(f"  + {nl.rstrip()}")
+                    print(f"  {_colorize_diff_line(f'+ {nl.rstrip()}')}")
                 choice = ""
                 while choice not in ("y", "n"):
                     choice = _confirm("  输入 y 确认修改 / n 拒绝: ").strip().lower()
@@ -244,8 +244,8 @@ def write_file_handler(path: str, content: str, mode: str = "overwrite", verify:
             print(f"  write_file line 模式: 修改第{line}~{end}行 ({len(old_range)}行 → {len(new_lines)}行)")
             for ol, nl in zip(old_range, new_lines):
                 if ol != nl:
-                    print(f"  - {ol.rstrip()}")
-                    print(f"  + {nl.rstrip()}")
+                    print(f"  {_colorize_diff_line(f'- {ol.rstrip()}')}")
+                    print(f"  {_colorize_diff_line(f'+ {nl.rstrip()}')}")
                     break
             if len(old_range) != len(new_lines):
                 print(f"  (共替换 {len(old_range)} 行 → {len(new_lines)} 行)")
