@@ -320,6 +320,7 @@ class DummyAgent:
         # Phase 2.4:按当前输入检索记忆并注入 system prompt
         # (注入在追加 user 消息之前,LLM 首轮就能看到记忆)
         self._inject_datetime()
+        self._inject_cwd()
         self._inject_memories(user_input)
         self._inject_skills()
 
@@ -675,6 +676,29 @@ class DummyAgent:
             content = content[:idx] + f"{marker} {now}" + content[end:]
         else:
             content = content + f"\n\n{marker} {now}"
+        self.history[0] = {"role": "system", "content": content}
+
+    def _inject_cwd(self) -> None:
+        """注入当前工作目录到 system prompt(每轮刷新,LLM 不再猜路径基准)。
+
+        真机发现:LLM 对 read_file/write_file/terminal 的相对路径基准
+        是黑盒(cd 了 terminal 就以为文件系统基准变了,导致技能路径
+        失效)。注入 cwd 绝对路径,相对路径语义明确;运行时计算,
+        部署自适应(设计见 phase3-research.md §7)。
+        """
+        cwd = os.getcwd()
+        marker = "当前工作目录:"
+        block = (f"{marker} {cwd}\n"
+                 "(read_file / write_file / terminal 的相对路径均以此为基准)")
+        content = self.history[0]["content"]
+        idx = content.find(marker)
+        if idx >= 0:
+            end = content.find("\n\n", idx)
+            if end < 0:
+                end = len(content)
+            content = content[:idx] + block + content[end:]
+        else:
+            content = content + f"\n\n{block}"
         self.history[0] = {"role": "system", "content": content}
 
     def _inject_skills(self) -> None:
