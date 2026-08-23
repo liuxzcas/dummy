@@ -246,6 +246,23 @@ def test_inject_datetime_refresh(tmp_path, monkeypatch):
     assert content.count("当前时间:") == 1
 
 
+# ---------------------------------------------------------------
+# _inject_cwd(当前工作目录注入,§7 设计)
+# ---------------------------------------------------------------
+def test_inject_cwd(tmp_path):
+    agent = DummyAgent(None, create_default_registry(), system_prompt="P")
+    agent.history = [{"role": "system", "content": "P"}]
+    agent._inject_cwd()
+    content = agent.history[0]["content"]
+    cwd = os.getcwd()
+    assert f"当前工作目录: {cwd}" in content
+    assert "相对路径均以此为基准" in content
+    assert content.startswith("P")  # 原内容保留
+    # 幂等:重复注入只一个段
+    agent._inject_cwd()
+    assert agent.history[0]["content"].count("当前工作目录:") == 1
+
+
 class _FakeDatetime:
     """替换 core.datetime.datetime 的替身(仅提供 now())。"""
 
