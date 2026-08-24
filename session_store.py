@@ -137,6 +137,28 @@ class SessionStore:
             ON memories(category)
             """
         )
+        # 教训表(Phase 3 Step 3):错误学习——规则(do/don't),与记忆(事实)分库
+        # status: pending(未验证)/ verified(用户确认或 hits>=2 自动转正)
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS lessons (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                lesson TEXT NOT NULL,
+                category TEXT NOT NULL DEFAULT 'general',
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                hits INTEGER NOT NULL DEFAULT 0
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_lessons_status
+            ON lessons(status)
+            """
+        )
         conn.commit()
         conn.close()
 
@@ -429,6 +451,21 @@ class SessionStore:
                     "INSERT INTO fts_zh (source, session_id, seq, content) VALUES ('memory', ?, ?, ?)",
                     (session_id, mid, fact),
                 )
+
+            # lessons(Phase 3 Step 3):教训规则作为第四索引源,
+            # 注入时用 source='lesson' 过滤检索。
+            lrows = conn.execute(
+                "SELECT session_id, id, lesson FROM lessons"
+            ).fetchall()
+            for session_id, lid, lesson in lrows:
+                conn.execute(
+                    "INSERT INTO fts_en (source, session_id, seq, content) VALUES ('lesson', ?, ?, ?)",
+                    (session_id, lid, lesson),
+                )
+                conn.execute(
+                    "INSERT INTO fts_zh (source, session_id, seq, content) VALUES ('lesson', ?, ?, ?)",
+                    (session_id, lid, lesson),
+                )
             conn.commit()
         except Exception:
             conn.rollback()
@@ -536,6 +573,9 @@ class SessionStore:
                 UNION ALL
                 SELECT 'memory' AS source, session_id, id AS seq, fact AS content
                 FROM memories
+                UNION ALL
+                SELECT 'lesson' AS source, session_id, id AS seq, lesson AS content
+                FROM lessons
             ) WHERE content LIKE ? ESCAPE '\\'
               AND (? IS NULL OR source = ?)
             ORDER BY length(content) LIMIT ?
@@ -652,6 +692,7 @@ class SessionStore:
                 (session_id,),
             )
             conn.execute("DELETE FROM memories WHERE session_id = ?", (session_id,))
+            conn.execute("DELETE FROM lessons WHERE session_id = ?", (session_id,))
             conn.commit()
             if cur.rowcount:
                 # 同步全文索引(被删内容不再可搜索)
@@ -673,6 +714,90 @@ class SessionStore:
             conn.executemany(
                 "UPDATE memories SET hits = hits + 1 WHERE id = ?",
                 [(i,) for i in memory_ids],
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    # ---------------------------------------------------------------
+    # Phase 3 Step 3:教训(lessons)——错误学习
+    # ---------------------------------------------------------------
+    def add_lesson(self, session_id: str, lesson: str,
+                   category: str = "general") -> int:
+        """新增教训条目(状态 pending);返回 id。"""
+        now = self._now_iso()
+        conn = sqlite3.connect(self.db_path)
+        try:
+            conn.execute("PRAGMA busy_timeout = 10000")
+            cur = conn.execute(
+                """INSERT INTO lessons (session_id, lesson, category, status,
+                   created_at, updated_at, hits)
+                   VALUES (?, ?, ?, 'pending', ?, ?, 0)""",
+                (session_id, lesson, category, now, now),
+            )
+            conn.commit()
+            return cur.lastrowid
+        finally:
+            conn.close()
+
+    def list_lessons(self, status: str | None = None) -> list[dict[str, Any]]:
+        """列出教训(status 过滤可选);按 id 倒序(新教训在前)。"""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            if status:
+                rows = conn.execute(
+                    "SELECT * FROM lessons WHERE status = ? ORDER BY id DESC",
+                    (status,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM lessons ORDER BY id DESC"
+                ).fetchall()
+            cols = [d[0] for d in conn.execute("SELECT * FROM lessons").description]
+            return [dict(zip(cols, r)) for r in rows]
+        finally:
+            conn.close()
+
+    def delete_lesson(self, lesson_id: int) -> bool:
+        """删除教训条目;不存在返回 False。"""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            conn.execute("PRAGMA busy_timeout = 10000")
+            cur = conn.execute("DELETE FROM lessons WHERE id = ?", (lesson_id,))
+            conn.commit()
+            return cur.rowcount > 0
+        finally:
+            conn.close()
+
+    def confirm_lesson(self, lesson_id: int) -> bool:
+        """用户确认教训(pending → verified);不存在返回 False。"""
+        now = self._now_iso()
+        conn = sqlite3.connect(self.db_path)
+        try:
+            conn.execute("PRAGMA busy_timeout = 10000")
+            cur = conn.execute(
+                "UPDATE lessons SET status = 'verified', updated_at = ? WHERE id = ?",
+                (now, lesson_id),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+        finally:
+            conn.close()
+
+    def increment_lesson_hits(self, lesson_ids: list[int]) -> None:
+        """注入命中计数;命中 >=2 的 pending 教训自动转 verified。"""
+        if not lesson_ids:
+            return
+        conn = sqlite3.connect(self.db_path)
+        try:
+            conn.execute("PRAGMA busy_timeout = 10000")
+            conn.executemany(
+                "UPDATE lessons SET hits = hits + 1 WHERE id = ?",
+                [(i,) for i in lesson_ids],
+            )
+            conn.execute(
+                "UPDATE lessons SET status = 'verified' "
+                "WHERE hits >= 2 AND status = 'pending'"
             )
             conn.commit()
         finally:

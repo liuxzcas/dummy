@@ -1,0 +1,226 @@
+"""
+tests/test_lessons.py — Phase 3 Step 3:错误学习(教训机制)
+
+覆盖:
+1. lessons 表 CRUD:add/list/delete/confirm/hits 自动转正
+2. lessons.py:纠正信号检测 / 工具错误特征 / 反思生成(三级解析)
+3. core._inject_lessons:按需检索注入 ≤5、幂等、保底
+4. core._learn_from_correction / _learn_from_tool_error:触发与限流
+5. /lessons 命令:list/confirm/del
+6. delete_session 级联删 lessons
+"""
+
+import json
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import pytest  # noqa: E402
+
+import lessons as L  # noqa: E402
+import main as mm  # noqa: E402
+from core import DummyAgent  # noqa: E402
+from session_store import SessionStore  # noqa: E402
+from tools import create_default_registry  # noqa: E402
+
+
+@pytest.fixture()
+def store(tmp_path):
+    return SessionStore(str(tmp_path / "m.db"))
+
+
+@pytest.fixture()
+def sid(store):
+    return store.create_session()
+
+
+class FakeLLM:
+    """按调用顺序返回预设响应。"""
+
+    def __init__(self, responses):
+        self._responses = list(responses)
+        self.calls = []
+
+    def chat(self, **kwargs):
+        self.calls.append(kwargs.get("messages"))
+        return self._responses.pop(0)
+
+
+# ---------------------------------------------------------------
+# lessons 表 CRUD
+# ---------------------------------------------------------------
+def test_lesson_crud(store, sid):
+    lid = store.add_lesson(sid, "Windows 上别用 cmd 语法,用 bash", "terminal")
+    assert lid > 0
+    rows = store.list_lessons()
+    assert len(rows) == 1
+    assert rows[0]["lesson"].startswith("Windows")
+    assert rows[0]["status"] == "pending"
+    # confirm
+    assert store.confirm_lesson(lid) is True
+    assert store.list_lessons()[0]["status"] == "verified"
+    assert store.confirm_lesson(9999) is False
+    # delete
+    assert store.delete_lesson(lid) is True
+    assert store.list_lessons() == []
+    assert store.delete_lesson(lid) is False
+
+
+def test_lesson_hits_auto_verify(store, sid):
+    lid = store.add_lesson(sid, "规则A", "general")
+    store.increment_lesson_hits([lid])
+    assert store.list_lessons()[0]["status"] == "pending"
+    store.increment_lesson_hits([lid])
+    assert store.list_lessons()[0]["status"] == "verified"
+
+
+def test_lesson_status_filter(store, sid):
+    store.add_lesson(sid, "待验证", "general")
+    v = store.add_lesson(sid, "已验证", "general")
+    store.confirm_lesson(v)
+    assert len(store.list_lessons(status="verified")) == 1
+    assert len(store.list_lessons(status="pending")) == 1
+
+
+def test_delete_session_cascades_lessons(store, sid):
+    store.add_lesson(sid, "规则", "general")
+    assert store.delete_session(sid) is True
+    assert store.list_lessons() == []
+
+
+# ---------------------------------------------------------------
+# lessons.py:信号检测与反思生成
+# ---------------------------------------------------------------
+def test_correction_signal():
+    assert L.has_correction_signal("你错了,应该用 pytest")
+    assert L.has_correction_signal("不对,重来")
+    assert not L.has_correction_signal("帮我写个测试")
+    assert not L.has_correction_signal("今天天气不错")
+
+
+def test_tool_error_markers():
+    assert L.is_tool_error("[ToolDispatch] terminal 参数错误: x")
+    assert L.is_tool_error("[错误] 文件不存在")
+    assert L.is_tool_error("xxx\n[EXIT CODE: 2]")
+    assert not L.is_tool_error("正常输出")
+
+
+def test_generate_lesson_valid_json():
+    llm = FakeLLM([
+        type("R", (), {"get": lambda self, k, d=None: json.dumps(
+            [{"lesson": "做X会错,应该Y", "category": "测试"}])})(),
+    ])
+    items = L.generate_lesson(llm, "事件")
+    assert items and items[0]["lesson"] == "做X会错,应该Y"
+
+
+def test_generate_lesson_fenced():
+    llm = FakeLLM([
+        type("R", (), {"get": lambda self, k, d=None:
+             "```json\n[{\"lesson\": \"规则B\", \"category\": \"终端\"}]\n```"})(),
+    ])
+    items = L.generate_lesson(llm, "事件")
+    assert items and items[0]["lesson"] == "规则B"
+
+
+def test_generate_lesson_invalid_returns_empty():
+    llm = FakeLLM([type("R", (), {"get": lambda self, k, d=None: "不是JSON"})(),
+                   type("R", (), {"get": lambda self, k, d=None: ""})()])
+    assert L.generate_lesson(llm, "事件") == []
+    assert L.generate_lesson(llm, "事件") == []
+
+
+def test_generate_lesson_exception_returns_empty():
+    class Boom:
+        def chat(self, **kwargs):
+            raise RuntimeError("网络错误")
+    assert L.generate_lesson(Boom(), "事件") == []
+
+
+# ---------------------------------------------------------------
+# core._inject_lessons
+# ---------------------------------------------------------------
+def test_inject_lessons(tmp_path, store, sid):
+    store.add_lesson(sid, "Windows 用 git-bash 别用 cmd", "terminal")
+    store.add_lesson(sid, "写文件前先确认路径", "write_file")
+    store.rebuild_search_index()
+    agent = DummyAgent(None, create_default_registry(), system_prompt="P")
+    agent.session_store = store
+    agent.history = [{"role": "system", "content": "P"}]
+    agent._inject_lessons("为什么我的命令报错")
+    content = agent.history[0]["content"]
+    assert "已知教训(规则):" in content
+    assert "git-bash" in content
+    # 幂等
+    agent._inject_lessons("为什么我的命令报错")
+    assert agent.history[0]["content"].count("已知教训(规则):") == 1
+
+
+def test_inject_lessons_empty(tmp_path, store):
+    agent = DummyAgent(None, create_default_registry(), system_prompt="P")
+    agent.session_store = store
+    agent.history = [{"role": "system", "content": "P"}]
+    agent._inject_lessons("任意")
+    assert agent.history[0]["content"] == "P"
+
+
+def test_inject_lessons_pending_marked(tmp_path, store, sid):
+    store.add_lesson(sid, "新教训待验证", "general")
+    store.rebuild_search_index()
+    agent = DummyAgent(None, create_default_registry(), system_prompt="P")
+    agent.session_store = store
+    agent.history = [{"role": "system", "content": "P"}]
+    agent._inject_lessons("新教训")
+    assert "待验证" in agent.history[0]["content"]
+
+
+# ---------------------------------------------------------------
+# 教训生成触发
+# ---------------------------------------------------------------
+def test_learn_from_correction(tmp_path, store, sid):
+    llm = FakeLLM([
+        type("R", (), {"get": lambda self, k, d=None: json.dumps(
+            [{"lesson": "应该用 pytest", "category": "测试"}])})(),
+    ])
+    agent = DummyAgent(llm, create_default_registry(), system_prompt="P")
+    agent.session_store = store
+    agent.current_session_id = sid
+    agent._learn_from_correction("你错了,应该用 pytest")
+    assert len(store.list_lessons()) == 1
+    assert store.list_lessons()[0]["lesson"] == "应该用 pytest"
+    # 无纠正信号不触发
+    agent._learn_from_correction("帮我写代码")
+    assert len(store.list_lessons()) == 1
+
+
+def test_learn_from_tool_error_limit(tmp_path, store, sid):
+    llm = FakeLLM([
+        type("R", (), {"get": lambda self, k, d=None: json.dumps(
+            [{"lesson": "命令错了", "category": "terminal"}])})(),
+    ])
+    agent = DummyAgent(llm, create_default_registry(), system_prompt="P")
+    agent.session_store = store
+    agent.current_session_id = sid
+    agent._tool_error_reflections = 0
+    agent._learn_from_tool_error("terminal", "[错误] 语法错误")
+    agent._learn_from_tool_error("terminal", "[错误] 又错了")
+    assert len(store.list_lessons()) == 1  # 每轮限 1 次
+
+
+# ---------------------------------------------------------------
+# /lessons 命令
+# ---------------------------------------------------------------
+def test_lessons_command(store, sid):
+    store.add_lesson(sid, "规则一", "general")
+    lines = mm.handle_lessons_command("/lessons", store)
+    assert "🧠 教训 (1 条)" in lines[0]
+    assert "规则一" in lines[0] or any("规则一" in l for l in lines)
+    lid = store.list_lessons()[0]["id"]
+    lines = mm.handle_lessons_command(f"/lessons confirm {lid}", store)
+    assert "已确认" in lines[0]
+    lines = mm.handle_lessons_command(f"/lessons del {lid}", store)
+    assert "已删除" in lines[0]
+    assert store.list_lessons() == []
+    lines = mm.handle_lessons_command("/lessons confirm abc", store)
+    assert "用法" in lines[0]
