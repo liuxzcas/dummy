@@ -94,6 +94,10 @@ from prompt import build_system_prompt
 from session_store import SessionStore
 from colors import paint, GRAY, BLUE, SLATE, PURPLE, YELLOW, NEUTRAL
 from skills_manager import build_skills_index
+from lessons import (
+    has_correction_signal, is_tool_error, generate_lesson,
+    MAX_TOOL_ERROR_REFLECTIONS_PER_TURN,
+)
 from compressor import (
     ContextCompressor,
     CompressionConfig,
@@ -323,6 +327,11 @@ class DummyAgent:
         self._inject_cwd()
         self._inject_memories(user_input)
         self._inject_skills()
+        self._inject_lessons(user_input)
+        # Phase 3 Step 3:用户纠正 → 即时反思生成教训(旁路 LLM)
+        self._learn_from_correction(user_input)
+        # 每轮工具错误反思计数(防连错连反思烧 token)
+        self._tool_error_reflections = 0
 
         # -------------------------------------------------------
         # Step 1: 追加用户消息
@@ -421,6 +430,10 @@ class DummyAgent:
                     # 打印执行结果摘要
                     result_preview = result[:300] + "..." if len(result) > 300 else result
                     print(f"  {paint(f'📝 {tool_name} 返回:', SLATE)} {result_preview}")
+
+                    # Phase 3 Step 3:工具错误 → 即时反思生成教训
+                    # (旁路 LLM,每轮限 1 次;检查点 A 之前,不打断主流程)
+                    self._learn_from_tool_error(tool_name, result)
 
                     # ---------------------------------------------------
                     # 检查点 A:工具执行后,检查监听线程累积的 /p 触发
@@ -717,6 +730,100 @@ class DummyAgent:
         if idx >= 0:
             content = content[:idx].rstrip()
         self.history[0] = {"role": "system", "content": content + "\n\n" + index}
+
+    # ---------------------------------------------------------------
+    # Phase 3 Step 3:教训(错误学习:生成 + 注入)
+    # ---------------------------------------------------------------
+    def _inject_lessons(self, user_input: str) -> None:
+        """注入相关教训到 system prompt(按需检索 ≤5 条,Phase 3 Step 3)。
+
+        L3-B 定稿:≤5 条。检索用 user_input 直接 FTS(source='lesson'),
+        命中 <3 时补 hits 最高的 verified 条目保底(教训库小时不空转)。
+        幂等:重复注入先移除旧教训段。三库边界(§8):教训 = 规则,
+        独立段"已知教训(规则):",与记忆/技能分开。
+        """
+        lessons = self.session_store.list_lessons()
+        if not lessons:
+            return
+        lessons.sort(
+            key=lambda l: (l["status"] == "verified", l["hits"]),
+            reverse=True,
+        )
+        by_id = {l["id"]: l for l in lessons}
+        picked: list[dict] = []
+        seen: set[int] = set()
+        for r in self.session_store.search(user_input, source="lesson", limit=8):
+            lid = r.get("seq")
+            if lid in seen or lid not in by_id:
+                continue
+            picked.append(by_id[lid])
+            seen.add(lid)
+        # 保底:检索命中不足时补高频教训(verified 优先,lessons 已排序;
+        # pending 也补——新教训库注入不空转,标记"待验证"即可)
+        if len(picked) < 3:
+            for l in lessons:
+                if l["id"] in seen:
+                    continue
+                picked.append(l)
+                seen.add(l["id"])
+                if len(picked) >= 5:
+                    break
+        picked = picked[:5]
+        if not picked:
+            return
+        block_lines = ["", "已知教训(规则):"]
+        for l in picked:
+            mark = "" if l["status"] == "verified" else " (待验证)"
+            block_lines.append(f"- [{l['category']}] {l['lesson']}{mark}")
+        content = self.history[0]["content"]
+        idx = content.find("已知教训(规则):")
+        if idx >= 0:
+            content = content[:idx].rstrip()
+        self.history[0] = {
+            "role": "system",
+            "content": content + "\n" + "\n".join(block_lines),
+        }
+        self.session_store.increment_lesson_hits([l["id"] for l in picked])
+        print(f"\n  {paint('🧠 注入教训', PURPLE)} ({len(picked)} 条):")
+        for l in picked:
+            print(f"    - [{l['category']}] {l['lesson'][:60]}")
+
+    def _learn_from_correction(self, user_input: str) -> None:
+        """用户纠正 → 即时反思生成教训(旁路 LLM,不影响主对话)。
+
+        触发:用户消息含强纠正信号(lessons.has_correction_signal)。
+        反思生成(Reflexion 式简化):事件 → 一句话规则 → 存 lessons 表。
+        """
+        if not has_correction_signal(user_input):
+            return
+        if self.llm is None:
+            return
+        items = generate_lesson(self.llm, f"用户纠正: {user_input[:200]}")
+        for item in items:
+            self.session_store.add_lesson(
+                self.current_session_id, item["lesson"], item["category"])
+            print(f"\n  {paint('🧠 学到教训', PURPLE)}: {item['lesson']}")
+
+    def _learn_from_tool_error(self, tool_name: str, result: str) -> None:
+        """工具错误 → 即时反思生成教训(旁路 LLM,每轮限 1 次)。
+
+        触发:dispatch 返回含错误特征(lessons.is_tool_error)。
+        每轮限 MAX_TOOL_ERROR_REFLECTIONS_PER_TURN 次,防连错连反思
+        烧 token;工具错误高频时由 Curator(Step 5)去重。
+        """
+        if not is_tool_error(result):
+            return
+        if self.llm is None:
+            return
+        if getattr(self, "_tool_error_reflections", 0) >= MAX_TOOL_ERROR_REFLECTIONS_PER_TURN:
+            return
+        self._tool_error_reflections += 1
+        items = generate_lesson(
+            self.llm, f"工具 {tool_name} 执行失败: {result[:200]}")
+        for item in items:
+            self.session_store.add_lesson(
+                self.current_session_id, item["lesson"], item["category"])
+            print(f"\n  {paint('🧠 学到教训', PURPLE)}: {item['lesson']}")
 
     def _retrieve_history_evidence(self, user_input: str) -> list[str]:
         """问句提炼词搜完整对话历史(无损兜底层)。

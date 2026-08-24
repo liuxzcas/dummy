@@ -97,6 +97,41 @@ def handle_skills_command(user_input: str) -> list[str]:
     return lines
 
 
+def handle_lessons_command(user_input: str, session_store) -> list[str]:
+    """/lessons 命令处理(纯函数,可测试,Phase 3 Step 3)。
+
+    支持:/lessons(列出)/ /lessons confirm <id>(验证)/
+    /lessons del <id>(删除)。返回要打印的行列表。
+    """
+    parts = user_input.split()
+    if len(parts) >= 2 and parts[1].lower() == "confirm":
+        try:
+            lid = int(parts[2])
+        except (IndexError, ValueError):
+            return ["用法: /lessons confirm <id>", ""]
+        ok = session_store.confirm_lesson(lid)
+        return [f"已确认教训 #{lid}(verified)" if ok else f"教训 #{lid} 不存在", ""]
+    if len(parts) >= 2 and parts[1].lower() == "del":
+        try:
+            lid = int(parts[2])
+        except (IndexError, ValueError):
+            return ["用法: /lessons del <id>", ""]
+        ok = session_store.delete_lesson(lid)
+        return [f"已删除教训 #{lid}" if ok else f"教训 #{lid} 不存在", ""]
+    lessons = session_store.list_lessons()
+    if not lessons:
+        return ["🧠 (暂无教训)", ""]
+    lines = [f"🧠 教训 ({len(lessons)} 条):"]
+    for l in lessons:
+        mark = "✅" if l["status"] == "verified" else "⏳"
+        lines.append(
+            f"  {mark} #{l['id']} [{l['category']}] {l['lesson'][:70]}"
+            f" (命中 {l['hits']})"
+        )
+    lines.append("")
+    return lines
+
+
 def print_help():
     """打印帮助信息。"""
     print("""
@@ -116,6 +151,9 @@ def print_help():
       /skills           列出可用技能
       /skills show <name>  显示技能全文
       /skills del <name>   删除技能（git 可回退）
+      /lessons          列出学到的教训（错误学习）
+      /lessons confirm <id>  确认教训为已验证
+      /lessons del <id>     删除教训
       /quit     退出 (/exit /q 也可)
 
     用法: 直接输入你的问题或指令，Agent 会自动决定是否调用工具。
@@ -358,6 +396,11 @@ def main():
 
             if user_input.lower().startswith("/skills"):
                 for line in handle_skills_command(user_input):
+                    print(line)
+                continue
+
+            if user_input.lower().startswith("/lessons"):
+                for line in handle_lessons_command(user_input, agent.session_store):
                     print(line)
                 continue
 
