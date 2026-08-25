@@ -92,11 +92,16 @@ from tools import ToolRegistry
 from tools.registry import InterruptSignal
 from prompt import build_system_prompt
 from session_store import SessionStore
-from colors import paint, GRAY, BLUE, SLATE, PURPLE, YELLOW, NEUTRAL
+from colors import paint, GRAY, BLUE, SLATE, PURPLE, YELLOW, NEUTRAL, RED, GREEN
 from skills_manager import build_skills_index
 from lessons import (
     has_correction_signal, is_tool_error, generate_lesson,
     MAX_TOOL_ERROR_REFLECTIONS_PER_TURN,
+)
+from self_improve import (
+    detect_tool_issue, generate_proposal, verify_change,
+    rollback_file, append_improve_log, _is_allowed_file,
+    _generate_new_content, PROJECT_ROOT,
 )
 from compressor import (
     ContextCompressor,
@@ -332,6 +337,13 @@ class DummyAgent:
         self._learn_from_correction(user_input)
         # 每轮工具错误反思计数(防连错连反思烧 token)
         self._tool_error_reflections = 0
+        # Phase 3 Step 4:自动检测(I1-A 报警灯)——错误率超阈值提示一次
+        issue = detect_tool_issue(self.tools.get_tool_stats())
+        if issue and issue not in getattr(self, "_improve_hinted", set()):
+            self._improve_hinted = getattr(self, "_improve_hinted", set())
+            self._improve_hinted.add(issue)
+            print(f"\n  {paint(f'⚠️ 检测到 {issue} 错误率偏高', YELLOW)}: "
+                  f"输入 /improve {issue} 可分析修复")
 
         # -------------------------------------------------------
         # Step 1: 追加用户消息
@@ -824,6 +836,111 @@ class DummyAgent:
             self.session_store.add_lesson(
                 self.current_session_id, item["lesson"], item["category"])
             print(f"\n  {paint('🧠 学到教训', PURPLE)}: {item['lesson']}")
+
+    # ---------------------------------------------------------------
+    # Phase 3 Step 4:自我改进闭环(检测→提案→批准→修改→验证→回退)
+    # ---------------------------------------------------------------
+    def run_improvement(self, tool_name: str) -> dict:
+        """执行自我改进闭环,返回改进记录(§3.5 量化)。
+
+        决策(I1-A 手动触发 / I2-A 批准即授权整条链,回退是安全网 /
+        I3-A 只改提案列明的文件 / I4-A 阈值在 detect_tool_issue)。
+        安全(§3.4):禁止区永不触碰;修改后验证门链(语法→导入→
+        pytest→启动),失败自动回退 + 记教训。
+        """
+        stats = self.tools.get_tool_stats()
+        if tool_name not in stats:
+            print(f"\n  {paint('❌ 无该工具统计', RED)}: {tool_name}")
+            return {"status": "no_data", "tool": tool_name}
+        if self.llm is None:
+            return {"status": "no_llm", "tool": tool_name}
+        stat = stats[tool_name]
+        proposal = generate_proposal(self.llm, tool_name, stat)
+        if not proposal:
+            print(f"\n  {paint('🧭 无法生成修复提案', YELLOW)} (工具 {tool_name})")
+            return {"status": "no_proposal", "tool": tool_name}
+        # 展示提案
+        print(f"\n  {paint('🧭 修复提案', YELLOW)} — {tool_name} "
+              f"({stat['calls']} 次调用 / {stat['errors']} 次错误):")
+        print(f"    根因: {proposal['root_cause']}")
+        for i, ch in enumerate(proposal["changes"], 1):
+            print(f"    {i}. {ch['file']}: {ch['description']}")
+        print(f"    验证计划: {proposal['verification']}")
+        # 用户批准(I2-A:批准即授权整条链,验证门 + 自动回退兜底)
+        try:
+            answer = self._make_confirm()(
+                f"\n  {paint('⚠️ 批准修改并执行(改坏自动回退)?', YELLOW)} "
+                "输入 y 批准 / n 拒绝: ").strip().lower()
+        except InterruptSignal:
+            return {"status": "interrupted", "tool": tool_name}
+        if answer != "y":
+            print("\n  已拒绝,不做修改。")
+            return {"status": "rejected", "tool": tool_name}
+        # 执行修改(受控区协议:检查 → 备份 → 修改 → 验证 → 回退)
+        import shutil
+        for ch in proposal["changes"]:
+            file_path = ch["file"]
+            ok, reason = _is_allowed_file(file_path)
+            if not ok:
+                print(f"\n  {paint('❌ 禁止修改', RED)}: {reason}")
+                return {"status": "blocked", "tool": tool_name,
+                        "file": file_path, "reason": reason}
+            abs_path = os.path.join(PROJECT_ROOT, file_path)
+            if not os.path.isfile(abs_path):
+                print(f"\n  {paint('❌ 文件不存在', RED)}: {file_path}")
+                return {"status": "file_missing", "tool": tool_name,
+                        "file": file_path}
+            # ② 备份(① git 检查点:git 本身是回退基座,提交由用户掌控)
+            backup = abs_path + ".improve-bak"
+            shutil.copy(abs_path, backup)
+            # ③ 修改(LLM 生成新内容,write_file 语义)
+            try:
+                new_content = _generate_new_content(
+                    self.llm, abs_path, ch["description"])
+                with open(abs_path, "w", encoding="utf-8") as f:
+                    f.write(new_content)
+            except Exception as e:
+                rollback_file(file_path, backup)
+                try:
+                    os.remove(backup)
+                except OSError:
+                    pass
+                print(f"\n  {paint('⛔ 修改应用失败,已回退', RED)}: {e}")
+                return {"status": "apply_failed", "tool": tool_name,
+                        "file": file_path, "error": str(e)}
+            # ④⑤⑥ 验证门链
+            failures = verify_change(file_path)
+            if failures:
+                rollback_file(file_path, backup)
+                try:
+                    os.remove(backup)
+                except OSError:
+                    pass
+                for fail in failures:
+                    self.session_store.add_lesson(
+                        self.current_session_id,
+                        f"自我改进修改 {file_path} 失败: {fail}",
+                        "self-improve")
+                print(f"\n  {paint('⛔ 验证失败,已自动回退', RED)}:")
+                for fail in failures:
+                    print(f"    - {fail}")
+                entry = {"status": "rolled_back", "tool": tool_name,
+                         "file": file_path, "failures": failures,
+                         "errors_before": stat["errors"],
+                         "calls_before": stat["calls"]}
+                append_improve_log(entry)
+                return entry
+            try:
+                os.remove(backup)
+            except OSError:
+                pass
+            print(f"\n  {paint('✅ 修改成功', GREEN)}: {file_path}(验证门全过)")
+        entry = {"status": "ok", "tool": tool_name,
+                 "changes": [c["file"] for c in proposal["changes"]],
+                 "errors_before": stat["errors"],
+                 "calls_before": stat["calls"]}
+        append_improve_log(entry)
+        return entry
 
     def _retrieve_history_evidence(self, user_input: str) -> list[str]:
         """问句提炼词搜完整对话历史(无损兜底层)。

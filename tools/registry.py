@@ -36,6 +36,8 @@ dispatch() 统一处理以下横切关注点，各 handler 只关心业务逻辑
 import json
 from typing import Any, Callable, Optional
 
+from lessons import is_tool_error
+
 
 class InterruptSignal(Exception):
     """用户 /p 打断信号（纯触发，不携带提示词）。
@@ -89,6 +91,10 @@ class ToolRegistry:
         self._tools: dict[str, Tool] = {}
         # 确认函数提供者（core 注入）：handler 的 _confirm 参数从这里来
         self._confirm_provider: Optional[Callable[[str], str]] = None
+        # Phase 3 Step 4:错误统计(D3-A 检测源 + §3.5 量化评估)
+        # stats[tool] = {"calls", "errors", "error_samples"(最近 3 条)}
+        self.stats: dict[str, dict] = {}
+        self.unknown_calls = 0
 
     def set_confirm_provider(self, provider: Callable[[str], str]) -> None:
         """注入确认函数提供者（core 在构造后调用）。
@@ -191,16 +197,24 @@ class ToolRegistry:
         # ---- 1. 查找工具 ----
         tool = self._tools.get(tool_name)
         if tool is None:
+            self.unknown_calls += 1
             return (
                 f"[ToolDispatch] 未知工具: '{tool_name}'。"
                 f" 可用工具: {list(self._tools.keys())}"
             )
 
+        # Phase 3 Step 4:调用计数(错误计数在各错误出口统一记录)
+        stat = self.stats.setdefault(
+            tool_name, {"calls": 0, "errors": 0, "error_samples": []})
+        stat["calls"] += 1
+
         # ---- 2. 参数校验 ----
         # 如果 core.py 解析 JSON 失败，会把错误信息放在 _error 中
         # 此时不调用 handler，直接返回错误
         if "_error" in arguments:
-            return f"[ToolDispatch] {tool.name} 参数错误: {arguments['_error']}"
+            msg = f"[ToolDispatch] {tool.name} 参数错误: {arguments['_error']}"
+            self._record_error(stat, msg)
+            return msg
 
         # ---- 3. 执行 handler ----
         # 确认类工具：注入 _confirm 函数（输入收集 + /p 拦截在 core）
@@ -218,10 +232,31 @@ class ToolRegistry:
             # （否则打断会变成一条"执行异常"字符串回注给 LLM）
             raise
         except Exception as e:
-            return f"[ToolDispatch] {tool.name} 执行异常: {type(e).__name__}: {e}"
+            msg = f"[ToolDispatch] {tool.name} 执行异常: {type(e).__name__}: {e}"
+            self._record_error(stat, msg)
+            return msg
 
         # ---- 4. 结果规范化 ----
-        return self._normalize_result(result)
+        result_str = self._normalize_result(result)
+        # 错误特征计数:返回串含 [ToolDispatch]/[错误]/[EXIT CODE 等
+        if is_tool_error(result_str):
+            self._record_error(stat, result_str)
+        return result_str
+
+    def _record_error(self, stat: dict, msg: str) -> None:
+        """记录一次工具错误(计数 + 保留最近 3 条样本供根因分析)。"""
+        stat["errors"] += 1
+        samples = stat["error_samples"]
+        samples.append(msg[:200])
+        del samples[:-3]
+
+    def get_tool_stats(self) -> dict:
+        """返回统计副本(Step 4 检测源 + §3.5 量化评估)。"""
+        return {
+            k: {"calls": v["calls"], "errors": v["errors"],
+                "error_samples": list(v["error_samples"])}
+            for k, v in self.stats.items()
+        }
 
     def list_tools(self) -> list[str]:
         return list(self._tools.keys())

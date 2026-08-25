@@ -154,6 +154,7 @@ def print_help():
       /lessons          列出学到的教训（错误学习）
       /lessons confirm <id>  确认教训为已验证
       /lessons del <id>     删除教训
+      /improve <工具名>   自我改进：分析该工具错误并提案修复
       /quit     退出 (/exit /q 也可)
 
     用法: 直接输入你的问题或指令，Agent 会自动决定是否调用工具。
@@ -402,6 +403,15 @@ def main():
             if user_input.lower().startswith("/lessons"):
                 for line in handle_lessons_command(user_input, agent.session_store):
                     print(line)
+                continue
+
+            if user_input.lower().startswith("/improve"):
+                parts = user_input.split()
+                tool = parts[1] if len(parts) > 1 else ""
+                if not tool:
+                    print("用法: /improve <工具名>（如 terminal / read_file）")
+                    continue
+                agent.run_improvement(tool)
                 continue
 
             # ---------------------------------------------------
