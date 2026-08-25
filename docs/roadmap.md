@@ -56,14 +56,22 @@
 
 ## 规划中
 
-### Phase 3 — 自主学习
+### Phase 3 — 自主学习（进行中:Step 1-4 完成 ✅）
 
-目标：Agent 越用越聪明，不重复犯错。
+目标：Agent 越用越聪明，不重复犯错。技能沉淀 + 错误学习 + 自我改进，分级实施：
 
-| 功能 | 说明 |
-|------|------|
-| Skills 系统 | 把复杂任务流程固化为可复用的 SKILL.md，下次自动加载 |
-| Curator | 自动管理技能库：合并重复、标记过时、归档废弃 |
+| 子步骤 | 状态 | 说明 |
+|--------|------|------|
+| 研究定稿 | ✅ | 方法论（工程实践 > SOTA）、三能力域、安全协议（§3.4）、量化评估（§3.5）、workspace 机制、三库边界 — [phase3-research.md](./phase3-research.md) |
+| Step 1 技能机制 | ✅ | SKILL.md（原子+工作流）、system 索引注入、/skills 命令 — 真机验证（综述链路完整）[phase3-step1-verification.md](./phase3-step1-verification.md) |
+| Step 2 技能创建 | ✅ | create-skill 元技能自举、validate_skill 校验 — 真机验证（创建闭环）[phase3-step2-verification.md](./phase3-step2-verification.md) |
+| Step 3 错误学习 | ✅ | lessons 独立库、纠正/工具错误即时反思、按需注入 ≤5、/lessons（三库边界 §8） |
+| Step 4 自我改进 | ✅ | /improve 闭环（检测→提案→批准→修改→验证→回退）、安全五道防线、改进记录 — [phase3-step4-manual-test.md](./phase3-step4-manual-test.md) |
+| Step 5 Curator + 综合验证 | ⏳ | 技能/教训管理去重、使用统计、全链路回归（待做） |
+
+> 关键决策沉淀：工程实践 > SOTA 论文（PlugMem 15/30 vs Hermes 93% 实证）、
+> 技能原子化+工作流编排（D5=B）、教训独立库+按需检索（可回退）、
+> 自我改进"可回退>防错"安全协议、测试方法论文档（tests/methodology/）
 
 ### Phase 4 — 自主运行
 
