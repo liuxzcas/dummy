@@ -90,6 +90,76 @@ def test_delete_session_cascades_lessons(store, sid):
 
 
 # ---------------------------------------------------------------
+# 会话占用锁(多进程防双开)
+# ---------------------------------------------------------------
+def test_session_lock_acquire_release(store, sid):
+    ok, msg = store.acquire_session_lock(sid, "pid:1")
+    assert ok is True
+    # 同一 owner 幂等
+    ok, msg = store.acquire_session_lock(sid, "pid:1")
+    assert ok is True and "本进程" in msg
+    # 他人持有被拒
+    ok, msg = store.acquire_session_lock(sid, "pid:2")
+    assert ok is False and "持有" in msg
+    # owner 匹配释放
+    store.release_session_lock(sid, "pid:2")  # 错误 owner 不释放
+    assert store.get_session_lock(sid)["locked_by"] == "pid:1"
+    store.release_session_lock(sid, "pid:1")
+    assert store.get_session_lock(sid)["locked_by"] is None
+
+
+def test_session_lock_ttl_expired_takeover(store, sid):
+    """锁 TTL 过期视为残留,自动接管。"""
+    store.acquire_session_lock(sid, "pid:1")
+    # 把 locked_at 改到 TTL 之前
+    import sqlite3
+    conn = sqlite3.connect(store.db_path)
+    conn.execute("UPDATE sessions SET locked_at = ? WHERE id = ?",
+                 ("2020-01-01T00:00:00+00:00", sid))
+    conn.commit()
+    conn.close()
+    ok, msg = store.acquire_session_lock(sid, "pid:2")
+    assert ok is True  # 过期锁接管
+    assert store.get_session_lock(sid)["locked_by"] == "pid:2"
+
+
+def test_session_lock_resume_warn(store, sid, tmp_path, monkeypatch):
+    """resume 被占用会话:提示并可选接管。"""
+    store.save_history(sid, [{"role": "system", "content": "s"}])
+    store.acquire_session_lock(sid, "pid:999")
+    from core import DummyAgent
+    from tools import create_default_registry
+    agent = DummyAgent(None, create_default_registry(), system_prompt="P")
+    agent.session_store = store
+    # 用户拒绝接管
+    monkeypatch.setattr("builtins.input", lambda p: "n")
+    assert agent.resume_session(sid) is False
+    assert agent.current_session_id is None
+    # 用户强制接管
+    monkeypatch.setattr("builtins.input", lambda p: "y")
+    assert agent.resume_session(sid) is True
+    assert agent.current_session_id == sid
+    assert store.get_session_lock(sid)["locked_by"] == agent._session_owner
+
+
+def test_release_lock_on_exit(store, sid, tmp_path):
+    """退出释放:main._release_current_session_lock 释放当前会话锁。"""
+    from core import DummyAgent
+    from tools import create_default_registry
+    agent = DummyAgent(None, create_default_registry(), system_prompt="P")
+    agent.session_store = store
+    agent.current_session_id = sid
+    store.acquire_session_lock(sid, agent._session_owner)
+    assert store.get_session_lock(sid)["locked_by"] == agent._session_owner
+    mm._release_current_session_lock(agent)
+    assert store.get_session_lock(sid)["locked_by"] is None
+    # 无会话时不崩
+    agent2 = DummyAgent(None, create_default_registry(), system_prompt="P")
+    agent2.session_store = store
+    mm._release_current_session_lock(agent2)
+
+
+# ---------------------------------------------------------------
 # lessons.py:信号检测与反思生成
 # ---------------------------------------------------------------
 def test_correction_signal():
