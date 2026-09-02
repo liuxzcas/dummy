@@ -50,6 +50,9 @@ class SessionStore:
             ("prompt_tokens", "INTEGER NOT NULL DEFAULT 0"),
             ("completion_tokens", "INTEGER NOT NULL DEFAULT 0"),
             ("cached_tokens", "INTEGER NOT NULL DEFAULT 0"),
+            # 会话占用锁(2026-08-21 多进程防双开)
+            ("locked_by", "TEXT"),
+            ("locked_at", "TEXT"),
         ]:
             if col not in cols:
                 conn.execute(
@@ -800,5 +803,83 @@ class SessionStore:
                 "WHERE hits >= 2 AND status = 'pending'"
             )
             conn.commit()
+        finally:
+            conn.close()
+
+    # ---------------------------------------------------------------
+    # 会话占用锁(2026-08-21):多进程防"同 session 双开"导致历史交错
+    # ---------------------------------------------------------------
+    # 锁 TTL:超过视为残留(进程崩溃/强关),自动接管
+    LOCK_TTL_SECONDS = 24 * 3600
+
+    @staticmethod
+    def _now_iso_utc() -> str:
+        from datetime import datetime, timezone
+        return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+    def acquire_session_lock(self, session_id: str, owner: str,
+                             force: bool = False) -> tuple[bool, str]:
+        """获取会话占用锁。
+
+        返回 (成功, 消息):成功 = 拿到锁(或已是自己持有);
+        失败 = 被其他进程持有(TTL 内),消息含持有者信息。
+        force=True:无视他人持有直接覆盖(用户强制接管,resume 用)。
+        锁语义:同 session 双开防呆——不是强制排他,警告由调用方处理。
+        """
+        now = self._now_iso_utc()
+        conn = sqlite3.connect(self.db_path)
+        try:
+            conn.execute("PRAGMA busy_timeout = 10000")
+            row = conn.execute(
+                "SELECT locked_by, locked_at FROM sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
+            if row is None:
+                return False, "会话不存在"
+            locked_by, locked_at = row
+            if locked_by == owner:
+                return True, "已是本进程持有"
+            if locked_by and locked_at and not force:
+                from datetime import datetime, timezone
+                try:
+                    ts = datetime.fromisoformat(locked_at)
+                    if (datetime.now(timezone.utc) - ts).total_seconds() < self.LOCK_TTL_SECONDS:
+                        return False, f"被 {locked_by} 持有(自 {locked_at})"
+                except ValueError:
+                    pass  # 时间戳解析失败视为残留,接管
+            conn.execute(
+                "UPDATE sessions SET locked_by = ?, locked_at = ? WHERE id = ?",
+                (owner, now, session_id),
+            )
+            conn.commit()
+            return True, "已锁定"
+        finally:
+            conn.close()
+
+    def release_session_lock(self, session_id: str, owner: str) -> None:
+        """释放会话锁(仅 owner 匹配时,防误释放他人锁)。"""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            conn.execute("PRAGMA busy_timeout = 10000")
+            conn.execute(
+                "UPDATE sessions SET locked_by = NULL, locked_at = NULL "
+                "WHERE id = ? AND locked_by = ?",
+                (session_id, owner),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def get_session_lock(self, session_id: str) -> dict | None:
+        """查询会话锁信息(供展示/调试)。"""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            row = conn.execute(
+                "SELECT locked_by, locked_at FROM sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            return {"locked_by": row[0], "locked_at": row[1]}
         finally:
             conn.close()

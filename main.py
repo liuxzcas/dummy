@@ -132,6 +132,14 @@ def handle_lessons_command(user_input: str, session_store) -> list[str]:
     return lines
 
 
+def _release_current_session_lock(agent):
+    """退出时释放当前会话锁(正常退出不留残留,下次 resume 零询问)。"""
+    sid = getattr(agent, "current_session_id", None)
+    if sid:
+        agent.session_store.release_session_lock(
+            sid, getattr(agent, "_session_owner", ""))
+
+
 def print_help():
     """打印帮助信息。"""
     print("""
@@ -250,6 +258,7 @@ def main():
 
             if user_input.lower() in ("/quit", "/exit", "/q"):
                 print("再见！")
+                _release_current_session_lock(agent)
                 break
 
             if user_input.lower() == "/help":
@@ -426,11 +435,13 @@ def main():
         except KeyboardInterrupt:
             # Ctrl+C 处理 —— 优雅退出
             print("\n\n再见！")
+            _release_current_session_lock(agent)
             break
 
         except EOFError:
             # Ctrl+D 处理（Unix 终端下）
             print("\n\n再见！")
+            _release_current_session_lock(agent)
             break
 
         except Exception as e:

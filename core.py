@@ -230,6 +230,8 @@ class DummyAgent:
         self.tools = tool_registry
         self.session_store = SessionStore()
         self.current_session_id: Optional[str] = None
+        # 会话占用锁 owner(进程级唯一:pid + 启动时间戳,防 pid 复用)
+        self._session_owner = f"pid:{os.getpid()}:{int(time.time())}"
         # 当前会话 token 累计(输入/输出/缓存命中;每次 LLM 调用后累加,
         # 与 db sessions 表同步,/resume 时从 db 读回)
         self.session_usage = {"prompt": 0, "completion": 0, "cached": 0}
@@ -537,7 +539,9 @@ class DummyAgent:
     def _ensure_session(self) -> None:
         """如果当前 Agent 还没有绑定 session，就创建一个新的会话。"""
         if self.current_session_id is None:
-            self.current_session_id = self.session_store.create_session()
+            sid = self.session_store.create_session()
+            self.session_store.acquire_session_lock(sid, self._session_owner)
+            self.current_session_id = sid
 
     def _persist_history(self) -> None:
         """把当前内存历史同步持久化到 SQLite。"""
@@ -996,9 +1000,32 @@ class DummyAgent:
         return self.resume_session(latest_session_id)
 
     def resume_session(self, session_id: str) -> bool:
-        """恢复指定 session_id 的历史到当前 Agent。"""
+        """恢复指定 session_id 的历史到当前 Agent。
+
+        多进程防呆:会话被其他进程持有时(TTL 内)询问用户——
+        继续会导致历史交错,由用户决定;选择继续则接管锁。
+        """
         history = self.session_store.load_history(session_id)
         if not history:
+            return False
+        ok, msg = self.session_store.acquire_session_lock(
+            session_id, self._session_owner)
+        if not ok and "持有" in msg:
+            try:
+                answer = input(
+                    f"\n  ⚠️ 会话 {session_id[:8]}… {msg}。\n"
+                    "  同时使用同一会话会导致历史交错!\n"
+                    "  输入 y 强制接管 / n 放弃: ").strip().lower()
+            except EOFError:
+                answer = "n"
+            if answer != "y":
+                print("  已放弃恢复该会话。")
+                return False
+            # 强制接管:force 覆盖他人锁
+            ok, msg = self.session_store.acquire_session_lock(
+                session_id, self._session_owner, force=True)
+        if not ok:
+            print(f"  无法锁定会话: {msg}")
             return False
         self.current_session_id = session_id
         self.history = history
@@ -1216,10 +1243,16 @@ class DummyAgent:
         重置对话历史，只保留 system prompt。
         相当于重新开始对话，但保留工具注册等配置。
         """
+        # 释放旧会话锁(放弃当前会话;新会话在 _persist 时自动加锁)
+        if self.current_session_id is not None:
+            self.session_store.release_session_lock(
+                self.current_session_id, self._session_owner)
         self.history = [
             {"role": "system", "content": self.system_prompt}
         ]
         self.current_session_id = self.session_store.create_session()
+        self.session_store.acquire_session_lock(
+            self.current_session_id, self._session_owner)
         self._persist_history()
         # 新会话用量归零
         self.session_usage = {"prompt": 0, "completion": 0, "cached": 0}
