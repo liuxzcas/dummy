@@ -140,6 +140,24 @@ def _release_current_session_lock(agent):
             sid, getattr(agent, "_session_owner", ""))
 
 
+def _settle_history(agent):
+    """退出前把内存历史"结算"干净:补齐残缺的 tool 配对并落库。
+
+    为什么退出时要特意做一次:
+    Ctrl+C / Ctrl+D 可能正好打在"一批多个 tool_calls"的中间——
+    已执行的 tool 回复了,同批未执行的没有。此时若直接把内存历史
+    留在库里,该会话之后每次 resume 都会稳定触发
+    400 "insufficient tool messages following tool_calls"。
+    退出路径上补这一刀,保证落到磁盘的历史始终是合法的。
+
+    尽力而为:失败不阻塞退出(启动时还有 load_history 自愈兜底)。
+    """
+    try:
+        agent._repair_history()
+    except Exception:
+        pass
+
+
 def print_help():
     """打印帮助信息。"""
     print("""
@@ -358,23 +376,37 @@ def main():
                         continue
                     to_delete = {idx}
                     role = agent.history[idx]["role"]
+
+                    def _mark_tool_block(ai: int) -> None:
+                        """把 assistant(tool_calls) 与它名下的 tool 响应标记为整组。
+
+                        整组增删是维持 API 约束的关键:
+                        assistant 里声明了 N 个 tool_calls,后面就必须有 N 条
+                        对应 tool 消息。只删其中一半 → 剩下一半成为孤儿,
+                        发请求时 400 (Messages with role 'tool' must be a
+                        response to a preceding message with 'tool_calls')。
+                        """
+                        to_delete.add(ai)
+                        ids = {tc["id"] for tc in (agent.history[ai].get("tool_calls") or [])}
+                        for k in range(ai + 1, len(agent.history)):
+                            mk = agent.history[k]
+                            if mk["role"] != "tool":
+                                break
+                            if mk.get("tool_call_id") in ids:
+                                to_delete.add(k)
+
                     if role == "assistant" and agent.history[idx].get("tool_calls"):
-                        # assistant(tool_calls):连带删紧随其后的 tool 响应
-                        ids = {tc["id"] for tc in agent.history[idx]["tool_calls"]}
-                        for i in range(idx + 1, len(agent.history)):
-                            m = agent.history[i]
-                            if m["role"] == "tool" and m.get("tool_call_id") in ids:
-                                to_delete.add(i)
+                        # assistant(tool_calls):连带删紧随其后的全部 tool 响应
+                        _mark_tool_block(idx)
                     elif role == "tool":
-                        # tool 响应:连带删它之前的 assistant(tool_calls) 父消息
+                        # tool 响应:连带删父 assistant(tool_calls),
+                        # 并且**连同它的兄弟响应**一起删(整组增删,避免孤儿)
                         tc_id = agent.history[idx].get("tool_call_id")
                         for j in range(idx - 1, -1, -1):
                             m = agent.history[j]
                             if m["role"] == "assistant" and m.get("tool_calls"):
-                                if any(
-                                    t["id"] == tc_id for t in m["tool_calls"]
-                                ):
-                                    to_delete.add(j)
+                                if any(t["id"] == tc_id for t in m["tool_calls"]):
+                                    _mark_tool_block(j)
                                     break
                             if m["role"] == "user":
                                 break
@@ -435,12 +467,14 @@ def main():
         except KeyboardInterrupt:
             # Ctrl+C 处理 —— 优雅退出
             print("\n\n再见！")
+            _settle_history(agent)          # 先补齐残缺 tool 配对再落库
             _release_current_session_lock(agent)
             break
 
         except EOFError:
             # Ctrl+D 处理（Unix 终端下）
             print("\n\n再见！")
+            _settle_history(agent)          # 同上
             _release_current_session_lock(agent)
             break
 
