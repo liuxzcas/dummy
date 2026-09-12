@@ -91,7 +91,7 @@ from memory import MemoryExtractor
 from tools import ToolRegistry
 from tools.registry import InterruptSignal
 from prompt import build_system_prompt
-from session_store import SessionStore
+from session_store import SessionStore, repair_tool_pairing
 from colors import paint, GRAY, BLUE, SLATE, PURPLE, YELLOW, NEUTRAL, RED, GREEN
 from skills_manager import build_skills_index
 from lessons import (
@@ -363,9 +363,20 @@ class DummyAgent:
         #   有则执行并回注 → 继续；无则返回文本。
         # -------------------------------------------------------
         for turn in range(self.MAX_TOOL_TURNS):
+            # 保险丝(一):自愈 tool 配对(补缺失/删孤儿/去重)。
+            # 放在最前,使压缩器拿到的就是合法历史——压缩器若在不合法
+            # 的配对上做 L1 折叠/L2 摘要,可能把残缺结构"固化"下来。
+            # 正常历史零改动、零输出。
+            self._repair_history()
+
             # Phase 2.2:压缩触发点(每次调 LLM 之前检查,
             # 压缩只发生在"即将调 LLM"的静止点,绝不在循环中途)
             self._maybe_compress()
+
+            # 保险丝(二):压缩会整体重写 self.history,这里在真正发出
+            # 请求前再校验一次。两次自愈都是幂等的,O(n) 且无改动时静默,
+            # 换来的是"无论哪条路径把历史搞坏,都到不了 API"。
+            self._repair_history()
 
             # 2a. 调用 LLM
             # 传入当前完整历史 + 工具定义
@@ -485,24 +496,26 @@ class DummyAgent:
                     prompt = input(
                         "  🧭 检测到 /p 打断,请输入提示词(Enter 取消): "
                     ).strip()
+
+                    # 无论后续是否注入提示词,都必须先把本轮"声明了但没执行"
+                    # 的 tool_calls 补齐占位消息:
+                    # assistant 里的 tool_calls 数量必须与紧随其后的 tool
+                    # 回复数一致,否则发 API 会被拒
+                    # (400 insufficient tool messages following tool_calls)。
+                    #
+                    # 注意:此前这里只在 prompt 非空时才补,走"提示词为空"
+                    # 分支时会漏掉同批其余 tool_call,落库后 resume 必 400。
+                    self._backfill_pending_tool_calls(response_message.tool_calls)
+
                     if prompt:
-                        # 剩余未执行的 tool_calls 补取消消息(消息结构完整)
-                        executed_ids = {
-                            m.get("tool_call_id")
-                            for m in self.history if m.get("role") == "tool"
-                        }
-                        for tc in response_message.tool_calls:
-                            if tc.id not in executed_ids:
-                                self.history.append({
-                                    "role": "tool", "tool_call_id": tc.id,
-                                    "content": "[用户打断,工具未执行]"})
                         # 提示词作为用户消息注入,LLM 下一轮看到插话重新规划
                         print(f"\n  {paint('🧭 用户打断:', YELLOW)} {prompt}")
                         self.history.append({"role": "user", "content": prompt})
                         self._persist_history()
                         continue
-                    # 提示词为空:取消打断——取消消息已保留(工具未执行),
-                    # 不注入用户消息,继续正常循环(LLM 会自行处理)
+                    # 提示词为空:取消打断——占位消息已补齐,不注入用户消息,
+                    # 继续正常循环(LLM 会自行处理)
+                    self._persist_history()
 
                 # 工具执行完后，回到循环顶部，再次调 LLM
                 # 这次 LLM 能看到工具的执行结果，可以决定下一步
@@ -547,6 +560,57 @@ class DummyAgent:
         """把当前内存历史同步持久化到 SQLite。"""
         self._ensure_session()
         self.session_store.save_history(self.current_session_id, self.history)
+
+    def _repair_history(self) -> None:
+        """内存历史的 tool 配对自愈(每次发请求前的保险丝)。
+
+        ============ 为什么放在"发请求前" ============
+        tool 配对的破坏点散落在多处(Ctrl+C、/p 打断后提示词为空、
+        handler 抛非 InterruptSignal 异常、进程被强杀……),逐个出口去堵
+        既堵不全也难维护。而它们最终都会汇到同一个动作:**调 LLM**。
+
+        所以把自愈放在唯一咽喉点——循环里 `self.llm.chat(...)` 之前:
+        无论破坏来自哪条路径、乃至来自磁盘上的历史遗留坏数据,
+        在真正发出去之前都会被修正,属于"打开开关就永久免疫"。
+
+        行为:确有改动 → 替换 self.history + 立即落库;
+              无改动 → 完全静默,零开销(仅一次 O(n) 遍历)。
+        具体的配对规则见 session_store.repair_tool_pairing。
+        """
+        repaired, stats = repair_tool_pairing(self.history)
+        if not stats["total"]:
+            return
+        self.history = repaired
+        print(f"  {paint('🔧 已自愈历史 tool 配对', YELLOW)}: "
+              f"补 {stats['backfilled']} / 删孤儿 {stats['dropped_orphans']} / "
+              f"删重复 {stats['dropped_duplicates']}")
+        self._persist_history()
+
+    def _backfill_pending_tool_calls(self, tool_calls) -> int:
+        """给"已声明但未执行"的 tool_calls 补占位 tool 消息。
+
+        与 _repair_history 的分工:
+        - _repair_history:兜底保险丝,任何来源的历史破损都修,
+          占位文案 "[工具结果缺失:...]"(强调的是"缺");
+        - 本方法:打断场景下的**语义化**补位,文案
+          "[用户打断,工具未执行]"(让 LLM 知道是用户叫停,不是结果丢了)。
+
+        返回补入的条数。已回复过的 id 不会重复补(幂等)。
+        """
+        replied = {
+            m.get("tool_call_id")
+            for m in self.history if m.get("role") == "tool"
+        }
+        added = 0
+        for tc in tool_calls:
+            if tc.id not in replied:
+                self.history.append({
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "content": "[用户打断,工具未执行]",
+                })
+                added += 1
+        return added
 
     def _maybe_compress(self) -> None:
         """压缩触发点:工具循环每次调 LLM 之前调用(容错设计 6.x)。
@@ -1029,6 +1093,14 @@ class DummyAgent:
             return False
         self.current_session_id = session_id
         self.history = history
+
+        # resume 是"磁盘上的历史进入内存"的唯一入口,在这里做一次配对自愈:
+        # 若该会话曾被中断/Ctrl+C 打断在一批多个 tool_calls 中间,库里会留下
+        # "声明 N 个、只回 M<N 个"的残缺结构,直接使用会稳定触发
+        # 400 insufficient tool messages。修好后立刻回写,使磁盘数据也随之干净。
+        # (持久层 load_history 保持忠实读取,不改写数据;约束在 Agent 边界执行)
+        self._repair_history()
+
         # 恢复会话累计用量(/resume 后统计延续)
         self.session_usage = self.session_store.get_session_usage(session_id)
         return True

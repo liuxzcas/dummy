@@ -19,6 +19,112 @@ from datetime import datetime, timezone
 from typing import Any
 
 
+# 缺失 tool 回复时补入的占位内容(与"用户打断"占位区分,便于事后排查)
+MISSING_TOOL_REPLY = "[工具结果缺失:该次调用未执行或被中断]"
+
+
+def repair_tool_pairing(history: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    """修复 history 中 assistant.tool_calls 与 tool 消息的配对关系。
+
+    ============ 为什么需要这个函数 ============
+    OpenAI/DeepSeek 的 Chat Completions API 有一条硬性约束:
+
+        assistant 消息里声明了 N 个 tool_calls,
+        其**紧随其后**必须有 N 条 role="tool" 且 tool_call_id 一一对应的消息。
+
+    违反任一条都会被拒:
+      - 少回复  → 400 "An assistant message with 'tool_calls' must be
+                       followed by tool messages responding to each
+                       'tool_call_id'. (insufficient tool messages ...)"
+      - 多回复/位置错 → 400 "Messages with role 'tool' must be a response
+                             to a preceding message with 'tool_calls'"
+
+    而工具循环存在若干"提前跳出"的出口(Ctrl+C 中断、/p 打断后提示词为空、
+    handler 抛非 InterruptSignal 异常等),这些出口未必来得及给同一批里
+    其余 tool_call 补上占位回复。一旦残缺的历史被落库,后续每次 resume
+    都会稳定复现 400,属于"一次损坏,永久失效"。
+
+    所以这里做**双向**修复:
+      1. 补:assistant.tool_calls 里缺 tool 回复的 → 补占位消息;
+      2. 删:没有归属 assistant.tool_calls 的孤儿 tool 消息 → 丢弃
+            (孤儿同样会触发 400);
+      3. 顺带修正重复回复(同一 tool_call_id 出现多次时只保留第一条)。
+
+    ============ 设计取舍 ============
+    - 纯函数、不碰数据库、不改输入(返回新列表),便于单测与复用;
+    - 幂等:对已合法的历史调用返回原顺序、零改动;
+    - 只在"最小必要处"改动:补/删都发生在违规点,不动其他消息。
+
+    返回 (修复后的历史, 统计字典)。统计字典字段:
+      backfilled / dropped_orphans / dropped_duplicates / total
+    """
+    stats = {"backfilled": 0, "dropped_orphans": 0, "dropped_duplicates": 0, "total": 0}
+    if not history:
+        return history, stats
+
+    # ---------- 第一遍:按顺序重建,处理"补"与"去重" ----------
+    out: list[dict[str, Any]] = []
+    i = 0
+    n = len(history)
+    while i < n:
+        msg = history[i]
+        role = msg.get("role")
+
+        # 非 assistant 的 tool 消息:先原样带过,第二遍再判孤儿
+        if role != "assistant":
+            out.append(msg)
+            i += 1
+            continue
+
+        out.append(msg)
+        declared = [tc.get("id") for tc in (msg.get("tool_calls") or [])]
+        if not declared:
+            i += 1
+            continue
+
+        # 紧随其后的连续 tool 消息块(收集同时去重:每个 id 只留第一条)
+        i += 1
+        seen: set[str] = set()
+        while i < n and history[i].get("role") == "tool":
+            tid = history[i].get("tool_call_id")
+            if tid in seen:
+                stats["dropped_duplicates"] += 1   # 同一 id 重复回复
+            else:
+                seen.add(tid)
+                out.append(history[i])
+            i += 1
+
+        # 声明了但没回复的 → 补占位(保持声明顺序,插在该批次末尾)
+        for tid in declared:
+            if tid not in seen:
+                out.append({
+                    "role": "tool",
+                    "tool_call_id": tid,
+                    "content": MISSING_TOOL_REPLY,
+                })
+                stats["backfilled"] += 1
+
+    # ---------- 第二遍:清理孤儿 tool 消息 ----------
+    owned: set[str] = set()
+    for msg in out:
+        if msg.get("role") == "assistant":
+            for tc in (msg.get("tool_calls") or []):
+                if tc.get("id"):
+                    owned.add(tc["id"])
+
+    cleaned: list[dict[str, Any]] = []
+    for msg in out:
+        if msg.get("role") == "tool" and msg.get("tool_call_id") not in owned:
+            stats["dropped_orphans"] += 1
+            continue
+        cleaned.append(msg)
+
+    stats["total"] = (
+        stats["backfilled"] + stats["dropped_orphans"] + stats["dropped_duplicates"]
+    )
+    return cleaned, stats
+
+
 class SessionStore:
     """持久化会话消息到 SQLite。"""
 
@@ -325,7 +431,13 @@ class SessionStore:
             conn.close()
 
     def load_history(self, session_id: str) -> list[dict[str, Any]]:
-        """从 SQLite 读取历史消息并恢复为 OpenAI 风格消息列表。"""
+        """从 SQLite 读取历史消息并恢复为 OpenAI 风格消息列表。
+
+        注意:本方法是**忠实读取**——原样返回落库的内容,不做任何改写。
+        持久层只负责存取,不负责校验业务约束;tool 配对的自愈由 Agent
+        在 resume 时显式调用 repair_tool_pairing 完成(见 core.resume_session)。
+        这样职责清晰,也保证 `save_history → load_history` 可无损往返。
+        """
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
