@@ -132,6 +132,16 @@ from compressor import (
 # 类是最自然的方式。后续可以加数据库持久化。=================
 
 
+def _env_int(name: str, default: int) -> int:
+    """读环境变量整数;未设置/非法/<1 时返回默认值。"""
+    raw = os.environ.get(name)
+    try:
+        value = int(raw) if raw is not None else default
+    except ValueError:
+        return default
+    return value if value >= 1 else default
+
+
 class _InterruptListener:
     """随时打断监听器(后台线程,无回显)。
 
@@ -306,6 +316,9 @@ class DummyAgent:
         # 每轮 chat 开头 reset_for_turn()。开关/上限见环境变量,规格见 docs/p1b-verification-design.md
         self.verification = VerificationLedger.from_env()
 
+        # 工具轮次上限(可在运行时用环境变量覆盖,便于长任务调高/调试调低)
+        self.max_tool_turns = _env_int("DUMMY_MAX_TOOL_TURNS", self.MAX_TOOL_TURNS)
+
         # 注入确认函数提供者:handler 的 _confirm 参数从这里来
         # (输入收集 + /p 拦截在 core,确认语义判断留在 handler)
         self.tools.set_confirm_provider(self._make_confirm())
@@ -342,10 +355,12 @@ class DummyAgent:
         如果 LLM 陷入"ls → 看到文件 → 再 ls"的死循环，
         或者在一次推理中产生多个 tool_call，会耗尽 token 配额。
 
-        MAX_TOOL_TURNS 是安全网 —— 限制单次 chat 调用中
-        工具调用的轮次上限。
-        Hermes 的默认值是 90 轮。
-        Phase 0 保守设 10 轮。
+        MAX_TOOL_TURNS 是安全网 —— 限制单次 chat 调用中工具调用的轮次上限。
+        默认 40(Hermes 是 90),可用环境变量 DUMMY_MAX_TOOL_TURNS 覆盖。
+
+        用尽后不再"硬停",而是剥掉工具再放一次调用,让模型用已有信息写
+        收尾总结(见 _finalize_after_budget_exhausted)——几十轮的工具成果
+        不该只换回一句"已停止"。
         """
         # 先确保当前会话已存在（首次 chat 时才创建）
         self._ensure_session()
@@ -388,7 +403,7 @@ class DummyAgent:
         #   调用 LLM → 检查是否有 tool_calls →
         #   有则执行并回注 → 继续；无则返回文本。
         # -------------------------------------------------------
-        for turn in range(self.MAX_TOOL_TURNS):
+        for turn in range(self.max_tool_turns):
             # 保险丝(一):自愈 tool 配对(补缺失/删孤儿/去重)。
             # 放在最前,使压缩器拿到的就是合法历史——压缩器若在不合法
             # 的配对上做 L1 折叠/L2 摘要,可能把残缺结构"固化"下来。
@@ -610,12 +625,52 @@ class DummyAgent:
         # 如果循环正常结束但没返回（即轮次用尽仍没得到文本回答）
         # 这通常意味着 agent 陷入了无限工具循环
         # -------------------------------------------------------
-        fallback = f"[已达最大工具调用轮次 {self.MAX_TOOL_TURNS}，停止循环]"
+        return self._finalize_after_budget_exhausted()
+
+    def _finalize_after_budget_exhausted(self) -> str:
+        """轮次用尽:剥掉工具再放一次调用,让模型用已有信息写收尾总结。
+
+        ============ 为什么不直接返回一句"已停止" ============
+        MAX_TOOL_TURNS 用尽意味着这一轮烧掉了几十次工具调用却没能正常收尾。
+        旧实现只追加一句 "[已达最大工具调用轮次 40,停止循环]" 就返回,用户
+        拿不到"干到哪了 / 卡在哪 / 磁盘上有没有半成品"——而那几十轮的成果
+        是真实存在的(文件真的写出来了、命令真的跑了)。
+
+        这里额外花**一次** LLM 调用换一份总结:不带工具定义,模型无法再动手,
+        只能交代现状。
+
+        ============ 失败也不能让收尾变成新故障点 ============
+        这次调用异常或返回空 → 退回旧的提示文本;落库与日志照常执行。
+        """
+        fallback = f"[已达最大工具调用轮次 {self.max_tool_turns}，停止循环]"
         self.history.append({"role": "assistant", "content": fallback})
+        self._append_user_turn(
+            "[系统: 本轮可用的调用轮次已用尽,你不能再执行任何操作。"
+            "请只依据已有信息给出收尾总结:"
+            "① 已完成什么;② 卡在哪一步、原因是什么;"
+            "③ 磁盘上留下了哪些文件(包括半成品);④ 建议的下一步。"
+            "不要编造未经证实的结论。]"
+        )
         self._persist_history()
 
+        text = ""
+        try:
+            response = self.llm.chat(
+                messages=strip_meta(self.history),
+                temperature=0.3,
+            )
+            self._accumulate_usage()
+            text = (response.content or "").strip()
+        except Exception as e:
+            print(f"  {paint('⚠️ 收尾总结失败', YELLOW)}: {type(e).__name__}: {e}")
+
+        if text:
+            self.history.append({"role": "assistant", "content": text})
+            self._persist_history()
+            print(f"\n  {paint('📋 轮次用尽,已生成收尾总结', YELLOW)}")
+
         self._save_conversation_log()
-        return fallback
+        return text or fallback
 
     def _append_user_turn(self, content: str) -> None:
         """追加一条 user 消息——**所有** user 消息的唯一入口。
