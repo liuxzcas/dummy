@@ -140,7 +140,7 @@ AlphaCodium `arXiv:2401.08500`、`github.com/Codium-ai/AlphaCodium`。
 
 | 配套 | 取值 | 为什么 |
 |---|---|---|
-| **次数上限** | 默认 **2**（业界 2/3/3/8） | 没有上限 = 死循环。这是"永远 stale → 无限驳回"的唯一闸门 |
+| **次数上限** | 默认 **2**（业界 2/3/3/8） | 防止**单轮内**反复驳回。**注意它拦不住跨轮重复**——见 §7.5 |
 | **防重入** | 由上限计数天然承担 | 对应 Claude Code / Codex 的 `stop_hook_active` 字段 |
 | **文档类豁免** | `.md/.markdown/.mdx/.rst/.txt/.adoc/.log/.csv/.tsv` + `LICENSE/CHANGELOG/...` | 无运行时行为可验；改 README 不该被要求跑测试（照 Hermes 的白名单） |
 | **判决用退出码** | 不用模型判断 | §4 的结论 |
@@ -170,6 +170,21 @@ AlphaCodium `arXiv:2401.08500`、`github.com/Codium-ai/AlphaCodium`。
    可以按扩展名分档（`.py` 要求 pytest，其余放宽）。
 4. **门只在"模型想以纯文本收尾"时开**，不覆盖 `MAX_TOOL_TURNS` 用尽那条路径
    （那种情况本身已经是失败态）。
+5. **次数上限只防"单轮内"重复，不防"跨轮"重复**（实测得出，2026-09-15）。
+   Hermes 的计数是**每轮清零**的：`agent/turn_context.py:532-534`
+   （注释就写着 `Per-turn file-mutation verifier state.`）：
+   ```python
+   agent._turn_file_mutation_paths = set()
+   agent._verification_stop_nudges = 0
+   ```
+   所以如果**证据永远无法被识别**（例如项目里没有可被探测的规范测试命令，
+   模型跑的 pytest 匹配不上任何 canonical command），结果不是"敲两次就停"，
+   而是**每一轮都敲一次**。实测连续三轮各触发一次。
+
+   > **由此得出的设计硬约束**：光有次数上限不够，**必须保证"存在一条能被识别的
+   > 取证路径"**。否则门会退化成每轮噪音。Hermes 靠 `project_facts_for` 探测
+   > 规范命令（探不到就要求 ad-hoc 脚本）；dummy 的档 A 是硬编码规则，
+   > 天然不存在这个"探不到"的问题——这是简化带来的意外好处。
 
 ---
 
