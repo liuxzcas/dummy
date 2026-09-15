@@ -91,7 +91,11 @@ from memory import MemoryExtractor
 from tools import ToolRegistry
 from tools.registry import InterruptSignal
 from prompt import build_system_prompt
-from session_store import SessionStore, repair_tool_pairing
+from session_store import (
+    SessionStore,
+    close_interrupted_tool_sequence,
+    repair_tool_pairing,
+)
 from tool_guardrails import (
     GuardrailConfig,
     ToolCallGuardrailController,
@@ -375,7 +379,7 @@ class DummyAgent:
         # 注意 content 可以是字符串，也可以是数组（包含图片等）。
         # Phase 0 只处理纯文本。
         # -------------------------------------------------------
-        self.history.append({"role": "user", "content": user_input})
+        self._append_user_turn(user_input)
         self._persist_history()
 
         # -------------------------------------------------------
@@ -560,7 +564,7 @@ class DummyAgent:
                     if prompt:
                         # 提示词作为用户消息注入,LLM 下一轮看到插话重新规划
                         print(f"\n  {paint('🧭 用户打断:', YELLOW)} {prompt}")
-                        self.history.append({"role": "user", "content": prompt})
+                        self._append_user_turn(prompt)
                         self._persist_history()
                         continue
                     # 提示词为空:取消打断——占位消息已补齐,不注入用户消息,
@@ -588,7 +592,7 @@ class DummyAgent:
                 print(f"  {paint('🔒 验证门驳回:', YELLOW)} "
                       "本轮改动过代码但无通过证据,要求先验证再收工")
                 self.history.append({"role": "assistant", "content": final_text})
-                self.history.append({"role": "user", "content": nudge})
+                self._append_user_turn(nudge)
                 self._persist_history()
                 continue
 
@@ -612,6 +616,26 @@ class DummyAgent:
 
         self._save_conversation_log()
         return fallback
+
+    def _append_user_turn(self, content: str) -> None:
+        """追加一条 user 消息——**所有** user 消息的唯一入口。
+
+        ============ 为什么要单点收口 ============
+        历史尾巴是 role="tool" 时直接接 user,序列就成了 `... tool → user`,
+        违反角色交替。OpenAI/DeepSeek 容忍,Gemini/Claude 这类严格 provider
+        会据此幻觉续写并忽略前文,用户体感是"上下文丢了"。
+
+        所以追加前先调 close_interrupted_tool_sequence 把中断的序列闭合掉。
+
+        只在"追加 user 消息"这一刻需要这么做:工具循环**中途**尾巴是 tool
+        属正常状态(API 正等着模型对工具结果作回应),那时补假发言会破坏语义。
+
+        与 _make_confirm 同类做法:一件横切的事收在一个门里,调用方不必各自记得。
+        """
+        self.history, closed = close_interrupted_tool_sequence(self.history)
+        if closed:
+            print(f"  {paint('🔧 已闭合中断序列', GRAY)}: 补一条合成 assistant 轮次")
+        self.history.append({"role": "user", "content": content})
 
     def _ensure_session(self) -> None:
         """如果当前 Agent 还没有绑定 session，就创建一个新的会话。"""
