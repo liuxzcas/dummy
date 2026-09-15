@@ -520,6 +520,9 @@ class DummyAgent:
                         # 被拦截:回注合成结果(不执行工具),并打印一行便于观察
                         result = synthetic_result(guard)
                         print(f"  {paint('⛔ 护栏拦截', RED)}: {guard.message}")
+                        # 若拦掉的正是取证路径(全量测试),告知验证门:本轮已
+                        # 拿不到证据,收尾时别再逼模型去跑一条被禁止的命令。
+                        self.verification.note_blocked(tool_name, sig_args)
 
                     # 打印执行结果摘要
                     result_preview = result[:300] + "..." if len(result) > 300 else result
@@ -579,7 +582,7 @@ class DummyAgent:
                     if prompt:
                         # 提示词作为用户消息注入,LLM 下一轮看到插话重新规划
                         print(f"\n  {paint('🧭 用户打断:', YELLOW)} {prompt}")
-                        self._append_user_turn(prompt)
+                        self._append_user_turn(prompt, synthetic="user_interrupt")
                         self._persist_history()
                         continue
                     # 提示词为空:取消打断——占位消息已补齐,不注入用户消息,
@@ -607,7 +610,7 @@ class DummyAgent:
                 print(f"  {paint('🔒 验证门驳回:', YELLOW)} "
                       "本轮改动过代码但无通过证据,要求先验证再收工")
                 self.history.append({"role": "assistant", "content": final_text})
-                self._append_user_turn(nudge)
+                self._append_user_turn(nudge, synthetic="verify_nudge")
                 self._persist_history()
                 continue
 
@@ -649,7 +652,8 @@ class DummyAgent:
             "请只依据已有信息给出收尾总结:"
             "① 已完成什么;② 卡在哪一步、原因是什么;"
             "③ 磁盘上留下了哪些文件(包括半成品);④ 建议的下一步。"
-            "不要编造未经证实的结论。]"
+            "不要编造未经证实的结论。]",
+            synthetic="budget_exhausted",
         )
         self._persist_history()
 
@@ -672,7 +676,7 @@ class DummyAgent:
         self._save_conversation_log()
         return text or fallback
 
-    def _append_user_turn(self, content: str) -> None:
+    def _append_user_turn(self, content: str, synthetic: str | None = None) -> None:
         """追加一条 user 消息——**所有** user 消息的唯一入口。
 
         ============ 为什么要单点收口 ============
@@ -685,12 +689,22 @@ class DummyAgent:
         只在"追加 user 消息"这一刻需要这么做:工具循环**中途**尾巴是 tool
         属正常状态(API 正等着模型对工具结果作回应),那时补假发言会破坏语义。
 
+        ============ synthetic 参数 ============
+        系统自己合成的 user 消息(打断提示词 / 验证门驳回 / 轮次用尽指令)
+        传一个非空标签,会被记进 `_meta.synthetic`。压缩器据此把它们
+        排除在"保留最近 N 轮"的计数之外——否则每触发一次驳回就吃掉一个
+        名额,真实对话会被提前摘要掉(实测:4 条合成消息让真实保留轮数
+        从 6 掉到 2)。_meta 在发 API 前由 strip_meta 剥离,不影响协议。
+
         与 _make_confirm 同类做法:一件横切的事收在一个门里,调用方不必各自记得。
         """
         self.history, closed = close_interrupted_tool_sequence(self.history)
         if closed:
             print(f"  {paint('🔧 已闭合中断序列', GRAY)}: 补一条合成 assistant 轮次")
-        self.history.append({"role": "user", "content": content})
+        msg: dict[str, Any] = {"role": "user", "content": content}
+        if synthetic:
+            msg["_meta"] = {"synthetic": synthetic}
+        self.history.append(msg)
 
     def _ensure_session(self) -> None:
         """如果当前 Agent 还没有绑定 session，就创建一个新的会话。"""

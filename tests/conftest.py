@@ -11,6 +11,7 @@ core.chat(),把"循环/接线"这件事变成可断言的确定性事实。
 
 import json
 import os
+import re
 import sys
 
 import pytest
@@ -106,6 +107,18 @@ def run_script(tmp_path, monkeypatch):
         lambda *a, **k: real_store(db_path=str(tmp_path / "t.db")))
 
     def _run(script=(), confirm="y", llm=None):
+        # 危险写法拦截:run_script 会**真跑**工具。脚本里若让 terminal 真跑
+        # pytest,而套件内部又要跑 pytest,就会递归套娃 —— 实测一次误写跑出
+        # 101 个残留 pytest 进程(约 9GB),把系统资源耗尽,连别的测试都起不来。
+        # 要么用 --collect-only(见 test_verify_stop 的 _COLLECT),要么自己建
+        # agent 并替换 tools.dispatch(见 test_guardrails 的两条 e2e)。
+        for name, args in script:
+            cmd = str((args or {}).get("command", "")) if name == "terminal" else ""
+            if cmd and re.search(r"pytest(?!.*--collect-only)", cmd):
+                raise AssertionError(
+                    "run_script 的脚本里不能真跑 pytest(会递归套娃炸进程): "
+                    f"{cmd!r}\n改用 '--collect-only',或自建 agent 并替换 "
+                    "tools.dispatch。")
         llm = llm or ScriptedLLM(script)
         agent = core.DummyAgent(llm, create_default_registry())
         agent.tools.set_confirm_provider(lambda prompt: confirm)

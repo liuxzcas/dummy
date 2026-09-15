@@ -249,6 +249,12 @@ remaining   # :57-59   max(0, max_total - _used)
 （`compressor.py:90` `max_consecutive_failures = 3` → `paused`，`:144-147`），
 护栏可以照这个已有 idiom 写，不必另创一套。
 
+**dummy 落地后的补充（2026-09-15）**：P1a 已实现为 `tool_guardrails.py`（纯控制器，
+默认**硬停开启**，`DUMMY_GUARDRAIL_HARD_STOP=0` 可关）。与 Hermes **有意不同**的一点：
+`exact_failure` 在 dummy 要求**工具 + 参数 + 失败内容三者一致**——Hermes 只比
+`tool+args`，而 dummy 硬停默认开着，只比参数会把"改一处、跑一次测试"（报错每次不同）
+拦死，并与收尾验证门互锁。详见 `docs/cross-component-audit.md`。
+
 ### 2.6 dummy 的现状
 
 ```python

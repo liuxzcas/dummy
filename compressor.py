@@ -189,8 +189,11 @@ class ContextCompressor:
                     originals.append({"tool_call_id": tool_call_id, "content": c})
                     msg["content"] = (
                         c[: self.config.tool_result_keep_head]
-                        + f"\n...[ToolResult 已截断: 原文 {len(c)} 字符, "
-                          f"完整内容可查询归档表 tool_result_archive(tool_call_id={tool_call_id})]...\n"
+                        + f"\n...[ToolResult 已截断: 原文 {len(c)} 字符。"
+                          f"完整原文存于会话库(默认 session.db)的 "
+                          f"tool_result_archive 表, 键 tool_call_id="
+                          f"'{tool_call_id}'; 需要时用 terminal 执行 "
+                          f"sqlite3 查询取回]...\n"
                         + c[-self.config.tool_result_keep_tail :]
                     )
                     folded += 1
@@ -220,7 +223,14 @@ class ContextCompressor:
 
         # 2. cut 点:user 消息倒数的 recent_turns_keep 个,cut 在 user 边界。
         #    在 user 边界切天然保证 assistant(tool_calls)/tool 配对完整。
-        user_idx = [i for i, m in enumerate(history) if m.get("role") == "user"]
+        #    只数**真实**用户轮次:系统合成的 user 消息(打断提示词/验证门驳回/
+        #    轮次用尽指令,带 _meta.synthetic)不计入名额——否则一次驳回就
+        #    吃掉一个名额,真实对话会被提前摘要掉(实测 4 条合成 → 真实只剩 2 轮)。
+        user_idx = [
+            i for i, m in enumerate(history)
+            if m.get("role") == "user"
+            and not (m.get("_meta") or {}).get("synthetic")
+        ]
         if len(user_idx) <= self.config.recent_turns_keep:
             return history, 0  # 还没有早期内容可压
 
