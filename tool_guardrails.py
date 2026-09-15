@@ -3,10 +3,13 @@
 ============ 这个模块解决什么问题 ============
 LLM 在工具循环里会有两类"原地打转"：
 
-  1. 完全相同调用反复失败
-     同一个工具、同一套参数，一次次失败还继续原样重试。
+  1. 同一份失败反复出现
+     同一个工具、同一套参数、**连报错内容都一样**,一次次原样重试。
      实例：日志里 write_file 连续 3 次空参数被 TypeError 打回；
            terminal 里那条卡住的 powershell 反复重跑。
+     ⚠️ 判据必须包含"报错也一样":只按工具+参数计数会把
+     "改一处、再跑一次测试"(报错每次都不同)误判成打转并拦死 ——
+     而验证门又要求"跑通全量测试",两者会互锁。见 after_call 里的注释。
 
   2. 只读调用毫无进展
      只读工具连续返回**完全相同**的结果，模型还一遍遍要。
@@ -103,7 +106,7 @@ class GuardrailConfig:
     warnings_enabled: bool = True
     hard_stop_enabled: bool = True
 
-    # 完全相同失败（工具+参数一致）
+    # 完全相同失败(工具 + 参数 + **报错内容** 三者一致)
     exact_failure_warn_after: int = 2
     exact_failure_block_after: int = 5
 
@@ -184,7 +187,7 @@ class ToolCallGuardrailController:
         self.reset_for_turn()
 
     def reset_for_turn(self) -> None:
-        self._exact_failure_counts: dict[ToolCallSignature, int] = {}
+        self._exact_failures: dict[ToolCallSignature, tuple[str, int]] = {}
         self._no_progress: dict[ToolCallSignature, tuple[str, int]] = {}
 
     # -----------------------------------------------------------
@@ -195,13 +198,14 @@ class ToolCallGuardrailController:
         if not self.config.hard_stop_enabled:
             return GuardrailDecision(tool_name=tool_name, signature=signature)
 
-        count = self._exact_failure_counts.get(signature, 0)
+        count = self._exact_failures.get(signature, (None, 0))[1]
         if count >= self.config.exact_failure_block_after:
             decision = GuardrailDecision(
                 action="block",
                 code="exact_failure_block",
                 message=(
-                    f"{tool_name} 已用完全相同的参数失败 {count} 次，判定为原地打转。"
+                    f"{tool_name} 已连续 {count} 次返回**完全相同**的失败"
+                    "(同参数、同报错),判定为原地打转。"
                     "请停止原样重试：检查最近一次报错、改变方案，"
                     "或直接说明卡在哪里。"
                 ),
@@ -244,9 +248,15 @@ class ToolCallGuardrailController:
             failed = is_tool_error(result or "")
 
         if failed:
-            # 完全相同失败计数 +1（不看参数的同工具计数未实现，见模块头）
-            count = self._exact_failure_counts.get(signature, 0) + 1
-            self._exact_failure_counts[signature] = count
+            # 只把"**同一份失败**反复出现"算作打转:同工具+同参数还不够——
+            # "改一处、再跑一次测试"的报错每次都不同,那是正常迭代;只按参数
+            # 计数会把它判成循环并拦死(实测会与验证门互锁:门要求跑通测试,
+            # 护栏却禁止再执行该命令)。形状与下面只读工具的 no_progress 一致:
+            # 结果指纹 + 连续次数。
+            result_hash = _result_hash(result)
+            previous = self._exact_failures.get(signature)
+            count = previous[1] + 1 if previous and previous[0] == result_hash else 1
+            self._exact_failures[signature] = (result_hash, count)
             # 一旦失败，此前的"无进展"记录作废（失败≠无进展）
             self._no_progress.pop(signature, None)
 
@@ -255,8 +265,8 @@ class ToolCallGuardrailController:
                     action="warn",
                     code="exact_failure_warning",
                     message=(
-                        f"{tool_name} 已用相同参数失败 {count} 次，看起来陷入循环。"
-                        "先看最近一次报错再决定，不要原样重试。"
+                        f"{tool_name} 已连续 {count} 次返回完全相同的失败，"
+                        "看起来陷入循环。先看最近一次报错再决定，不要原样重试。"
                     ),
                     tool_name=tool_name, count=count, signature=signature,
                 )
@@ -265,7 +275,7 @@ class ToolCallGuardrailController:
         # ---- 成功：清零该签名的失败记录 ----
         # 这一步很关键：“先失败 → 修好 → 成功 → 之后再失败”不会被累计误判，
         # 也避免"文件创建后重新读取成功"这类合法重试被拦。
-        self._exact_failure_counts.pop(signature, None)
+        self._exact_failures.pop(signature, None)
 
         if not self._is_idempotent(tool_name):
             self._no_progress.pop(signature, None)

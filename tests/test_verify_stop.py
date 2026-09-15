@@ -11,6 +11,7 @@ import os
 
 from verify_stop import (
     VerificationLedger,
+    is_evidence_command,
     is_full_suite_pytest_command,
     is_pytest_evidence,
     is_verifiable_path,
@@ -257,6 +258,48 @@ def test_from_env_switches():
             assert lg.build_stop_nudge() is not None
     finally:
         del os.environ["DUMMY_VERIFY_MAX_ATTEMPTS"]
+
+
+# ============================================================
+# 取证路径被护栏阻断(与 P1a 的交叉点)
+# ============================================================
+def test_is_evidence_command():
+    """只有"全量 pytest 运行"才算取证路径。"""
+    assert is_evidence_command("terminal", {"command": "python -m pytest tests/ -q"})
+    assert not is_evidence_command("terminal", {"command": "ls -la"})
+    assert not is_evidence_command("terminal", {"command": "pytest tests/test_a.py"})
+    assert not is_evidence_command("read_file", {"path": "a.py"})
+    assert not is_evidence_command("terminal", None)
+
+
+def test_blocked_evidence_command_suppresses_nudge():
+    """取证命令被护栏拦掉 → 不再驳回:本轮已无法验证。
+
+    回归:护栏拦掉全量测试后,模型**怎么都拿不到证据**,门却继续驳回,
+    逼它去执行一条被禁止的命令 —— 实测以"无证据 + 声称完成"收尾。
+    被阻断属外部原因,门应放行。
+    """
+    lg = _ledger()
+    lg.note_tool_result("write_file", PY, WRITE_OK)
+    lg.note_blocked("terminal", {"command": "python -m pytest tests/ -q"})
+    assert lg.build_stop_nudge() is None
+
+
+def test_blocked_non_evidence_command_still_nudges():
+    """被拦的不是取证路径(如 ls) → 照常驳回。"""
+    lg = _ledger()
+    lg.note_tool_result("write_file", PY, WRITE_OK)
+    lg.note_blocked("terminal", {"command": "ls -la"})
+    assert lg.build_stop_nudge() is not None
+
+
+def test_evidence_blocked_resets_per_turn():
+    """"取证被阻断"只对当前轮有效:下一轮照常要求验证。"""
+    lg = _ledger()
+    lg.note_blocked("terminal", {"command": "python -m pytest tests/ -q"})
+    lg.reset_for_turn()
+    lg.note_tool_result("write_file", PY, WRITE_OK)
+    assert lg.build_stop_nudge() is not None
 
 
 # ============================================================

@@ -10,7 +10,8 @@
 (原实现注入 _confirm 时直接改写,导致护栏前后签名不一致而失效)。
 """
 
-from conftest import pairing_ok, tool_contents
+import core
+from conftest import ScriptedLLM, pairing_ok, tool_contents
 
 from tool_guardrails import (
     GuardrailConfig,
@@ -43,6 +44,31 @@ def test_exact_failure_warns_then_blocks():
     assert actions[1] == ("warn", 2)
     assert actions[4][1] == 5, "第5次应仍放行"
     assert actions[-1] == ("block", 6)
+
+
+def test_varying_failures_are_not_a_loop():
+    """同命令但**报错每次都不同** → 不算打转(这就是"改一处、跑一次"的迭代)。
+
+    回归:判据曾只看"工具+参数",把这种合法迭代判成原地打转并在第 6 次拦死;
+    而验证门要求"跑通全量测试才算证据",两者于是互锁 —— 实测结局是驳回两次后
+    以"无证据 + 声称完成"收尾,正是验证门要防的事。
+    """
+    c = ToolCallGuardrailController()
+    args = {"command": "python -m pytest tests/ -q"}
+    for i in range(1, 9):
+        assert c.before_call("terminal", args).allows_execution, f"第 {i} 次不该被拦"
+        d = c.after_call("terminal", args, f"[EXIT CODE: 1]\n{i} failed, 180 passed")
+        assert d.action == "allow", f"第 {i} 次报错不同,不该告警"
+
+
+def test_identical_failure_restarts_count_then_blocks():
+    """报错变了就重新计数;此后**连续同一份失败**满 5 次仍会被拦。"""
+    c = ToolCallGuardrailController()
+    args = {"command": "python -m pytest tests/ -q"}
+    c.after_call("terminal", args, "[EXIT CODE: 1]\n失败A")     # 计数从 1 重新开始
+    for _ in range(5):
+        c.after_call("terminal", args, "[EXIT CODE: 1]\n失败B")  # 同一份失败
+    assert not c.before_call("terminal", args).allows_execution
 
 
 def test_success_resets_failure_counter():
@@ -162,6 +188,74 @@ def test_e2e_exact_failure_blocks_after_five(run_script, tmp_path):
     assert len(_blocks(history)) == 1
     assert len(_warns(history)) >= 1, "第 2 次失败起应注入告警"
     assert llm.main_calls == 7, "被拦后应还能继续到模型给出文本"
+
+
+def test_e2e_fix_run_iteration_not_blocked(tmp_path, monkeypatch):
+    """改 .py → 连跑测试(每次报错都不同)→ 最后跑绿:零拦截,且证据成立。
+
+    这是"互锁"冲突的端到端回归:护栏若拦掉取证命令,验证门就永远拿不到证据。
+    终端结果用假数据喂(真跑 5 遍套件太慢),所以不走 run_script 夹具
+    (它会立刻真跑一遍),自己建 agent 并替换 dispatch。
+    """
+    real_store = core.SessionStore
+    monkeypatch.setattr(
+        core, "SessionStore",
+        lambda *a, **k: real_store(db_path=str(tmp_path / "t.db")))
+
+    runs = [f"[SHELL: bash]\n{i} failed, 180 passed\n"
+            f"FAILED tests/test_a.py::test_{i}\n[EXIT CODE: 1]"
+            for i in range(1, 5)]
+    runs.append("[SHELL: bash]\n186 passed in 13.2s")      # 修好了
+    script = ([("write_file", {"path": str(tmp_path / "app.py"),
+                              "content": "x = 1\n", "verify": False})]
+              + [("terminal", {"command": "python -m pytest tests/ -q"})] * len(runs))
+
+    agent = core.DummyAgent(ScriptedLLM(script), create_default_registry())
+    agent.tools.set_confirm_provider(lambda prompt: "y")
+
+    remaining = iter(runs)
+    real_dispatch = agent.tools.dispatch
+    agent.tools.dispatch = lambda name, args: (
+        next(remaining) if name == "terminal" else real_dispatch(name, args))
+
+    agent.chat("修好测试")
+
+    assert _blocks(agent.history) == [], "正常迭代不该被拦"
+    assert agent.verification.has_fresh_evidence(), "跑绿后应留下新鲜证据"
+
+
+def test_e2e_blocked_evidence_command_skips_verify_nudge(tmp_path, monkeypatch):
+    """护栏真拦掉了取证命令 → 验证门不再驳回(不再逼模型跑一条被禁止的命令)。
+
+    回归:原结局是"护栏拦死 → 验证门驳回 2 次 → 以无证据 + 声称完成收尾"。
+    现在:同一份失败连续 5 次仍会被拦(护栏职责保留),但门知道本轮已无法验证,
+    直接放行。
+    """
+    real_store = core.SessionStore
+    monkeypatch.setattr(
+        core, "SessionStore",
+        lambda *a, **k: real_store(db_path=str(tmp_path / "t.db")))
+
+    same = ("[SHELL: bash]\n1 failed, 180 passed\n"
+            "FAILED tests/test_a.py::test_x\n[EXIT CODE: 1]")
+    script = ([("write_file", {"path": str(tmp_path / "app.py"),
+                              "content": "x = 1\n", "verify": False})]
+              + [("terminal", {"command": "python -m pytest tests/ -q"})] * 6)
+    agent = core.DummyAgent(ScriptedLLM(script), create_default_registry())
+    agent.tools.set_confirm_provider(lambda prompt: "y")
+
+    real_dispatch = agent.tools.dispatch
+    agent.tools.dispatch = lambda name, args: (
+        same if name == "terminal" else real_dispatch(name, args))
+
+    result = agent.chat("修好测试")
+
+    blocks = [c for c in tool_contents(agent.history) if "[护栏拦截]" in c]
+    nudges = [m for m in agent.history if m.get("role") == "user"
+              and "[系统: 你在本轮修改了代码" in str(m.get("content"))]
+    assert len(blocks) == 1, "同一份失败连续 5 次 → 仍应拦截(护栏职责不变)"
+    assert nudges == [], "取证路径被拦后不该再驳回"
+    assert result, "仍以回答收尾"
 
 
 def test_e2e_idempotent_no_progress_blocks(run_script, tmp_path):

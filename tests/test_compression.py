@@ -180,6 +180,48 @@ def test_l2_covers_accumulate_and_unique():
     assert n_sum == 1                               # 新旧摘要不并存(回归 A9)
 
 
+def test_synthetic_user_turns_do_not_consume_keep_slots():
+    """合成 user 消息(带 _meta.synthetic)不占"保留最近 N 轮"的名额。
+
+    回归:验证门驳回 / 打断提示词 / 轮次用尽指令都是 role=user,压缩器曾按
+    "所有 user 消息"计数 —— 每触发一次驳回就吃掉一个名额,真实对话被提前
+    摘要掉(实测:4 条合成消息让真实保留轮数从 6 掉到 2)。
+    """
+    h = turns(8)
+    for k in range(4):                       # 4 条合成消息(两次驳回 + 两条系统指令)
+        h.append({"role": "user", "content": f"[系统: 合成{k}]",
+                  "_meta": {"synthetic": "verify_nudge"}})
+        h.append({"role": "assistant", "content": f"[已处理{k}]"})
+
+    comp = ContextCompressor(llm=FaithfulSummarizer())
+    new_h, covers = comp._summarize_prefix(h)
+
+    real_kept = [m for m in new_h if m.get("role") == "user"
+                 and not (m.get("_meta") or {}).get("synthetic")]
+    assert len(real_kept) == 6, "真实对话仍应保留 recent_turns_keep=6 轮"
+    assert covers == 8, "只该摘要掉前 2 轮真实对话(每轮 4 条消息)"
+
+
+def test_fold_marker_gives_retrieval_command():
+    """折叠标记必须给出**可执行**的取回办法,不能指向不存在的工具。
+
+    回归:原文案写"可查询归档表 tool_result_archive(tool_call_id=...)",
+    读起来像一次函数调用,但项目里**没有**这个工具(只有 terminal/read_file/
+    write_file/web_search/web_extract)——模型会去调一个不存在的东西。
+    """
+    comp = ContextCompressor(llm=None, config=CompressionConfig(enable_l2=False))
+    history = [{"role": "system", "content": "s"},
+               {"role": "user", "content": "hi"},
+               {"role": "tool", "tool_call_id": "call_abc", "content": "X" * 1000}]
+    out, _, _ = comp._fold_tool_results(history)
+    text = out[2]["content"]
+
+    assert "tool_result_archive" in text
+    assert "sqlite3" in text and "session.db" in text, "要给出可执行的取回命令"
+    assert "call_abc" in text, "必须带上具体 id,模型才查得到"
+    assert "tool_result_archive(" not in text, "不要再写成函数调用的样子"
+
+
 def test_strip_meta():
     orig = [{"role": "system", "content": "[早期对话摘要]x", "_meta": {"compressed": True}},
             {"role": "user", "content": "hi"}]

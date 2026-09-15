@@ -198,6 +198,16 @@ def is_pytest_evidence(command: str | None, result: str | None) -> bool:
     )
 
 
+def is_evidence_command(tool_name: str, args: dict[str, Any] | None) -> bool:
+    """这次调用有没有可能产出验证证据(即"一次全量 pytest 运行")。
+
+    护栏拦掉一次调用时,调用方用它判断"拦掉的是不是取证路径":
+    是的话本轮已经拿不到证据了,收尾门不该再逼模型去跑一条被禁止的命令。
+    """
+    return (tool_name == "terminal"
+            and is_full_suite_pytest_command((args or {}).get("command")))
+
+
 @dataclass
 class VerificationEvidence:
     """一次通过的验证记录(留痕:命令 + 输出摘要 + 序号)。"""
@@ -222,6 +232,7 @@ class VerificationLedger:
     _changed: list[str] = field(default_factory=list)
     _evidence: VerificationEvidence | None = None
     _attempts: int = 0
+    _evidence_blocked: bool = False
     _seq: int = 0
     _last_edit_seq: int = -1
 
@@ -241,6 +252,7 @@ class VerificationLedger:
         self._changed = []
         self._evidence = None
         self._attempts = 0
+        self._evidence_blocked = False
         self._seq = 0
         self._last_edit_seq = -1
 
@@ -274,9 +286,23 @@ class VerificationLedger:
         """证据必须晚于最后一次编辑——"先跑测试再改代码"不算数。"""
         return self._evidence is not None and self._evidence.seq > self._last_edit_seq
 
+    def note_blocked(self, tool_name: str, args: dict[str, Any] | None) -> None:
+        """护栏拦掉了一次调用。若它本来是取证路径(全量 pytest),记为"取证被阻断"。
+
+        为什么要区分:收尾门驳回的前提是"模型本来能验证却没验证"。而护栏
+        把那条命令禁掉时,模型**怎么都拿不到证据**——再驳回就是逼它去执行
+        一条被禁止的命令(实测结局:驳回 2 次后以"无证据 + 声称完成"收尾,
+        正是这道门要防的东西)。被阻断属外部原因,门应当放行。
+        """
+        if is_evidence_command(tool_name, args):
+            self._evidence_blocked = True
+
     def build_stop_nudge(self) -> str | None:
         """收尾前调用:该驳回就返回驳回文本并计一次;否则返回 None(放行)。"""
         if not self.enabled or self._attempts >= self.max_attempts:
+            return None
+        if self._evidence_blocked:
+            # 取证路径被护栏阻断(见 note_blocked):本轮已无法验证,放行。
             return None
 
         paths = [p for p in self.changed_paths if is_verifiable_path(p)]
