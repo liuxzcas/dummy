@@ -218,6 +218,17 @@ class ToolRegistry:
 
         # ---- 3. 执行 handler ----
         # 确认类工具：注入 _confirm 函数（输入收集 + /p 拦截在 core）
+        #
+        # 注意：必须**拷贝**再注入，不能改调用方传进来的 dict。
+        # 原实现是 `arguments["_confirm"] = ...`，直接改写调用方的参数对象，
+        # 带来两个后果：
+        #   1. 调用方的 args 被污染（core 若在 dispatch 后还用它，会多出一个
+        #      不可序列化的函数字段）；
+        #   2. 破坏"同一调用"的判定 —— P1a 护栏在 dispatch 前算一次签名
+        #      （无 _confirm），dispatch 后按被污染的 args 又算一次（有
+        #      _confirm），两个签名不同，失败计数永远对不上，护栏形同失效。
+        #      （2026-09-14 实测踩到：计数停在另一个签名上，永不触发拦截）
+        arguments = dict(arguments)
         if tool.confirm and self._confirm_provider is not None:
             arguments["_confirm"] = self._confirm_provider
         try:

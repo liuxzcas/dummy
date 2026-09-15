@@ -92,6 +92,12 @@ from tools import ToolRegistry
 from tools.registry import InterruptSignal
 from prompt import build_system_prompt
 from session_store import SessionStore, repair_tool_pairing
+from tool_guardrails import (
+    GuardrailConfig,
+    ToolCallGuardrailController,
+    append_guidance,
+    synthetic_result,
+)
 from colors import paint, GRAY, BLUE, SLATE, PURPLE, YELLOW, NEUTRAL, RED, GREEN
 from skills_manager import build_skills_index
 from lessons import (
@@ -284,6 +290,12 @@ class DummyAgent:
         # 随时打断监听器(工具运行中/LLM 等待时用户可输入 /p 触发)
         self._interrupt_listener = _InterruptListener()
 
+        # 工具循环护栏(P1a):循环内实时数两类"原地打转"——
+        # 完全相同调用反复失败 / 只读调用毫无进展。
+        # 纯控制器(只记账返回决策),读写都在工具循环里;
+        # 每轮 chat 开头 reset_for_turn()。阈值可用环境变量覆盖,见模块头。
+        self.guardrails = ToolCallGuardrailController(GuardrailConfig.from_env())
+
         # 注入确认函数提供者:handler 的 _confirm 参数从这里来
         # (输入收集 + /p 拦截在 core,确认语义判断留在 handler)
         self.tools.set_confirm_provider(self._make_confirm())
@@ -339,6 +351,8 @@ class DummyAgent:
         self._learn_from_correction(user_input)
         # 每轮工具错误反思计数(防连错连反思烧 token)
         self._tool_error_reflections = 0
+        # P1a:护栏按轮统计,每轮清零(上一轮的重复不该牵连这一轮)
+        self.guardrails.reset_for_turn()
         # Phase 3 Step 4:自动检测(I1-A 报警灯)——错误率超阈值提示一次
         issue = detect_tool_issue(self.tools.get_tool_stats())
         if issue and issue not in getattr(self, "_improve_hinted", set()):
@@ -438,19 +452,42 @@ class DummyAgent:
                     print(f"\n  {paint('🛠 Agent 调用了', BLUE)} [{tool_name}] 参数={tool_args}")
 
                     # ---------------------------------------------------
-                    # 分发执行工具（dispatch 内部已做异常兜底和结果规范化）
-                    # 确认类工具:dispatch 注入 _confirm(输入收集 + /p 拦截)
-                    # InterruptSignal 穿透 dispatch,在这里捕获处理打断
+                    # P1a 护栏(调用前):完全相同调用反复失败 / 只读调用无进展
+                    # → 判 block 时**不执行**工具,直接回注合成结果,
+                    #   让模型明确看到"这条为什么没执行",而不是静默无反应。
                     # ---------------------------------------------------
-                    try:
-                        result = self.tools.dispatch(tool_name, tool_args)
-                    except InterruptSignal:
-                        # 用户 /p 打断(发生在 handler 确认输入时)
-                        interrupt_triggered = True
-                        self.history.append({
-                            "role": "tool", "tool_call_id": tool_call_id,
-                            "content": "[用户打断,工具未执行]"})
-                        break
+                    # 签名用参数快照:dispatch 可能往参数里注入内部字段(如 _confirm),
+                    # 用同一份快照保证"调用前/调用后"判定的是同一次调用。
+                    # (registry 已修为不改调用方 dict;这里再兜一层,防后续回归)
+                    sig_args = dict(tool_args)
+                    guard = self.guardrails.before_call(tool_name, sig_args)
+                    if guard.allows_execution:
+                        # ---------------------------------------------------
+                        # 分发执行工具（dispatch 内部已做异常兜底和结果规范化）
+                        # 确认类工具:dispatch 注入 _confirm(输入收集 + /p 拦截)
+                        # InterruptSignal 穿透 dispatch,在这里捕获处理打断
+                        # ---------------------------------------------------
+                        try:
+                            result = self.tools.dispatch(tool_name, tool_args)
+                        except InterruptSignal:
+                            # 用户 /p 打断(发生在 handler 确认输入时)
+                            interrupt_triggered = True
+                            self.history.append({
+                                "role": "tool", "tool_call_id": tool_call_id,
+                                "content": "[用户打断,工具未执行]"})
+                            break
+
+                        # P1a 护栏(调用后):记账,需要时把告警**追加进工具结果**。
+                        # 这是发给 LLM 看的(只有模型自己知道它在打转),
+                        # 不是打印给人看的——所以"只告警不拦截"也有实际作用。
+                        guard_after = self.guardrails.after_call(
+                            tool_name, sig_args, result)
+                        if guard_after.action == "warn":
+                            result = append_guidance(result, guard_after)
+                    else:
+                        # 被拦截:回注合成结果(不执行工具),并打印一行便于观察
+                        result = synthetic_result(guard)
+                        print(f"  {paint('⛔ 护栏拦截', RED)}: {guard.message}")
 
                     # 打印执行结果摘要
                     result_preview = result[:300] + "..." if len(result) > 300 else result
