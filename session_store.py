@@ -45,10 +45,24 @@ def repair_tool_pairing(history: list[dict[str, Any]]) -> tuple[list[dict[str, A
     都会稳定复现 400,属于"一次损坏,永久失效"。
 
     所以这里做**双向**修复:
+      0. 删掉**尾部悬空块**:末尾是 assistant(tool_calls) 且**一个回复都没有**
+         → 整块删除(理由见下"零回复"一节);
       1. 补:assistant.tool_calls 里缺 tool 回复的 → 补占位消息;
       2. 删:没有归属 assistant.tool_calls 的孤儿 tool 消息 → 丢弃
             (孤儿同样会触发 400);
       3. 顺带修正重复回复(同一 tool_call_id 出现多次时只保留第一条)。
+
+    ============ 为什么"零回复的尾部"要删而不是补 ============
+    零回复意味着这次调用**从来没发生过**——典型场景是进程被强杀在
+    "assistant.tool_calls 已落库、tool 结果还没落库"之间(比如 terminal
+    跑了个重启类命令把自己重启了)。这种情况补一条"结果缺失"占位有两个坏处:
+      1. 每轮都往上下文里塞一次噪音,而且永远不会自愈;
+      2. 更容易诱导模型**重新执行那个危险调用**——它看到"我声明过这个调用、
+         结果缺失",最自然的反应就是再来一次(即无限重启循环)。
+
+    边界(照 Hermes 的 strip_dangling_tool_call_tail):**只处理尾巴**。
+    非尾部、或"有任一回复"的块一律走"补"——部分回复说明这次工具循环
+    真在进行中,必须保持结构完整,好让它继续跑完。
 
     ============ 设计取舍 ============
     - 纯函数、不碰数据库、不改输入(返回新列表),便于单测与复用;
@@ -56,11 +70,24 @@ def repair_tool_pairing(history: list[dict[str, Any]]) -> tuple[list[dict[str, A
     - 只在"最小必要处"改动:补/删都发生在违规点,不动其他消息。
 
     返回 (修复后的历史, 统计字典)。统计字典字段:
-      backfilled / dropped_orphans / dropped_duplicates / total
+      dropped_dangling / backfilled / dropped_orphans / dropped_duplicates / total
     """
-    stats = {"backfilled": 0, "dropped_orphans": 0, "dropped_duplicates": 0, "total": 0}
+    stats = {"dropped_dangling": 0, "backfilled": 0,
+             "dropped_orphans": 0, "dropped_duplicates": 0, "total": 0}
     if not history:
         return history, stats
+
+    # ---------- 第零遍:尾部悬空块 ----------
+    # 必须在"补"之前判断:补齐之后就分辨不出"零回复"了。
+    # 末尾是 assistant(tool_calls) 即说明它后面没有任何 tool 回复,整块删掉。
+    history = list(history)
+    while history:
+        last = history[-1]
+        if (last.get("role") == "assistant" and last.get("tool_calls")):
+            stats["dropped_dangling"] += 1
+            history.pop()
+        else:
+            break
 
     # ---------- 第一遍:按顺序重建,处理"补"与"去重" ----------
     out: list[dict[str, Any]] = []
@@ -120,9 +147,43 @@ def repair_tool_pairing(history: list[dict[str, Any]]) -> tuple[list[dict[str, A
         cleaned.append(msg)
 
     stats["total"] = (
-        stats["backfilled"] + stats["dropped_orphans"] + stats["dropped_duplicates"]
+        stats["dropped_dangling"] + stats["backfilled"]
+        + stats["dropped_orphans"] + stats["dropped_duplicates"]
     )
     return cleaned, stats
+
+
+# 中断收尾时补的合成 assistant 轮次内容
+INTERRUPT_CLOSE_TEXT = "操作被中断。"
+
+
+def close_interrupted_tool_sequence(
+    history: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], bool]:
+    """若历史停在裸 tool 消息上,补一条合成 assistant 轮次,闭合这一轮。
+
+    ============ 为什么需要 ============
+    一次被中断的轮次可能停在"工具都回复了、但模型没来得及产出收尾发言",
+    于是历史尾巴是 role="tool"。用户的下一条消息接上去,序列就成了
+
+        ... tool → user
+
+    这违反**角色交替**。OpenAI/DeepSeek 容忍,Gemini/Claude 这类严格 provider
+    会据此幻觉续写并忽略前文,用户体感是"上下文丢了"(Hermes 源码注释引
+    issue #48879 记录的就是这个现象)。
+
+    ============ 为什么只在"追加 user 消息前"调用 ============
+    工具循环**中途**尾巴是 tool 是**正常状态**——API 正等着模型对工具结果
+    作回应。那时补一条假发言会插在 tool 与模型回答之间,语义被破坏。
+    所以本函数只在"准备追加新的 user 消息"这一刻调用(见
+    core.DummyAgent._append_user_turn 这个单点)。
+
+    - 纯函数,不改输入(返回新列表),便于单测;
+    - 幂等:尾巴不是 tool 时原样返回、changed=False。
+    """
+    if history and history[-1].get("role") == "tool":
+        return history + [{"role": "assistant", "content": INTERRUPT_CLOSE_TEXT}], True
+    return history, False
 
 
 class SessionStore:
