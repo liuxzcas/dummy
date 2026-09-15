@@ -57,13 +57,22 @@ class _Usage:
 
 
 class ScriptedLLM:
-    """按脚本返回 tool_calls 的假 LLM;脚本用尽后一律返回纯文本。"""
+    """按脚本返回 tool_calls 的假 LLM;脚本用尽后一律返回纯文本。
 
-    def __init__(self, script=(), final_text="(fake) 结束。"):
+    - 主循环调用(带 tools)按脚本吐 tool_calls;
+    - 旁路调用(不带 tools:记忆抽取/教训生成/压缩摘要/轮次用尽后的收尾总结)
+      一律返回 bypass_text;
+    - raise_on_bypass=True 时旁路调用直接抛异常(用于测"兜底不崩")。
+    """
+
+    def __init__(self, script=(), final_text="(fake) 结束。",
+                 bypass_text="(旁路) ok", raise_on_bypass=False):
         self.script, self.final_text = list(script), final_text
+        self.bypass_text, self.raise_on_bypass = bypass_text, raise_on_bypass
         self.i = 0
         self.last_usage, self.last_reasoning = _Usage(), None
         self.main_calls = 0
+        self.bypass_calls = 0
         self.seen_messages: list[list[dict]] = []
 
     def get_model_name(self):
@@ -72,7 +81,10 @@ class ScriptedLLM:
     def chat(self, messages, tools=None, temperature=0.7, max_tokens=4096):
         self.seen_messages.append(list(messages))
         if not tools:                      # 旁路调用
-            return _Msg(content="(旁路) ok")
+            self.bypass_calls += 1
+            if self.raise_on_bypass:
+                raise RuntimeError("bypass call failed (模拟旁路调用失败)")
+            return _Msg(content=self.bypass_text)
         self.main_calls += 1
         if self.i < len(self.script):
             name, args = self.script[self.i]
@@ -93,8 +105,8 @@ def run_script(tmp_path, monkeypatch):
         core, "SessionStore",
         lambda *a, **k: real_store(db_path=str(tmp_path / "t.db")))
 
-    def _run(script=(), confirm="y"):
-        llm = ScriptedLLM(script)
+    def _run(script=(), confirm="y", llm=None):
+        llm = llm or ScriptedLLM(script)
         agent = core.DummyAgent(llm, create_default_registry())
         agent.tools.set_confirm_provider(lambda prompt: confirm)
         agent.chat("开始")
