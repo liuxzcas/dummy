@@ -12,6 +12,7 @@ import os
 from verify_stop import (
     VerificationLedger,
     is_full_suite_pytest_command,
+    is_pytest_evidence,
     is_verifiable_path,
     is_write_success,
 )
@@ -53,11 +54,14 @@ def test_write_success_detection():
 
 
 def test_full_suite_pytest_detection():
-    """全量套件判据:含 pytest,且不缩小范围。"""
+    """全量套件判据:以 pytest 调用收尾,且不缩小范围。"""
     assert is_full_suite_pytest_command("python -m pytest tests/ -q") is True
     assert is_full_suite_pytest_command("pytest") is True
     assert is_full_suite_pytest_command("cd /d/x && python -m pytest tests/ -q") is True
     assert is_full_suite_pytest_command("python -m pytest -q") is True
+    assert is_full_suite_pytest_command("python -m pytest tests/ -q 2>&1") is True
+    assert is_full_suite_pytest_command("PYTHONPATH=. python -m pytest tests/ -q") is True
+    assert is_full_suite_pytest_command(".venv/bin/pytest tests/ -q") is True
 
     assert is_full_suite_pytest_command("pytest tests/test_a.py") is False, "单文件"
     assert is_full_suite_pytest_command("pytest tests/test_a.py::test_x") is False, "单用例"
@@ -66,6 +70,27 @@ def test_full_suite_pytest_detection():
     assert is_full_suite_pytest_command("python -m pytest -m slow") is False, "标记筛选"
     assert is_full_suite_pytest_command("python hello.py") is False, "与 pytest 无关"
     assert is_full_suite_pytest_command(None) is False
+
+
+def test_pytest_must_be_the_last_shell_segment():
+    """必须**以** pytest 调用收尾——否则报告的退出码不是 pytest 的。
+
+    回归背景(2026-09-15 实测):`pytest … | tail` 的退出码是 tail 的(恒为 0),
+    会把**失败的测试记成通过**。这条曾真实存在于实现里。
+    """
+    assert is_full_suite_pytest_command("python -m pytest tests/ -q | tail -3") is False
+    assert is_full_suite_pytest_command("python -m pytest tests/ -q 2>&1 | tail -3") is False
+    assert is_full_suite_pytest_command("python -m pytest tests/ -q; echo done") is False
+    assert is_full_suite_pytest_command("python -m pytest tests/ -q && echo ok") is False
+    # 但 `cd … && pytest` 是合法的:pytest 仍是最后一段,退出码就是它的
+    assert is_full_suite_pytest_command("cd /d/x && pytest tests/ -q") is True
+
+
+def test_pytest_must_be_actually_invoked():
+    """把 pytest 当普通参数不算调用(避免 `echo pytest` 蒙混)。"""
+    assert is_full_suite_pytest_command("echo pytest") is False
+    assert is_full_suite_pytest_command("grep pytest README.md") is False
+    assert is_full_suite_pytest_command("cat pytest.log") is False
 
 
 # ============================================================
@@ -137,6 +162,38 @@ def test_unrelated_script_is_not_evidence():
     lg.note_tool_result("write_file", PY, WRITE_OK)
     lg.note_tool_result("terminal", {"command": "python scratch.py"}, "[SHELL: bash]\nok")
     assert lg.build_stop_nudge() is not None
+
+
+def test_cancelled_pytest_is_not_evidence():
+    """被取消、从未执行的 pytest 不算证据(回归)。
+
+    terminal 取消时返回 "[用户取消] 命令未执行"——它不含错误特征,若只看
+    is_tool_error 会被误判成"跑过了通过"。所以必须要求 [SHELL: 标记。
+    """
+    lg = _ledger()
+    lg.note_tool_result("write_file", PY, WRITE_OK)
+    lg.note_tool_result("terminal", {"command": FULL}, "[用户取消] 命令未执行")
+    assert lg.build_stop_nudge() is not None
+    assert is_pytest_evidence(FULL, "[用户取消] 命令未执行") is False
+    assert is_pytest_evidence(FULL, PYTEST_OK) is True, "[SHELL: 标记下才算真跑过"
+
+
+def test_piped_pytest_is_not_evidence():
+    """管道/后续命令会掩盖退出码 → 不作为证据(回归)。
+
+    `pytest … | tail` 的退出码是 tail 的(恒 0),失败也会显示"成功"。
+    """
+    piped = "python -m pytest tests/ -q 2>&1 | tail -3"
+    lg = _ledger()
+    lg.note_tool_result("write_file", PY, WRITE_OK)
+    lg.note_tool_result("terminal", {"command": piped}, "[SHELL: bash]\nno tests ran")
+    assert lg.build_stop_nudge() is not None
+
+    tailed = "python -m pytest tests/ -q; echo done"
+    lg2 = _ledger()
+    lg2.note_tool_result("write_file", PY, WRITE_OK)
+    lg2.note_tool_result("terminal", {"command": tailed}, "[SHELL: bash]\ndone")
+    assert lg2.build_stop_nudge() is not None
 
 
 def test_evidence_before_edit_is_stale():
