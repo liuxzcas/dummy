@@ -181,10 +181,49 @@ AlphaCodium `arXiv:2401.08500`、`github.com/Codium-ai/AlphaCodium`。
    模型跑的 pytest 匹配不上任何 canonical command），结果不是"敲两次就停"，
    而是**每一轮都敲一次**。实测连续三轮各触发一次。
 
-   > **由此得出的设计硬约束**：光有次数上限不够，**必须保证"存在一条能被识别的
+   > 由此得出的设计硬约束：光有次数上限不够，**必须保证"存在一条能被识别的
    > 取证路径"**。否则门会退化成每轮噪音。Hermes 靠 `project_facts_for` 探测
    > 规范命令（探不到就要求 ad-hoc 脚本）；dummy 的档 A 是硬编码规则，
    > 天然不存在这个"探不到"的问题——这是简化带来的意外好处。
+6. **证据没有绑定"在哪个目录跑的"**（构造性缺口，未修）。
+   `tools/terminal.py` 的 `_run_shell(command)` 不固定工作目录，命令可以
+   `cd 别处 && pytest`，跑的是别的项目的套件也会被记为证据。
+   不修的理由：要堵它得解析命令里的 `cd`（或强制注入 cwd），而"先 cd 再跑"
+   本身是必要且常见的写法（`cd /d/Engineering/dummy && pytest tests/ -q`）。
+   这属于**需要模型刻意误导**才能触发的缺口，与 §7.2「不防刻意伪造」同一类，
+   不在本门的目标范围内。
+
+---
+
+## 7.1 已修的两个真实漏洞（2026-09-15 审计发现）
+
+审计动机：不能带着任何"已知可能的 bug"上线。逐个判据过了一遍证据路径，
+发现两个**会产生假通过（false pass）**的真漏洞：
+
+| 漏洞 | 症状 | 修法 |
+|---|---|---|
+| **管道/后续命令掩盖退出码** | `python -m pytest tests/ -q 2>&1 \| tail -3` —— shell 报告的退出码是 **tail 的（恒为 0）**，于是**测试失败也显示退出码 0**，被记成"验证通过"。`pytest … \| tail` 是极常见写法，**不是边角案例** | 改判据为"命令必须**以** pytest 调用收尾"（最后一段是 pytest，退出码才等价于测试结果） |
+| **被取消的命令算通过** | 用户按 `n` 取消时 handler 返回 `"[用户取消] 命令未执行"`——它既不含 `[SHELL:` 也不含任何错误特征，`is_tool_error` 判 False → **一条从未运行的 pytest 被记为通过证据** | 要求返回串带 `[SHELL:` 标记（terminal 真执行时首行必有，取消时必无） |
+
+第二个漏洞同时收紧了 `echo pytest` 这类蒙混（原来能被判成"全量 pytest"）。
+两条都加了回归测试（`test_piped_pytest_is_not_evidence`、
+`test_cancelled_pytest_is_not_evidence`、`test_pytest_must_be_the_last_shell_segment`、
+`test_pytest_must_be_actually_invoked`）。
+
+**同源发现的 Hermes 侧问题（A/B 实测确认）**：Hermes 的验证账本按**整条命令**的
+退出码判状态（`tools/terminal_tool.py:2748` 传 `returncode`，
+`agent/verification_evidence.py:421` 用它算 `status`），所以同样的管道掩盖问题
+在它那边也存在：
+
+```
+python -m pytest tests/no_such_test_file.py -q 2>&1 | tail -2
+    → 退出码 0  → status: "passed"   ✗   （pytest 实际退出码是 4）
+python -m pytest tests/no_such_test_file.py -q
+    → 退出码 4  → status: "failed"   ✓
+```
+
+这是"判决外包给退出码"这条原则的一个反面教材：**退出码本身也会被 shell 语义
+骗过**。dummy 的档 A 通过"要求 pytest 收尾"回避了它。
 
 ---
 

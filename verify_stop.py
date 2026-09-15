@@ -24,12 +24,20 @@ critique 只有锚定外部工具才有效(CRITIC, arXiv:2305.11738)。
 
 ============ 档 A 规格(用户 2026-09-15 选定) ============
 本轮的通过证据 = 一次**完整测试套件**的 pytest 执行且成功:
-  - 命令须是"全量"调用:含 pytest,且不指定单个测试文件/单个用例
-    (`python -m pytest tests/ -q` 算;`pytest tests/test_x.py` 不算)
-  - 必须是**本轮改动之后**产生的(编辑会让先前证据失效)
-  - 必须留痕:记录命令原文 + 输出摘要 + 序号
+  - 命令须**以全量 pytest 调用收尾**:不指定单个测试文件/单个用例,
+    不含缩小范围的参数。为什么盯"最后一段 shell 命令":shell 报告的退出码
+    就是最后一段的退出码,只有最后一段是 pytest,"退出码=0"才等价于
+    "测试通过"。反例 `pytest … | tail` 的退出码是 tail 的(恒为 0),
+    会把**失败的测试记成通过**(实测确认过,2026-09-15)。
+  - 该段须**直接调用** pytest:认 `pytest` / `.venv/bin/pytest` /
+    `python -m pytest`;`echo pytest` 不算。
+  - 必须是**本轮改动之后**产生的(编辑会让先前证据失效)。
+  - 必须**真的执行过**:terminal 返回串带 "[SHELL:" 标记。
+    用户按 n 取消时返回 "[用户取消] 命令未执行",它不含 [SHELL: 也不含任何
+    错误特征——不加这条,一条被取消、从未运行的 pytest 会被误记为通过。
+  - 必须留痕:记录命令原文 + 输出摘要 + 序号。
 为什么"全套跑绿"就够严:全套通过隐含覆盖了被改动的文件,不需要维护
-"模块->测试"的映射表。代价是每次改 .py 都要跑一遍(136 测试约 18 秒)。
+"模块->测试"的映射表。代价是每次改 .py 都要跑一遍(全套一百多项,约十几秒)。
 
 配套(业界高度一致,非可选项):
   - **次数上限**(本模块默认 2;业界取值 2/3/3/8,都有兜底)
@@ -50,6 +58,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -100,24 +109,67 @@ def is_write_success(result: str | None) -> bool:
 # 一旦用 -k/--lf 之类把子集挑出来,这个蕴含关系就不成立了。
 _NARROWING_FLAGS = frozenset({"-k", "--keyword", "--deselect", "--lf", "--last-failed"})
 
+# shell 分隔符:&& || ; | —— 刻意不含单独的 &,免得把 `2>&1` 这类重定向切开
+_SEGMENT_SPLIT = re.compile(r"&&|\|\||;|\|")
+
+# 前置环境变量赋值(如 PYTHONPATH=.),识别调用时跳过
+_ENV_ASSIGN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=\S*")
+
+# 能启动 pytest 的解释器
+_PY_LAUNCHERS = frozenset({"python", "python3", "python.exe", "python3.exe", "py"})
+
+# terminal 真正执行过时,返回串首行是 "[SHELL: xxx]";取消执行则返回
+# "[用户取消] 命令未执行"。用它区分"真跑过"与"根本没跑"。
+_TERMINAL_EXECUTED_MARKER = "[SHELL:"
+
+
+def _is_pytest_invocation(segment: str) -> bool:
+    """该 shell 段是否**直接调用** pytest(而不是把 pytest 当普通参数)。
+
+    认这几种形式:`pytest ...`、`.venv/bin/pytest ...`、
+    `python -m pytest ...`(含 python3/python.exe/py)。
+    这样 `echo pytest` 之类不会被误判成跑过测试。
+    """
+    tokens = segment.strip().split()
+    i = 0
+    while i < len(tokens) and _ENV_ASSIGN.fullmatch(tokens[i]):
+        i += 1
+    rest = tokens[i:]
+    if not rest:
+        return False
+    head = rest[0]
+    if head == "pytest" or head.endswith("/pytest") or head.endswith("\\pytest"):
+        return True
+    return head in _PY_LAUNCHERS and rest[1:3] == ["-m", "pytest"]
+
 
 def is_full_suite_pytest_command(command: str | None) -> bool:
-    """命令是否是一次"全量测试套件"调用。
+    """命令是否"以一次全量 pytest 调用收尾"。
 
-    判据(启发式,不追求做完整的命令行解析器):
-      - 含 pytest
-      - 不含 node id(``::``),即不指定单个用例
-      - 不出现单个 .py 文件,即不指定单个测试文件
-      - 不含缩小范围的参数(见 _NARROWING_FLAGS);
-        另外 ``-m <标记>`` 也算缩小,但 ``-m pytest`` 是模块调用形式,不算
+    ============ 为什么盯**最后一段** shell 命令 ============
+    shell 报告的退出码就是最后一段的退出码。只有最后一段是 pytest,
+    "退出码 = 0"才等价于"测试通过"。反例(实测确认过):
+
+        python -m pytest tests/ -q 2>&1 | tail -3
+
+    管道的退出码是 tail 的(恒为 0),于是**测试失败也会显示退出码 0**,
+    被记成"验证通过"。而 `pytest ... | tail` 是极常见的写法,不是边角案例。
+    同理 `pytest ...; echo done` 也会被 echo 的成功掩盖。
+
+    另:该段还必须**直接调用** pytest(`echo pytest` 不算);且不含
+    node id(::)、单个 .py 文件、缩小范围的参数(见 _NARROWING_FLAGS)。
     """
     text = (command or "").strip()
     if "pytest" not in text:
         return False
-    if "::" in text:
+
+    segment = _SEGMENT_SPLIT.split(text)[-1].strip()
+    if not _is_pytest_invocation(segment):
+        return False
+    if "::" in segment:
         return False
 
-    tokens = text.split()
+    tokens = segment.split()
     for i, token in enumerate(tokens):
         if token in _NARROWING_FLAGS:
             return False
@@ -126,6 +178,24 @@ def is_full_suite_pytest_command(command: str | None) -> bool:
         if token == "-m" and (tokens[i + 1] if i + 1 < len(tokens) else "") != "pytest":
             return False
     return True
+
+
+def is_pytest_evidence(command: str | None, result: str | None) -> bool:
+    """该次 terminal 调用能否作为"全量测试通过"的证据。
+
+    三条都要满足:
+      1. 命令以全量 pytest 调用收尾(见上);
+      2. **确实执行过**——返回串带 "[SHELL:" 标记。
+         这一条是必需的:用户按 n 取消时 handler 返回 "[用户取消] 命令未执行",
+         它既不含 [SHELL: 也不含任何错误特征,不加这条会被误记为"通过"。
+      3. 返回串无错误特征(失败时 terminal 会附 "[EXIT CODE: N]")。
+    """
+    text = result or ""
+    return (
+        is_full_suite_pytest_command(command)
+        and _TERMINAL_EXECUTED_MARKER in text
+        and not is_tool_error(text)
+    )
 
 
 @dataclass
@@ -188,7 +258,7 @@ class VerificationLedger:
 
         if tool_name == "terminal":
             command = (args or {}).get("command")
-            if is_full_suite_pytest_command(command) and not is_tool_error(result or ""):
+            if is_pytest_evidence(command, result):
                 self._evidence = VerificationEvidence(
                     command=str(command).strip(),
                     summary=_digest(result),
