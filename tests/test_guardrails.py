@@ -3,18 +3,15 @@
 分两组:
   - 纯控制器(无副作用):阈值/清零/开关/签名/指纹 —— 不碰 LLM、不碰文件系统
   - 端到端:用假 LLM 驱动 core.chat() 真实工具循环,验证接线与拦截恰好发生
+    (假 LLM 与隔离夹具见 tests/conftest.py)
 
 全部 mock,零 API 成本,确定性断言。
 另含一条回归:dispatch 不得改写调用方传入的参数 dict
 (原实现注入 _confirm 时直接改写,导致护栏前后签名不一致而失效)。
 """
 
-import json
-import os
+from conftest import pairing_ok, tool_contents
 
-import pytest
-
-import core
 from tool_guardrails import (
     GuardrailConfig,
     ToolCallGuardrailController,
@@ -39,8 +36,7 @@ def test_exact_failure_warns_then_blocks():
     c = ToolCallGuardrailController()
     actions = []
     for i in range(1, 7):
-        pre = c.before_call("read_file", ARGS)
-        if not pre.allows_execution:
+        if not c.before_call("read_file", ARGS).allows_execution:
             actions.append(("block", i))
             break
         actions.append((c.after_call("read_file", ARGS, FAIL).action, i))
@@ -72,8 +68,7 @@ def test_idempotent_no_progress_warns_then_blocks():
     c = ToolCallGuardrailController()
     actions = []
     for i in range(1, 7):
-        pre = c.before_call("read_file", {"path": "x.txt"})
-        if not pre.allows_execution:
+        if not c.before_call("read_file", {"path": "x.txt"}).allows_execution:
             actions.append(("block", i))
             break
         actions.append((c.after_call("read_file", {"path": "x.txt"}, SAME).action, i))
@@ -147,102 +142,23 @@ def test_synthetic_and_guidance_text_markers():
 
 
 # ============================================================
-# 端到端(假 LLM 驱动真实循环)
+# 端到端(假 LLM 驱动真实循环,夹具见 conftest.py)
 # ============================================================
-class _Fn:
-    def __init__(self, name, arguments):
-        self.name, self.arguments = name, arguments
-
-
-class _TC:
-    def __init__(self, i, name, arguments):
-        self.id, self.type = f"call_{i}", "function"
-        self.function = _Fn(name, arguments)
-
-
-class _Msg:
-    def __init__(self, content=None, tool_calls=None):
-        self.content, self.tool_calls = content, tool_calls or []
-
-    def to_dict(self):
-        data = {"role": "assistant", "content": self.content}
-        if self.tool_calls:
-            data["tool_calls"] = [
-                {"id": t.id, "type": "function",
-                 "function": {"name": t.function.name, "arguments": t.function.arguments}}
-                for t in self.tool_calls
-            ]
-        return data
-
-
-class _Usage:
-    prompt_tokens = 100
-    completion_tokens = 10
-    cached_tokens = 0
-
-
-class ScriptedLLM:
-    """主循环(带 tools 参数)按脚本返回 tool_calls;旁路调用返回纯文本。"""
-
-    def __init__(self, script):
-        self.script, self.i = list(script), 0
-        self.last_usage, self.last_reasoning = _Usage(), None
-        self.main_calls = 0
-
-    def get_model_name(self):
-        return "fake"
-
-    def chat(self, messages, tools=None, temperature=0.7, max_tokens=4096):
-        if tools:
-            self.main_calls += 1
-            if self.i < len(self.script):
-                name, args = self.script[self.i]
-                self.i += 1
-                return _Msg(tool_calls=[_TC(self.i, name, json.dumps(args))])
-            return _Msg(content="(fake) 结束。")
-        return _Msg(content="(旁路) ok")
-
-
-@pytest.fixture()
-def run_script(tmp_path, monkeypatch):
-    """在隔离的 session 库里跑一遍脚本,返回 (history, llm)。"""
-    import session_store as ss
-
-    real = core.SessionStore
-    monkeypatch.setattr(
-        core, "SessionStore",
-        lambda *a, **k: real(db_path=str(tmp_path / "t.db")))
-
-    def _run(script):
-        llm = ScriptedLLM(script)
-        agent = core.DummyAgent(llm, create_default_registry())
-        # 确认提问自动回车放行:真机是人工确认,测试里排除这个变量
-        agent.tools.set_confirm_provider(lambda prompt: "")
-        agent.chat("开始")
-        return agent.history, llm
-
-    return _run
-
-
-def _tool_msgs(history):
-    return [m for m in history if m.get("role") == "tool"]
-
-
 def _blocks(history):
-    return [m for m in _tool_msgs(history) if "[护栏拦截]" in str(m.get("content"))]
+    return [c for c in tool_contents(history) if "[护栏拦截]" in c]
 
 
 def _warns(history):
-    return [m for m in _tool_msgs(history) if "[工具循环告警" in str(m.get("content"))]
+    return [c for c in tool_contents(history) if "[工具循环告警" in c]
 
 
 def test_e2e_exact_failure_blocks_after_five(run_script, tmp_path):
     """同一调用反复真失败:5 次执行 + 第 6 次拦截,循环随后正常收尾。"""
     missing = str(tmp_path / "nope.txt")
-    history, llm = run_script([("read_file", {"path": missing})] * 6)
+    agent, llm = run_script([("read_file", {"path": missing})] * 6)
+    history = agent.history
 
-    real_fail = [m for m in _tool_msgs(history) if "[错误]" in str(m.get("content"))]
-    assert len(real_fail) == 5
+    assert len([c for c in tool_contents(history) if "[错误]" in c]) == 5
     assert len(_blocks(history)) == 1
     assert len(_warns(history)) >= 1, "第 2 次失败起应注入告警"
     assert llm.main_calls == 7, "被拦后应还能继续到模型给出文本"
@@ -252,13 +168,12 @@ def test_e2e_idempotent_no_progress_blocks(run_script, tmp_path):
     """同一只读调用返回同内容:5 次成功 + 第 6 次拦截。"""
     same = tmp_path / "same.txt"
     same.write_text("固定内容\n", encoding="utf-8")
-    history, _ = run_script([("read_file", {"path": str(same)})] * 6)
+    agent, _ = run_script([("read_file", {"path": str(same)})] * 6)
 
-    assert len([m for m in _tool_msgs(history)
-                if "固定内容" in str(m.get("content"))]) == 5
-    blocks = _blocks(history)
+    assert len([c for c in tool_contents(agent.history) if "固定内容" in c]) == 5
+    blocks = _blocks(agent.history)
     assert len(blocks) == 1
-    assert "无进展" in str(blocks[0].get("content"))
+    assert "无进展" in blocks[0]
 
 
 def test_e2e_normal_flow_untouched(run_script, tmp_path):
@@ -268,32 +183,20 @@ def test_e2e_normal_flow_untouched(run_script, tmp_path):
         p = tmp_path / f"f{k}.txt"
         p.write_text(f"内容{k}\n", encoding="utf-8")
         paths.append(str(p))
-    history, llm = run_script([("read_file", {"path": p}) for p in paths])
+    agent, llm = run_script([("read_file", {"path": p}) for p in paths])
 
-    assert _blocks(history) == []
-    assert _warns(history) == []
+    assert _blocks(agent.history) == []
+    assert _warns(agent.history) == []
     assert llm.main_calls == 5
 
 
 def test_e2e_tool_pairing_still_valid(run_script, tmp_path):
     """护栏不破坏 assistant(tool_calls) ↔ tool 回复的配对约束。"""
     missing = str(tmp_path / "nope.txt")
-    history, _ = run_script([("read_file", {"path": missing})] * 6)
+    agent, _ = run_script([("read_file", {"path": missing})] * 6)
 
-    i, n = 0, len(history)
-    while i < n:
-        msg = history[i]
-        assert msg.get("role") != "tool", "出现孤儿 tool 消息"
-        if msg.get("role") == "assistant" and msg.get("tool_calls"):
-            want = [t.get("id") for t in msg["tool_calls"]]
-            j, got = i + 1, []
-            while j < n and history[j].get("role") == "tool":
-                got.append(history[j].get("tool_call_id"))
-                j += 1
-            assert want == got, f"配对不符 declared={want} got={got}"
-            i = j
-            continue
-        i += 1
+    ok, why = pairing_ok(agent.history)
+    assert ok, why
 
 
 # ============================================================
