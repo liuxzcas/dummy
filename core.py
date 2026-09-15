@@ -98,6 +98,7 @@ from tool_guardrails import (
     append_guidance,
     synthetic_result,
 )
+from verify_stop import VerificationLedger
 from colors import paint, GRAY, BLUE, SLATE, PURPLE, YELLOW, NEUTRAL, RED, GREEN
 from skills_manager import build_skills_index
 from lessons import (
@@ -296,6 +297,11 @@ class DummyAgent:
         # 每轮 chat 开头 reset_for_turn()。阈值可用环境变量覆盖,见模块头。
         self.guardrails = ToolCallGuardrailController(GuardrailConfig.from_env())
 
+        # 收尾前验证门(P1b,档 A):本轮改过代码却没有"全量测试通过"的证据时,
+        # 在模型想收尾那一刻驳回一次(上限默认 2)。纯账本(只记账给判决),
+        # 每轮 chat 开头 reset_for_turn()。开关/上限见环境变量,规格见 docs/p1b-verification-design.md
+        self.verification = VerificationLedger.from_env()
+
         # 注入确认函数提供者:handler 的 _confirm 参数从这里来
         # (输入收集 + /p 拦截在 core,确认语义判断留在 handler)
         self.tools.set_confirm_provider(self._make_confirm())
@@ -353,6 +359,8 @@ class DummyAgent:
         self._tool_error_reflections = 0
         # P1a:护栏按轮统计,每轮清零(上一轮的重复不该牵连这一轮)
         self.guardrails.reset_for_turn()
+        # P1b:验证账本同样按轮清零(本轮没改代码就不该被上轮的证据/计数影响)
+        self.verification.reset_for_turn()
         # Phase 3 Step 4:自动检测(I1-A 报警灯)——错误率超阈值提示一次
         issue = detect_tool_issue(self.tools.get_tool_stats())
         if issue and issue not in getattr(self, "_improve_hinted", set()):
@@ -484,6 +492,11 @@ class DummyAgent:
                             tool_name, sig_args, result)
                         if guard_after.action == "warn":
                             result = append_guidance(result, guard_after)
+
+                        # P1b 账本:登记本轮改动路径 / 全量测试通过证据。
+                        # 只对**真实执行过**的调用记账(被护栏拦截的不算)。
+                        self.verification.note_tool_result(
+                            tool_name, sig_args, result)
                     else:
                         # 被拦截:回注合成结果(不执行工具),并打印一行便于观察
                         result = synthetic_result(guard)
@@ -564,6 +577,20 @@ class DummyAgent:
             # 可以认为这是对用户的最终回答
             # -------------------------------------------------------
             final_text = response_message.content or ""
+
+            # ---- P1b 收尾前验证门(档 A) ----
+            # 模型想收尾了,但本轮改过代码却没拿出"全量测试通过"的证据 -> 驳回。
+            # 先把它的声明写进历史(模型下一轮能看到自己刚说过什么,便于修正),
+            # 再追加驳回消息;两条消息相邻合法(assistant -> user)。
+            # 上限由账本控制(默认 2),到顶后放行——没有上限就是死循环。
+            nudge = self.verification.build_stop_nudge()
+            if nudge:
+                print(f"  {paint('🔒 验证门驳回:', YELLOW)} "
+                      "本轮改动过代码但无通过证据,要求先验证再收工")
+                self.history.append({"role": "assistant", "content": final_text})
+                self.history.append({"role": "user", "content": nudge})
+                self._persist_history()
+                continue
 
             # 把最终回答追加到历史（记住 LLM 说了什么）
             self.history.append({"role": "assistant", "content": final_text})
