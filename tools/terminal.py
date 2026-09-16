@@ -34,8 +34,13 @@ Windows 中文版默认编码是 GBK，而 git-bash 输出可能是 UTF-8。
 import os
 import shutil
 import subprocess
+import sys
 
 from colors import paint, YELLOW, CYAN
+
+# env_probe 在项目根(terminal.py 位于 tools/ 下)
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from env_probe import describe_environment   # noqa: E402
 
 
 def _find_bash() -> str | None:
@@ -124,7 +129,7 @@ def terminal_handler(command: str, _confirm=None) -> str:
         # 注意:不用 text=True(Windows GBK 编码会崩),手动 utf-8 解码
         result, shell_name = _run_shell(command)
 
-        output_parts = [f"[SHELL: {shell_name}]"]
+        output_parts = [describe_environment(shell_name)]
 
         stdout = result.stdout.decode("utf-8", errors="replace").strip() if result.stdout else ""
         if stdout:
