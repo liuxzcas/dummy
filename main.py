@@ -140,24 +140,6 @@ def _release_current_session_lock(agent):
             sid, getattr(agent, "_session_owner", ""))
 
 
-def _settle_history(agent):
-    """退出前把内存历史"结算"干净:补齐残缺的 tool 配对并落库。
-
-    为什么退出时要特意做一次:
-    Ctrl+C / Ctrl+D 可能正好打在"一批多个 tool_calls"的中间——
-    已执行的 tool 回复了,同批未执行的没有。此时若直接把内存历史
-    留在库里,该会话之后每次 resume 都会稳定触发
-    400 "insufficient tool messages following tool_calls"。
-    退出路径上补这一刀,保证落到磁盘的历史始终是合法的。
-
-    尽力而为:失败不阻塞退出(启动时还有 load_history 自愈兜底)。
-    """
-    try:
-        agent._repair_history()
-    except Exception:
-        pass
-
-
 def print_help():
     """打印帮助信息。"""
     print("""
@@ -466,15 +448,15 @@ def main():
 
         except KeyboardInterrupt:
             # Ctrl+C 处理 —— 优雅退出
+            # 历史收口由 chat() 的 finally 负责(路线 3 单点收口),
+            # 这里只需释放会话锁。
             print("\n\n再见！")
-            _settle_history(agent)          # 先补齐残缺 tool 配对再落库
             _release_current_session_lock(agent)
             break
 
         except EOFError:
             # Ctrl+D 处理（Unix 终端下）
             print("\n\n再见！")
-            _settle_history(agent)          # 同上
             _release_current_session_lock(agent)
             break
 
