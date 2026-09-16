@@ -176,6 +176,56 @@ def test_tool_error_markers():
     assert not L.is_tool_error("正常输出")
 
 
+# ============================================================
+# 判据修正回归(2026-09-16):旧实现两个方向都错
+# ============================================================
+def test_successful_terminal_is_not_error():
+    """**成功的 terminal 不能被判成失败。**
+
+    回归:terminal 每条结果都附 "[EXIT CODE: N]"(成功是 0),而旧标记表里
+    是 "[EXIT CODE: " 字面量 → 成功的命令被判成失败。后果:
+      - 每次成功命令触发一次旁路 LLM "反思"(白烧 token)
+      - 计入护栏 exact_failure(同命令同输出 6 次会被硬拦)
+    """
+    ok_ls = "[SHELL: git-bash]\napp.py  core.py\n\n[EXIT CODE: 0]"
+    ok_pytest = "[SHELL: git-bash]\n186 passed in 13.2s\n\n[EXIT CODE: 0]"
+    assert not L.is_tool_error(ok_ls)
+    assert not L.is_tool_error(ok_pytest)
+
+
+def test_exit_code_parsed_by_number():
+    """退出码要看**数字**,不是看有没有这个标记。"""
+    assert not L.is_tool_error("[EXIT CODE: 0]")
+    assert L.is_tool_error("[EXIT CODE: 1]")
+    assert L.is_tool_error("[EXIT CODE: 127]")
+    # 多行/多处标记:任一个非 0 即失败
+    assert L.is_tool_error("[EXIT CODE: 0]\n[EXIT CODE: 2]")
+    # 非数字形态(理论上的异常输出)不误判
+    assert not L.is_tool_error("[EXIT CODE: unknown]")
+
+
+def test_not_executed_counts_as_error():
+    """用户取消/拒绝 = "没有产出结果" → 必须算非成功。
+
+    回归:这些文案不含任何旧标记,被判成成功 → "取消的 pytest"能当通过证据。
+    """
+    assert L.is_tool_error("[用户取消] 命令未执行")
+    assert L.is_tool_error("[用户取消] 文件未读取")
+    assert L.is_tool_error("[用户拒绝] 追加已取消")
+    assert L.is_tool_error("[用户拒绝] 行修改已取消")
+    assert L.is_tool_error(
+        "[用户拒绝将内容写到项目目录之外] 写入已取消: /tmp/x")
+
+
+def test_literal_error_word_in_content_still_matches():
+    """已知局限:内容里恰好含 "[错误]" 字面量会误判(工具文案固定,风险可控)。
+
+    这条**记录现状**而非认可:它是字符串匹配方案的固有代价,彻底解决要靠
+    "工具结果结构化"(roadmap 待调研)。若将来结构化落地,此断言应删除。
+    """
+    assert L.is_tool_error("grep 结果: 日志里写着 [错误] 两个字")
+
+
 def test_generate_lesson_valid_json():
     llm = FakeLLM([
         type("R", (), {"get": lambda self, k, d=None: json.dumps(
