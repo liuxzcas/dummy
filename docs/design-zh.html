@@ -124,9 +124,10 @@ Phase 0 的设计文档保存在 <a href="design-phase0.html">design-phase0.html
 <table>
   <tr><th>维度</th><th>现状</th></tr>
   <tr><td>代码规模</td><td>约 6,700 行 Python(核心 10 个模块 + 5 个工具)</td></tr>
-  <tr><td>测试</td><td>212 项,<code>pytest</code> 全绿(1 项 xfail 为明确定位的软标准)</td></tr>
+  <tr><td>测试</td><td>212 项:211 passed + 1 xfail(明确定位的软标准,
+      见 §5.4;非失败)</td></tr>
   <tr><td>工具</td><td>5 个:terminal / read_file / write_file / web_search / web_extract</td></tr>
-  <tr><td>CLI 命令</td><td>15 个(/help /resume /sessions /history /search /memories /skills /lessons /improve 等)</td></tr>
+  <tr><td>CLI 命令</td><td>14 个(/help /resume /sessions /history /search /memories /skills /lessons /improve 等;退出有 /exit /q /quit 三个别名)</td></tr>
   <tr><td>持久化</td><td>SQLite(会话 / 消息 / 归档 / 记忆 / 教训 / 双 FTS 索引)</td></tr>
   <tr><td>LLM</td><td>DeepSeek(OpenAI 兼容 SDK),手动配 <code>max_tokens=8192</code></td></tr>
 </table>
