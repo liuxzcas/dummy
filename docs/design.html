@@ -78,7 +78,7 @@
   <li><a href="#tech">Technology Choices</a></li>
   <li><a href="#arch">Architecture</a></li>
   <li><a href="#history">Conversation History: Evolving a Single Source of Truth</a></li>
-  <li><a href="#quality">Quality Gates: Two Hard Gates Plus a Layer of Information</a></li>
+  <li><a href="#quality">Quality Gates: One Hard Gate Plus Two Layers of Information</a></li>
   <li><a href="#modules">Module Reference</a></li>
   <li><a href="#decisions">Key Decisions</a></li>
   <li><a href="#limits">Known Limitations</a></li>
@@ -337,7 +337,7 @@ conclusion.</strong> This is §1's "visibility over filtering" applied at anothe
        ├─ skills_manager.py    skill index + on-demand loading
        ├─ lessons.py           lessons (error learning) + tool-failure predicate
        ├─ self_improve.py      self-improvement (detect → propose → approve → edit → verify → roll back)
-       ├─ tool_guardrails.py   guardrails: real-time loss-cutting inside the loop (P1a)
+       ├─ tool_guardrails.py   guardrails: reports repeats in-loop (observes, never blocks)
        ├─ turn_context.py      turn summary (states facts, issues no verdict)
        └─ tools/               registry + 5 tools
             ├─ registry.py     register / dispatch / confirm injection / interrupt passthrough
@@ -429,7 +429,7 @@ A half-batch briefly on disk is <strong>not</strong> a problem: the only read pa
 <code>resume_session()</code>, repairs it (<strong>7 of 7 shapes verified</strong>).
 </div>
 
-<h2 id="quality">7. Quality Gates: Two Hard Gates Plus a Layer of Information</h2>
+<h2 id="quality">7. Quality Gates: One Hard Gate Plus Two Layers of Information</h2>
 
 <div class="note">
 <strong>A direction correction happened here (2026-09-16)</strong><br>
@@ -453,15 +453,34 @@ information produced while running. Consistent with the existing "visibility ove
 principle.
 </div>
 
+<h4>The same correction reached the tool guardrails</h4>
+<p>The guardrails used to <strong>block</strong> repeated calls (no execution from the 6th
+onward). They are now <strong>pure observers</strong> too — adding one factual sentence once
+the repetition threshold is hit, and <strong>never blocking anything</strong>.
+Reason: <strong>the loop returns to the model every single turn</strong> (it must re-decide
+once it sees the tool result), so "should I continue?" never needs the code to press
+pause on the model's behalf.</p>
+<p>Three-step evolution (<code>block</code> → <code>pause</code> → <code>report</code>):</p>
+<ul>
+  <li><code>block</code>: no execution from the Nth repeat — a <strong>verdict</strong>; the model can only work around it</li>
+  <li><code>pause</code>: hold back that one call, then report — still <strong>pressing pause for the model</strong></li>
+  <li><code>report</code>: never block, only state facts — a <strong>pure observer</strong></li>
+</ul>
+<p><strong>Cost</strong> (recorded explicitly): that repeated call really does execute.
+Rationale: a local command costs ≈0 while <strong>an LLM call is the real expense</strong>,
+and the model changes behaviour on the next turn after seeing the report.
+What it buys: the code no longer participates in judgement at all.</p>
+
 <table>
   <tr><th>Mechanism</th><th>Timing</th><th>What it does</th><th>Nature</th></tr>
   <tr>
     <td><strong>Tool guardrails</strong></td>
-    <td>Real time, in the loop</td>
+    <td>In-loop, when repetition hits the threshold</td>
     <td>Two signals: <strong>the same failure repeating</strong> (same tool + args +
-        <em>identical failure output</em>), and <strong>read-only calls making no progress</strong>
-        (repeated result fingerprint). Warn on the 2nd, block on the 6th</td>
-    <td><strong>Loss-cutting</strong> (a loop is a behavioural fact; no semantic understanding needed)</td>
+        <em>identical failure output</em>) and <strong>read-only calls making no progress</strong>
+        (repeated result fingerprint). On hitting the threshold (default 6) it
+        <strong>adds one factual sentence</strong> — no block, no pause, no prevention</td>
+    <td><strong>Supplies information</strong> (pure observer)</td>
   </tr>
   <tr>
     <td><strong>Turn context</strong><br><span class="meta">(formerly the verify gate)</span></td>
@@ -479,6 +498,18 @@ principle.
     <td><strong>Hard guarantee</strong> (API protocol — the LLM cannot violate it)</td>
   </tr>
 </table>
+
+<h4>What a guardrail report looks like (what the model actually sees)</h4>
+<pre><code>[Guardrail note] terminal returned the identical failure 6 times in a row.
+
+· Tool: terminal
+· Consecutive identical count: 6
+· You have not changed any file in the meantime     ← added by the Agent (the guardrail cannot see this)
+
+Judge for yourself from the above: if you really need another look, change the arguments or
+explain why and continue; if the information you have is sufficient, just give your conclusion.</code></pre>
+<p class="meta">The report contains no verdict wording such as "do not" / "forbidden" /
+"judged to be" — there is a test asserting exactly that.</p>
 
 <h4>Measured before/after (same scenario: creating a launcher)</h4>
 <table>
@@ -594,19 +625,21 @@ without an LLM. But they differ in <strong>nature</strong>:</p>
   <tr><td>Confirmation semantics belong to the <strong>handler</strong>;
           <code>/p</code> interception belongs to <strong>core</strong></td>
       <td>Each tool presents different content, but interrupt semantics must be globally consistent</td></tr>
-  <tr><td>Guardrails <strong>hard-stop by default</strong> (a deliberate divergence from
-          Hermes' default-off)</td>
-      <td>For a single-user interactive assistant the point is cutting losses; overridable
-          via env var</td></tr>
+  <tr><td>Guardrails <strong>report only, never block</strong></td>
+      <td>The loop returns to the model every turn and it must re-decide once it sees the
+          result — no need for code to press pause. Cost: the repeated call really executes
+          (a local command ≈0, while the LLM call is the real expense)</td></tr>
   <tr><td>Guardrails <strong>skip the "same tool regardless of args" signal</strong></td>
       <td>Retries have legitimate uses; counting by tool name alone causes false positives</td></tr>
-  <tr><td>Verification tier A: evidence = <strong>one full green suite run</strong></td>
-      <td>A green suite implicitly covers the changed files, so no module→test mapping needs
-          maintaining</td></tr>
+  <tr><td>Finishing judgement <strong>handed back to the LLM</strong>; the agent only supplies information</td>
+      <td>Hard rules cannot enumerate reality (three measured bugs); judgement is a
+          semantic question and belongs to the model</td></tr>
   <tr><td>On budget exhaustion, <strong>strip tools and summarize</strong> rather than hard-stop</td>
       <td>Dozens of turns of tool work should not yield only "stopped"</td></tr>
-  <tr><td>Add strictness on the <strong>evidence content</strong> axis, not by lowering thresholds</td>
-      <td>The "judge" axis is already hard (exit codes are read directly)</td></tr>
+  <tr><td>Not "tighten the criterion" but <strong>drop the criterion</strong></td>
+      <td>We considered tightening the evidence axis (only accepting a full suite). Later we
+          realised the problem was not loose versus strict — it was that
+          <strong>fixing on one criterion for every task is wrong in itself</strong> — see §2</td></tr>
   <tr><td>History uses a <strong>single choke point</strong> (not atomic batches)</td>
       <td>See §6.4: mutually exclusive with Ctrl+C retention; decided on frequency × cost</td></tr>
   <tr><td>No elaborate prompt-injection filtering</td>

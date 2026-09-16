@@ -78,7 +78,7 @@
   <li><a href="#tech">技术选型</a></li>
   <li><a href="#arch">架构</a></li>
   <li><a href="#history">对话历史:单一事实来源的演进</a></li>
-  <li><a href="#quality">质量保障:两道硬闸门 + 一层信息</a></li>
+  <li><a href="#quality">质量保障:一道硬闸门 + 两层信息</a></li>
   <li><a href="#modules">模块详解</a></li>
   <li><a href="#decisions">关键决策汇总</a></li>
   <li><a href="#limits">已知局限</a></li>
@@ -321,7 +321,7 @@ Phase 0 的设计文档保存在 <a href="design-phase0.html">design-phase0.html
        ├─ skills_manager.py    技能索引 + 按需加载
        ├─ lessons.py           教训(错误学习)+ 工具失败判据
        ├─ self_improve.py      自我改进(检测→提案→批准→改→验证→回退)
-       ├─ tool_guardrails.py   护栏:循环内实时止损(P1a)
+       ├─ tool_guardrails.py   护栏:循环内报告重复(只观察,不拦)
        ├─ turn_context.py      本轮情况说明(只陈述事实,不判决)
        └─ tools/               工具注册表 + 5 个工具
             ├─ registry.py     注册 / dispatch / 确认注入 / 中断穿透
@@ -409,7 +409,7 @@ finally:
 <code>resume_session()</code> 会修复它(<strong>实测 7/7 种形态全部修好</strong>)。
 </div>
 
-<h2 id="quality">7. 质量保障:两道硬闸门 + 一层信息</h2>
+<h2 id="quality">7. 质量保障:一道硬闸门 + 两层信息</h2>
 
 <div class="note">
 <strong>这里发生过一次方向修正(2026-09-16)</strong><br>
@@ -429,14 +429,30 @@ finally:
 与既有的"可见性优先"原则一致。
 </div>
 
+<h4>同一方向也扫到了工具护栏</h4>
+<p>护栏原本会<strong>拦截</strong>重复调用(第 6 次起不再执行)。现在它也是
+<strong>纯观察者</strong>——只在重复到阈值时添一句事实,<strong>从不拦截</strong>。
+理由:<strong>循环每轮本来就会回到模型</strong>(模型看到工具结果后必须重新决策),
+所以"要不要继续"根本不需要代码替它按暂停键。</p>
+<p>三步演变(<code>block</code> → <code>pause</code> → <code>report</code>):</p>
+<ul>
+  <li><code>block</code>:第 N 次起不执行 —— 是<strong>判决</strong>,模型只能绕路</li>
+  <li><code>pause</code>:拦下这一次再报告 —— 仍是<strong>替模型按暂停键</strong></li>
+  <li><code>report</code>:从不拦,只陈述事实 —— <strong>纯观察者</strong></li>
+</ul>
+<p><strong>代价</strong>(明确记录):那次重复调用真的执行了。理由:本地命令代价≈0,
+而<strong>一次 LLM 调用才是主要成本</strong>;模型看到报告后下一轮就会改变行为。
+换来的是代码彻底不介入判断。</p>
+
 <table>
   <tr><th>机制</th><th>时机</th><th>做什么</th><th>性质</th></tr>
   <tr>
     <td><strong>工具护栏</strong></td>
-    <td>循环内实时</td>
+    <td>循环内,重复达阈值时</td>
     <td>两个信号:<strong>同一份失败反复出现</strong>(同工具+同参数+<em>失败内容也相同</em>)、
-        <strong>只读调用无进展</strong>(结果指纹重复)。第 2 次告警 / 第 6 次拦截</td>
-    <td><strong>止损</strong>(死循环是行为事实,不需要语义理解)</td>
+        <strong>只读调用无进展</strong>(结果指纹重复)。恰好达阈值(默认 6)时
+        <strong>添一句事实</strong>——不拦、不暂停、不阻止执行</td>
+    <td><strong>提供信息</strong>(纯观察者)</td>
   </tr>
   <tr>
     <td><strong>本轮情况说明</strong><br><span class="meta">(原收尾验证门)</span></td>
@@ -452,6 +468,17 @@ finally:
     <td><strong>硬保证</strong>(API 协议,LLM 不能违反)</td>
   </tr>
 </table>
+
+<h4>护栏报告长什么样(模型实际看到的)</h4>
+<pre><code>[护栏提示] terminal 连续 6 次返回完全相同的失败。
+
+· 工具: terminal
+· 连续相同次数: 6
+· 这期间你没有改动任何文件        ← 由 Agent 补充(护栏看不到)
+
+请根据以上事实自行判断:如果你确实需要再看一次,可以换个参数或说明理由后继续;
+如果已有信息够用,直接给出结论即可。</code></pre>
+<p class="meta">报告里不含"不要/禁止/判定为"这类判决措辞——有测试专门断言这一点。</p>
 
 <h4>改动前后的实测对比(同一场景:创建一个启动器)</h4>
 <table>
@@ -547,16 +574,18 @@ finally:
       <td>塞进 <code>load_history</code> 会破坏"忠实读取"契约(实证:跑挂了既有测试)</td></tr>
   <tr><td>确认语义归 <strong>handler</strong>,<code>/p</code> 拦截归 <strong>core</strong></td>
       <td>每种工具展示内容不同,但打断语义要全局一致</td></tr>
-  <tr><td>护栏<strong>默认硬停开启</strong>(有意偏离 Hermes 的默认关)</td>
-      <td>单用户交互式目标就是止损;环境变量可覆盖</td></tr>
+  <tr><td>护栏<strong>只报告,从不拦截</strong></td>
+      <td>循环每轮都回到模型,它看到结果后必须重新决策 —— 不需要代码替它按暂停键。
+          代价是重复调用真执行了(本地命令≈0,而 LLM 调用才是主要成本)</td></tr>
   <tr><td>护栏<strong>跳过"同工具不看参数"信号</strong></td>
       <td>重试有合法用途,只按工具名计数会误伤</td></tr>
   <tr><td>收尾判断<strong>交还 LLM</strong>,agent 只提供信息</td>
       <td>硬规则枚举不完现实(实测三个 bug);判断是语义问题,应交给模型</td></tr>
   <tr><td>轮次用尽后<strong>剥工具写总结</strong>,不硬停</td>
       <td>几十轮的工具成果不该只换回一句"已停止"</td></tr>
-  <tr><td>加严加在"<strong>证据内容</strong>"轴,不是把阈值调小</td>
-      <td>dummy 的"判决者"轴已经是硬的(直接读退出码)</td></tr>
+  <tr><td>不再"加严判据",而是<strong>取消判据</strong></td>
+      <td>曾想过"加严证据内容轴"(如只认全量测试)。后来认识到问题不在判据松紧,
+          而在<strong>"用固定判据套所有任务"这件事本身错了</strong> —— 见 §2</td></tr>
   <tr><td>历史采用<strong>单点收口</strong>(而非原子批次)</td>
       <td>见 §6.4:与 Ctrl+C 数据保留互斥,按频率 × 代价权衡</td></tr>
   <tr><td>不做复杂 prompt injection 过滤</td>
