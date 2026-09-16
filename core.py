@@ -84,7 +84,6 @@ import re
 import datetime
 import threading
 import time
-from dataclasses import replace
 from typing import Optional
 
 from llm import LLMClient, extract_cached_tokens, resolve_window_tokens, is_local_endpoint, DEFAULT_WINDOW_TOKENS
@@ -493,56 +492,47 @@ class DummyAgent:
                     # 打印工具调用日志
                     print(f"\n  {paint('🛠 Agent 调用了', BLUE)} [{tool_name}] 参数={tool_args}")
 
-                    # ---------------------------------------------------
-                    # P1a 护栏(调用前):同一份失败反复出现 / 只读调用无进展
-                    # → 判 pause 时**只拦下这一次**,并把事实报告给模型,
-                    #   然后循环照常继续(不是"拦截到底")。
-                    #
-                    #   为什么不 block 到底:这次重复是否合理是**语义判断**,
-                    #   该由模型自己定。它可能确实需要重跑(比如刚改了东西)。
-                    #   我们只提供事实,不替它做决定,也不给它"继续"的暗号——
-                    #   它下一步的行为(换参数/说明理由/收尾)本身就是答案。
-                    # ---------------------------------------------------
                     # 签名用参数快照:dispatch 可能往参数里注入内部字段(如 _confirm),
-                    # 用同一份快照保证"调用前/调用后"判定的是同一次调用。
+                    # 用同一份快照保证"判定的是同一次调用"。
                     # (registry 已修为不改调用方 dict;这里再兜一层,防后续回归)
                     sig_args = dict(tool_args)
-                    guard = self.guardrails.before_call(tool_name, sig_args)
-                    if guard.allows_execution:
-                        # ---------------------------------------------------
-                        # 分发执行工具（dispatch 内部已做异常兜底和结果规范化）
-                        # 确认类工具:dispatch 注入 _confirm(输入收集 + /p 拦截)
-                        # InterruptSignal 穿透 dispatch,在这里捕获处理打断
-                        # ---------------------------------------------------
-                        try:
-                            result = self.tools.dispatch(tool_name, tool_args)
-                        except InterruptSignal:
-                            # 用户 /p 打断(发生在 handler 确认输入时)
-                            interrupt_triggered = True
-                            self.history.append({
-                                "role": "tool", "tool_call_id": tool_call_id,
-                                "content": "[用户打断,工具未执行]"})
-                            break
 
-                        # P1a 护栏(调用后):记账,需要时把报告**追加进工具结果**。
-                        # 这是发给 LLM 看的(只有模型自己知道它在打转),
-                        # 不是打印给人看的——所以"只报告不拦截"也有实际作用。
-                        guard_after = self.guardrails.after_call(
-                            tool_name, sig_args, result)
-                        if guard_after.action == "warn":
-                            report = self._guardrail_report(guard_after, sig_args)
-                            result = append_guidance(
-                                result, replace(guard_after, message=report))
+                    # ---------------------------------------------------
+                    # 分发执行工具（dispatch 内部已做异常兜底和结果规范化）
+                    # 确认类工具:dispatch 注入 _confirm(输入收集 + /p 拦截)
+                    # InterruptSignal 穿透 dispatch,在这里捕获处理打断
+                    # ---------------------------------------------------
+                    try:
+                        result = self.tools.dispatch(tool_name, tool_args)
+                    except InterruptSignal:
+                        # 用户 /p 打断(发生在 handler 确认输入时)
+                        interrupt_triggered = True
+                        self.history.append({
+                            "role": "tool", "tool_call_id": tool_call_id,
+                            "content": "[用户打断,工具未执行]"})
+                        break
 
-                        # 本轮情况:如实记录"做了什么 + 结果长什么样"。
-                        # 只对**真实执行过**的调用记账(被护栏暂停的不算)。
-                        self.turn_context.note_tool_result(
-                            tool_name, sig_args, result)
-                    else:
-                        # 暂停:这一次不执行,把事实报告给模型(循环继续)。
-                        result = self._guardrail_report(guard, sig_args)
-                        print(f"  {paint('⏸ 护栏暂停一次', YELLOW)}: "
+                    # ---------------------------------------------------
+                    # P1a 护栏:纯观察者,只在重复到阈值时**添一句事实**。
+                    #
+                    #   为什么不再拦/暂停:循环每轮都会回到模型 —— 模型看到工具
+                    #   结果后本来就必须重新决策。所以"要不要继续"根本不需要
+                    #   代码替它按一下暂停键:把事实说出来,它下一轮自己就判断了。
+                    #
+                    #   代价是那次重复调用真的执行了(本地命令,代价≈0);
+                    #   换来的是代码彻底不介入判断,也不存在"被拦一次才能绕开"。
+                    # ---------------------------------------------------
+                    guard = self.guardrails.after_call(
+                        tool_name, sig_args, result)
+                    if guard.action == "report":
+                        result = append_guidance(
+                            result, self._guardrail_report(guard, sig_args))
+                        print(f"  {paint('ℹ️ 护栏报告', YELLOW)}: "
                               f"{guard.tool_name} 连续相同 {guard.count} 次")
+
+                    # 本轮情况:如实记录"做了什么 + 结果长什么样"。
+                    self.turn_context.note_tool_result(
+                        tool_name, sig_args, result)
 
                     # 打印执行结果摘要
                     result_preview = result[:300] + "..." if len(result) > 300 else result
