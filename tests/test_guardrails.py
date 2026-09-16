@@ -173,6 +173,11 @@ def test_synthetic_and_guidance_text_markers():
 def _blocks(history):
     return [c for c in tool_contents(history) if "[护栏拦截]" in c]
 
+def _contexts(history):
+    return [m for m in history if m.get("role") == "user"
+            and "[本轮运行情况]" in str(m.get("content"))]
+
+
 
 def _warns(history):
     return [c for c in tool_contents(history) if "[工具循环告警" in c]
@@ -187,7 +192,7 @@ def test_e2e_exact_failure_blocks_after_five(run_script, tmp_path):
     assert len([c for c in tool_contents(history) if "[错误]" in c]) == 5
     assert len(_blocks(history)) == 1
     assert len(_warns(history)) >= 1, "第 2 次失败起应注入告警"
-    assert llm.main_calls == 7, "被拦后应还能继续到模型给出文本"
+    assert llm.main_calls == 8, "被拦后应还能继续到模型给出文本(含一轮情况说明)"
 
 
 def test_e2e_fix_run_iteration_not_blocked(tmp_path, monkeypatch):
@@ -221,15 +226,18 @@ def test_e2e_fix_run_iteration_not_blocked(tmp_path, monkeypatch):
     agent.chat("修好测试")
 
     assert _blocks(agent.history) == [], "正常迭代不该被拦"
-    assert agent.verification.has_fresh_evidence(), "跑绿后应留下新鲜证据"
+    # 跑绿之后应有一份情况说明(含执行记录),而不是"通过证据"这种判决
+    ctxs = [m for m in agent.history if m.get("role") == "user"
+            and "[本轮运行情况]" in str(m.get("content"))]
+    assert ctxs, "应附上本轮情况说明"
+    assert "pytest" in ctxs[0]["content"], "说明里应带上跑过的测试命令"
 
 
-def test_e2e_blocked_evidence_command_skips_verify_nudge(tmp_path, monkeypatch):
-    """护栏真拦掉了取证命令 → 验证门不再驳回(不再逼模型跑一条被禁止的命令)。
+def test_e2e_blocked_still_gets_context(tmp_path, monkeypatch):
+    """护栏拦掉命令(同一份失败连续 5 次)→ 仍拦;情况说明照常附上。
 
-    回归:原结局是"护栏拦死 → 验证门驳回 2 次 → 以无证据 + 声称完成收尾"。
-    现在:同一份失败连续 5 次仍会被拦(护栏职责保留),但门知道本轮已无法验证,
-    直接放行。
+    回归:原先护栏拦掉取证命令会让验证门陷入"门要求跑通、护栏禁止跑"的
+    互锁。现在门不判决了,只把情况(含被拦这件事)摆给模型自己判断。
     """
     real_store = core.SessionStore
     monkeypatch.setattr(
@@ -251,10 +259,8 @@ def test_e2e_blocked_evidence_command_skips_verify_nudge(tmp_path, monkeypatch):
     result = agent.chat("修好测试")
 
     blocks = [c for c in tool_contents(agent.history) if "[护栏拦截]" in c]
-    nudges = [m for m in agent.history if m.get("role") == "user"
-              and "[系统: 你在本轮修改了代码" in str(m.get("content"))]
     assert len(blocks) == 1, "同一份失败连续 5 次 → 仍应拦截(护栏职责不变)"
-    assert nudges == [], "取证路径被拦后不该再驳回"
+    assert _contexts(agent.history), "被拦的事实应出现在情况说明里"
     assert result, "仍以回答收尾"
 
 
@@ -281,7 +287,7 @@ def test_e2e_normal_flow_untouched(run_script, tmp_path):
 
     assert _blocks(agent.history) == []
     assert _warns(agent.history) == []
-    assert llm.main_calls == 5
+    assert llm.main_calls == 6, "4 次读取 + 收尾 + 一轮情况说明"
 
 
 def test_e2e_tool_pairing_still_valid(run_script, tmp_path):
