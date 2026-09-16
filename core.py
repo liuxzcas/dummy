@@ -1511,9 +1511,15 @@ class DummyAgent:
             last_cached = extract_cached_tokens(usage)
         hit_rate = last_cached / last_prompt * 100 if last_prompt else 0.0
         u = self.session_usage
-        cost = (u["prompt"] * self.PRICE_INPUT
-                + u["completion"] * self.PRICE_OUTPUT
-                + u["cached"] * self.PRICE_CACHED) / 1_000_000
+        # ============ 成本计算(2026-09-16 修正) ============
+        # DeepSeek 的 prompt_tokens **已包含** cached_tokens
+        # (实测: prompt=1620, cached=1408, miss=212, 1408+212=1620)。
+        # 所以输入部分必须拆成"未命中"和"命中"两段计价,否则缓存那部分
+        # 会被算两遍(按 ¥3.0 算一次 + 按 ¥0.1 算一次) —— 命中越多高估越狠,
+        # 实测高估 5.59 倍。
+        cost = ((u["prompt"] - u["cached"]) * self.PRICE_INPUT
+                + u["cached"] * self.PRICE_CACHED
+                + u["completion"] * self.PRICE_OUTPUT) / 1_000_000
         # 本地部署(ollama/vllm)无 API 计费,不按云端单价估算
         local = is_local_endpoint(getattr(self.llm, "base_url", None))
         cost_text = "本地 (无 API 成本)" if local else f"≈¥{cost:.4f}"
