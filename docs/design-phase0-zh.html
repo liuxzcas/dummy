@@ -1,0 +1,728 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Dummy Agent — Phase 0 设计文档</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --bg-card: #161b22;
+    --bg-code: #1c2128;
+    --border: #30363d;
+    --text: #e6edf3;
+    --text-dim: #8b949e;
+    --accent: #58a6ff;
+    --accent2: #3fb950;
+    --accent3: #d2a8ff;
+    --warn: #d29922;
+    --danger: #f85149;
+    --font-mono: 'JetBrains Mono', 'Cascadia Code', 'Fira Code', monospace;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans SC', sans-serif;
+    line-height: 1.7;
+    padding: 0;
+  }
+  .container { max-width: 960px; margin: 0 auto; padding: 40px 24px; }
+
+  /* Header */
+  header {
+    text-align: center;
+    padding: 60px 0 40px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 48px;
+  }
+  header h1 { font-size: 2.4em; font-weight: 700; letter-spacing: -0.02em; }
+  header h1 span { color: var(--accent); }
+  header .subtitle { color: var(--text-dim); font-size: 1.05em; margin-top: 8px; }
+  header .badge {
+    display: inline-block; margin-top: 16px;
+    background: var(--bg-card); border: 1px solid var(--border);
+    padding: 4px 14px; border-radius: 20px; font-size: 0.85em; color: var(--accent2);
+  }
+
+  /* TOC */
+  .toc {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px 32px;
+    margin-bottom: 48px;
+  }
+  .toc h2 { font-size: 1em; color: var(--text-dim); margin-bottom: 12px; text-transform: uppercase; letter-spacing: 0.05em; }
+  .toc ol { padding-left: 20px; }
+  .toc li { margin: 6px 0; }
+  .toc a { color: var(--accent); text-decoration: none; }
+  .toc a:hover { text-decoration: underline; }
+
+  /* Sections */
+  section { margin-bottom: 48px; }
+  h2 {
+    font-size: 1.6em; font-weight: 700;
+    padding-bottom: 8px; border-bottom: 2px solid var(--border);
+    margin-bottom: 24px;
+  }
+  h2 .section-num { color: var(--text-dim); margin-right: 8px; }
+  h3 {
+    font-size: 1.2em; font-weight: 600;
+    margin-top: 28px; margin-bottom: 12px;
+    color: var(--accent);
+  }
+  h4 {
+    font-size: 1em; font-weight: 600;
+    margin-top: 20px; margin-bottom: 8px;
+  }
+  p { margin-bottom: 14px; }
+
+  /* Decision cards */
+  .decision {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-left: 4px solid var(--accent);
+    border-radius: 8px;
+    padding: 20px 24px;
+    margin: 16px 0;
+  }
+  .decision .decis-title { font-weight: 700; color: var(--accent); margin-bottom: 8px; }
+  .decision .decis-meta { font-size: 0.9em; color: var(--text-dim); }
+  .decision .decis-solution { margin-top: 8px; }
+  .decision .decis-why { margin-top: 8px; color: var(--accent2); }
+
+  /* Alternative comparison */
+  .alt-table {
+    width: 100%; border-collapse: collapse;
+    margin: 16px 0; font-size: 0.92em;
+  }
+  .alt-table th, .alt-table td {
+    border: 1px solid var(--border);
+    padding: 10px 14px; text-align: left;
+    vertical-align: top;
+  }
+  .alt-table th { background: var(--bg-card); color: var(--text-dim); font-weight: 600; }
+  .alt-table .chosen { background: rgba(63, 185, 80, 0.08); border-left: 3px solid var(--accent2); }
+  .alt-table tr:hover { background: rgba(88, 166, 255, 0.04); }
+
+  /* Code blocks */
+  pre {
+    background: var(--bg-code);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px 20px;
+    overflow-x: auto;
+    font-family: var(--font-mono);
+    font-size: 0.88em;
+    line-height: 1.5;
+    margin: 16px 0;
+  }
+  code { font-family: var(--font-mono); font-size: 0.88em; }
+  p code, li code { background: var(--bg-code); padding: 2px 6px; border-radius: 4px; }
+
+  /* Flow diagram */
+  .flow {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px;
+    margin: 16px 0;
+    text-align: center;
+    font-family: var(--font-mono);
+    font-size: 0.85em;
+    line-height: 1.8;
+    white-space: pre;
+    overflow-x: auto;
+  }
+
+  /* Lists */
+  ul, ol { margin-bottom: 14px; padding-left: 24px; }
+  li { margin: 4px 0; }
+
+  /* Info boxes */
+  .info {
+    background: rgba(88, 166, 255, 0.06);
+    border: 1px solid rgba(88, 166, 255, 0.2);
+    border-radius: 8px;
+    padding: 16px 20px;
+    margin: 16px 0;
+  }
+  .info strong { color: var(--accent); }
+  .warn-box {
+    background: rgba(210, 153, 34, 0.06);
+    border: 1px solid rgba(210, 153, 34, 0.2);
+    border-radius: 8px;
+    padding: 16px 20px;
+    margin: 16px 0;
+  }
+  .warn-box strong { color: var(--warn); }
+
+  /* File tree */
+  .filetree {
+    font-family: var(--font-mono);
+    font-size: 0.9em;
+    line-height: 2;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px 24px;
+    margin: 16px 0;
+  }
+
+  @media (max-width: 640px) {
+    header h1 { font-size: 1.6em; }
+    .container { padding: 24px 16px; }
+    .alt-table { font-size: 0.82em; }
+    .alt-table th, .alt-table td { padding: 6px 8px; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+<header>
+  <h1>Dummy Agent — <span>Phase 0</span></h1>
+  <div class="subtitle">从零开始的 Tool-Calling Agent · 设计文档</div>
+  <div class="badge">📅 2026-07-23 · 启动于 00:32 CST</div>
+</header>
+
+<!-- ============================================================ -->
+<!-- 目录 -->
+<!-- ============================================================ -->
+<nav class="toc">
+  <h2>目录</h2>
+  <ol>
+    <li><a href="#overview">项目概述</a></li>
+    <li><a href="#goals">Phase 0 目标与范围</a></li>
+    <li><a href="#tech">技术选型分析</a></li>
+    <li><a href="#arch">架构设计</a></li>
+    <li><a href="#modules">模块详细设计</a></li>
+    <li><a href="#decisions">关键决策汇总</a></li>
+    <li><a href="#flow">执行流程</a></li>
+    <li><a href="#limitations">已知局限</a></li>
+    <li><a href="#next">下一步规划</a></li>
+  </ol>
+</nav>
+
+<!-- ============================================================ -->
+<!-- 1. 项目概述 -->
+<!-- ============================================================ -->
+<section id="overview">
+  <h2><span class="section-num">1.</span> 项目概述</h2>
+
+  <p><strong>Dummy Agent</strong> 是一个以学习为目的的项目，从零开始构建一个类 <a href="https://hermes-agent.nousresearch.com" style="color:var(--accent)">Hermes Agent</a> 的 AI 智能体。Hermes 是 Nous Research 开发的开源 AI Agent 框架，具备工具调用、跨会话记忆、技能系统、多平台网关等丰富能力。</p>
+
+  <p>Dummy Agent 的目标不是复刻 Hermes 的全部功能——那是成千上万行代码和多年迭代的产物。相反，这个项目核心目标是：</p>
+
+  <ul>
+    <li><strong>理解本质</strong>：通过亲手实现最小的 Tool-Calling Loop，彻底理解 Agent 的工作原理</li>
+    <li><strong>渐进构建</strong>：从极简原型开始，逐步添加每个组件，每一步都清楚"为什么要加"、"怎么加的"</li>
+    <li><strong>完整记录</strong>：每个决策都记录备选方案、选定方案、选择理由——形成可复用的知识</li>
+  </ul>
+
+  <p>项目采用 <strong>DeepSeek API</strong> 作为 LLM 提供商，选择它的原因见技术选型章节。</p>
+</section>
+
+<!-- ============================================================ -->
+<!-- 2. Phase 0 目标与范围 -->
+<!-- ============================================================ -->
+<section id="goals">
+  <h2><span class="section-num">2.</span> Phase 0 目标与范围</h2>
+
+  <h3>目标</h3>
+  <ol>
+    <li>实现一个在工作站上可运行的最小 Tool-Calling Agent</li>
+    <li>Agent 能调用 terminal 工具执行 shell 命令并查看结果</li>
+    <li>有交互式 CLI 界面，用户可实时观察 Tool Calling 过程</li>
+    <li>代码包含详细的中文注释，适合学习</li>
+  </ol>
+
+  <h3>明确不做（留到后续 Phase）</h3>
+  <ul>
+    <li>会话持久化（SQLite 存储）</li>
+    <li>上下文压缩（长对话处理）</li>
+    <li>多工具支持（Phase 0 只有 terminal）</li>
+    <li>流式输出</li>
+    <li>安全审批机制</li>
+    <li>多平台网关</li>
+    <li>技能/记忆系统</li>
+  </ul>
+
+  <h3>成功标准</h3>
+  <ul>
+    <li><code>python main.py</code> 能正常启动</li>
+    <li>输入 API Key 后能连上 DeepSeek API</li>
+    <li>输入 "当前目录有什么文件" → Agent 调 terminal("ls") → 返回结果</li>
+    <li>输入 /help、/reset、/tools 等命令能正常响应</li>
+  </ul>
+</section>
+
+<!-- ============================================================ -->
+<!-- 3. 技术选型分析 -->
+<!-- ============================================================ -->
+<section id="tech">
+  <h2><span class="section-num">3.</span> 技术选型分析</h2>
+
+  <h3>3.1 LLM 提供商：DeepSeek</h3>
+
+  <table class="alt-table">
+    <tr><th>方案</th><th>优点</th><th>缺点</th></tr>
+    <tr class="chosen">
+      <td><strong>✓ DeepSeek API</strong>（选定）</td>
+      <td>
+        - OpenAI 兼容 API，工具调用体验一致<br>
+        - token 价格极低（输入 $0.27 / 百万 token）<br>
+        - 128K token 上下文长度<br>
+        - 无需海外信用卡
+      </td>
+      <td>
+        - 有每日调用量限制（免费用户 3 RPM）<br>
+        - 高峰期可能不稳定
+      </td>
+    </tr>
+    <tr>
+      <td>OpenAI API</td>
+      <td>- 最成熟的 tool calling 支持<br>- GPT-4o 工具调用准确率高</td>
+      <td>- 需要海外支付方式<br>- 价格更高<br>- 国内访问不稳定</td>
+    </tr>
+    <tr>
+      <td>本地模型（vLLM / llama.cpp）</td>
+      <td>- 完全离线<br>- 无 API 费用<br>- 数据不离开本机</td>
+      <td>- 需要 GPU（显存需求高）<br>- 小模型的 tool calling 准确率低<br>- 搭建复杂度高</td>
+    </tr>
+  </table>
+
+  <div class="info">
+    <strong>决策理由：</strong>Phase 0 需要快速验证 Tool-Calling Loop 是否工作。DeepSeek 的 OpenAI 兼容 API 意味着代码可以零改动切换到其他 provider，而极低的价格让实验成本几乎为零。本地模型对 Phase 0 来说搭建成本过高。
+  </div>
+
+  <h3>3.2 API 通信：OpenAI Python SDK vs 原生 HTTP</h3>
+
+  <table class="alt-table">
+    <tr><th>方案</th><th>优点</th><th>缺点</th></tr>
+    <tr class="chosen">
+      <td><strong>✓ OpenAI Python SDK</strong>（选定）</td>
+      <td>
+        - 自动处理认证、重试、超时<br>
+        - IDE 类型提示完整<br>
+        - Tool Calling 数据结构已封装好<br>
+        - 20+ 个 provider 兼容同一 SDK
+      </td>
+      <td>- 多一层抽象（隐藏了 HTTP 细节）<br>- 额外依赖</td>
+    </tr>
+    <tr>
+      <td>原生 httpx/requests</td>
+      <td>- 零依赖<br>- 完全透明，适合教学<br>- 完全控制请求/响应</td>
+      <td>- 需要手动处理 JSON 序列化、认证头<br>- 需要手动解析 tool_calls<br>- 代码量翻倍</td>
+    </tr>
+  </table>
+
+  <div class="info">
+    <strong>决策理由：</strong>Phase 0 要学的是 Agent 架构（循环、注册表、dispatch），而不是 HTTP 协议。SDK 把协议细节处理好，让代码聚焦在核心逻辑上。注释中会说明底层发生了什么。
+  </div>
+
+  <h3>3.3 框架选择：无框架 vs LangChain</h3>
+
+  <table class="alt-table">
+    <tr><th>方案</th><th>优点</th><th>缺点</th></tr>
+    <tr class="chosen">
+      <td><strong>✓ 零框架，纯 Python</strong>（选定）</td>
+      <td>
+        - 完全理解每一行代码在做什么<br>
+        - 极低的学习曲线<br>
+        - 完全灵活，不受框架约束<br>
+        - 调试简单
+      </td>
+      <td>- 缺少高级功能（chain、memory 等）<br>- 需要自己实现基础设施</td>
+    </tr>
+    <tr>
+      <td>LangChain</td>
+      <td>- 内置大量工具、memory、chain<br>- 社区大、文档多</td>
+      <td>- 抽象层次太厚，底层不透明<br>- 调试困难<br>- 版本更新快，教程常过期</td>
+    </tr>
+    <tr>
+      <td>AutoGen / CrewAI</td>
+      <td>- 多 Agent 开箱即用<br>- 高级编排能力</td>
+      <td>- 对单 Agent 来说过度设计<br>- Phase 0 用不上</td>
+    </tr>
+  </table>
+
+  <div class="info">
+    <strong>决策理由：</strong>这是学习项目。用框架就是"学习框架怎么用"，而不是"学习 Agent 怎么工作"。零框架意味着你需要理解 HTTP 调用、消息格式、tool_calls 的解析和回注——这些正是 Agent 的核心知识。
+  </div>
+
+  <h3>3.4 代码注释语言：中文</h3>
+
+  <table class="alt-table">
+    <tr><th>方案</th><th>优点</th><th>缺点</th></tr>
+    <tr class="chosen">
+      <td><strong>✓ 中文注释</strong>（选定）</td>
+      <td>- 母语阅读，理解速度最快<br>- 对学习者最友好</td>
+      <td>- 国际化时需替换</td>
+    </tr>
+    <tr>
+      <td>英文注释</td>
+      <td>- 业界惯例<br>- 不开新项目也能读</td>
+      <td>- 理解速度慢（需脑内翻译）</td>
+    </tr>
+  </table>
+
+  <div class="info">
+    <strong>决策理由：</strong>你是中文母语者，学习项目的第一目标是让你快速理解。注释的价值在于被阅读，而非符合"惯例"。
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<!-- 4. 架构设计 -->
+<!-- ============================================================ -->
+<section id="arch">
+  <h2><span class="section-num">4.</span> 架构设计</h2>
+
+  <h3>4.1 整体架构</h3>
+
+  <div class="flow">
+┌──────────────────────────────────────────────────────────┐
+│                       main.py                           │
+│           CLI 入口 · 获取凭证 · 初始化 · 交互循环           │
+└──────┬───────────────────────────────────┬───────────────┘
+       │                                   │
+       ▼                                   ▼
+┌──────────────┐                 ┌──────────────────────┐
+│   llm.py     │                 │      tools.py         │
+│ DeepSeek API │                 │  ToolRegistry + 工具实现 │
+│  封装        │                 │                      │
+└──────┬───────┘                 └─────────┬────────────┘
+       │                                   │
+       └──────────┬───────────────────────┘
+                  ▼
+       ┌──────────────────────┐
+       │      core.py          │
+       │  DummyAgent 类        │
+       │  Tool-Calling Loop    │
+       │  循环 · dispatch · 回注 │
+       └──────────────────────┘
+                  │
+                  ▼
+       ┌──────────────────────┐
+       │     prompt.py         │
+       │  System Prompt 构造器   │
+       └──────────────────────┘
+  </div>
+
+  <h3>4.2 文件结构</h3>
+
+  <div class="filetree">
+D:/Engineering/dummy/
+├── main.py              CLI 入口 · 与用户交互
+├── core.py              Agent 核心循环 · 大脑
+├── llm.py               LLM API 封装 · 嘴巴
+├── tools.py             工具注册表 · 手脚
+├── prompt.py            System Prompt 构造器 · 记忆
+├── requirements.txt     依赖清单
+└── docs/                设计文档
+    ├── design.html
+    └── design-zh.html
+  </div>
+
+  <h3>4.3 模块职责与依赖关系</h3>
+
+  <table class="alt-table">
+    <tr><th>模块</th><th>职责</th><th>依赖</th></tr>
+    <tr><td><code>llm.py</code></td><td>封装 DeepSeek API 的 Chat Completions 调用，管理 model、base_url、api_key</td><td>openai 库</td></tr>
+    <tr><td><code>tools.py</code></td><td>定义 Tool 数据结构和 ToolRegistry 类，实现终端命令执行工具</td><td>无（仅用标准库）</td></tr>
+    <tr><td><code>prompt.py</code></td><td>根据可用工具列表和环境信息动态构造 System Prompt</td><td>无（仅用标准库）</td></tr>
+    <tr><td><code>core.py</code></td><td>实现 Tool-Calling Loop：调 LLM → 解析 tool_calls → dispatch → 回注结果 → 循环</td><td>llm.py + tools.py + prompt.py</td></tr>
+    <tr><td><code>main.py</code></td><td>获取凭证 → 初始化各组件 → 启动交互式 REPL 循环</td><td>core.py + tools.py + llm.py</td></tr>
+  </table>
+</section>
+
+<!-- ============================================================ -->
+<!-- 5. 模块详细设计 -->
+<!-- ============================================================ -->
+<section id="modules">
+  <h2><span class="section-num">5.</span> 模块详细设计</h2>
+
+  <!-- 5.1 llm.py -->
+  <h3>5.1 llm.py — LLM API 封装</h3>
+
+  <div class="decision">
+    <div class="decis-title">设计：LLMClient 类</div>
+    <div class="decis-meta">备选：模块级函数 vs 数据类 vs 封装类</div>
+    <div class="decis-solution"><strong>选定方案：</strong>封装类（LLMClient），接收 api_key、base_url、model 三个参数初始化，提供 <code>chat(messages, tools, ...)</code> 方法。</div>
+    <div class="decis-why"><strong>为什么：</strong>类可以持有客户端状态（HTTP session、配置），避免调用方每次都传参数。使用 <code>openai.OpenAI</code> 库做底层封装，充分利用其对 OpenAI 兼容 API 的完善支持。</div>
+  </div>
+
+  <p><strong>关键接口：</strong></p>
+  <pre>
+class LLMClient:
+    def __init__(self, api_key: str, base_url: str, model: str)
+    def chat(self, messages: list, tools: list | None,
+             temperature=0.7, max_tokens=4096) -> ChatCompletionMessage
+  </pre>
+
+  <p><strong>设计要点：</strong></p>
+  <ul>
+    <li><strong>温度 0.3：</strong>工具调用场景需要确定性输出。如果 temperature 太高，LLM 可能发明不存在的工具名或参数。Phase 0 固定为 0.3，后续可以做成可配置参数。</li>
+    <li><strong>空 tools 处理：</strong>如果 <code>tools</code> 参数是空列表或 None，就不传 tools 给 API。某些 provider 在 tools=[] 时会报错。</li>
+    <li><strong>错误处理：</strong>Phase 0 不做自动重试。API 错误通常意味着配置有问题（密钥无效、余额不足），需要人工介入。</li>
+  </ul>
+
+  <!-- 5.2 tools.py -->
+  <h3>5.2 tools.py — 工具注册表</h3>
+
+  <div class="decision">
+    <div class="decis-title">设计：注册表模式</div>
+    <div class="decis-meta">备选：if-else 中心调度 vs 注册表 vs 装饰器</div>
+    <div class="decis-solution"><strong>选定方案：</strong>ToolRegistry 类 + 工厂函数 <code>create_default_registry()</code>。每个工具注册时同时提供 name、description、parameters schema、handler 函数。</div>
+    <div class="decis-why"><strong>为什么：</strong>注册表模式是 Agent 框架的标准实践。每加一个工具就是一个 <code>registry.register(...)</code> 调用，不修改现有代码（开闭原则）。注册表同时提供 get_tool_definitions() 给 core.py（生成发给 LLM 的 schema）和 dispatch() 给 tool calling loop（执行工具）。</div>
+  </div>
+
+  <p><strong>核心数据结构：</strong></p>
+  <pre>
+Tool = {
+    "name": "terminal",
+    "schema": {
+        "type": "function",
+        "function": {
+            "name": "terminal",
+            "description": "...",
+            "parameters": { "type": "object", "properties": {...} }
+        }
+    },
+    "handler": terminal_handler  # Callable
+}
+  </pre>
+
+  <div class="warn-box">
+    <strong>⚠️ 安全警告：</strong>当前 terminal 工具使用 <code>subprocess.run(shell=True)</code>，直接将用户（或 LLM 生成的）命令传给系统 shell。这极其危险——prompt injection 攻击可以让 LLM 执行任意命令。Phase 1 必须添加命令审批机制和黑名单。
+  </div>
+
+  <!-- 5.3 prompt.py -->
+  <h3>5.3 prompt.py — System Prompt 构造器</h3>
+
+  <div class="decision">
+    <div class="decis-title">设计：运行时动态构造</div>
+    <div class="decis-meta">备选：硬编码 vs 模板文件 vs 动态函数</div>
+    <div class="decis-solution"><strong>选定方案：</strong>Python 函数 <code>build_system_prompt(tool_names)</code>，使用 f-string 将工具列表注入模板。</div>
+    <div class="decis-why"><strong>为什么：</strong>模板 + 动态注入是最平衡的方案。硬编码无法适应工具列表变化，YAML 模板文件对 Phase 0 过度设计。函数形式可以注入 OS 信息、时间戳等运行时的上下文。</div>
+  </div>
+
+  <p><strong>提示词策略：</strong></p>
+  <ul>
+    <li><strong>身份定义：</strong>"你是 Dummy Agent，一个正在学习工具调用的 AI 助手。"——诚实告知 Agent 的身份，它只是一个学习原型。</li>
+    <li><strong>工具描述：</strong>提示词中同时列出工具的文本描述（自然语言让 LLM 理解"什么时候用"）和 API 的 tools 参数（结构化 schema 让 LLM 知道"怎么调"）。</li>
+    <li><strong>行为规则：</strong>告诉 LLM 可以多步调用、遇到错误可以重试、不需要工具时直接聊天。</li>
+    <li><strong>环境信息：</strong>注入操作系统类型（Windows git-bash）和时间戳，帮助 LLM 理解其运行环境。</li>
+  </ul>
+
+  <!-- 5.4 core.py -->
+  <h3>5.4 core.py — Agent 核心循环</h3>
+
+  <div class="decision">
+    <div class="decis-title">设计：DummyAgent 类</div>
+    <div class="decis-meta">备选：无状态函数 vs 生成器 vs 类</div>
+    <div class="decis-solution"><strong>选定方案：</strong>DummyAgent 类，接收 llm_client 和 tool_registry 两个依赖。内部维护 <code>self.history</code>（消息列表）。提供 <code>chat(user_input) -> str</code> 和 <code>reset()</code> 方法。</div>
+    <div class="decis-why"><strong>为什么：</strong>对话历史需要跨多次 chat 调用保持。用类最自然，且依赖注入模式让测试和换组件都容易。后续需要持久化时，只需在类外部加一个 save/load 方法。</div>
+  </div>
+
+  <p><strong>核心循环逻辑（伪代码）：</strong></p>
+  <pre>
+def chat(user_input):
+    history.append({"role": "user", "content": user_input})
+
+    for turn in range(MAX_TOOL_TURNS):       # 最多 10 轮
+        response = llm.chat(history, tools)  # 调 LLM
+
+        if response.tool_calls:              # LLM 想调工具
+            history.append(response)         # 保存 assistant 消息（含 tool_calls）
+            for tc in response.tool_calls:
+                result = tools.dispatch(tc.function.name,
+                                        json.load(tc.function.arguments))
+                history.append({              # 回注结果
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "content": result
+                })
+            continue                          # 回到循环顶部，再调 LLM
+
+        # LLM 回答了文本
+        history.append({"role": "assistant", "content": response.content})
+        return response.content
+
+    return "[已达最大工具调用轮次]"
+  </pre>
+
+  <p><strong>设计要点：</strong></p>
+  <ul>
+    <li><strong>MAX_TOOL_TURNS = 10：</strong>安全网，防止 Agent 陷入无限工具循环。Hermes 默认是 90 轮。</li>
+    <li><strong>消息角色交替：</strong>OpenAI 格式要求严格交替 user → assistant → tool → assistant → user。违反会导致某些模型报错或行为异常。</li>
+    <li><strong>tool_call_id 匹配：</strong>回注工具结果时，tool_call_id 必须和 assistant message 中的 id 完全一致。这是 LLM 关联"工具结果"和"工具调用"的唯一标识。</li>
+    <li><strong>诊断日志：</strong>Agent 在执行时打印 🛠 和 📝 标记，让使用者实时看到正在发生什么。</li>
+  </ul>
+
+  <!-- 5.5 main.py -->
+  <h3>5.5 main.py — CLI 入口</h3>
+
+  <div class="decision">
+    <div class="decis-title">设计：交互式 REPL</div>
+    <div class="decis-meta">备选：交互式 vs 单次查询 vs Web UI</div>
+    <div class="decis-solution"><strong>选定方案：</strong>while 循环 REPL，用户反复输入、Agent 反复响应。支持 /help、/reset、/tools、/history、/quit 等内置命令。</div>
+    <div class="decis-why"><strong>为什么：</strong>交互式模式可以观察 Agent 的每一个 tool calling 步骤，最适合学习。凭证优先读取环境变量（DUMMY_AGENT_API_KEY），其次是用户输入。环境变量方式更安全。</div>
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<!-- 6. 关键决策汇总 -->
+<!-- ============================================================ -->
+<section id="decisions">
+  <h2><span class="section-num">6.</span> 关键决策汇总</h2>
+
+  <table class="alt-table">
+    <tr><th>决策</th><th>方案</th><th>理由（一句话）</th></tr>
+    <tr><td>开发策略</td><td>迭代：最小原型 → 逐步加功能</td><td>避免"大爆炸"式调试地狱，每步有可用的产出</td></tr>
+    <tr><td>LLM 提供商</td><td>DeepSeek API（OpenAI 兼容）</td><td>价格极低、无需海外信用卡、工具调用支持好</td></tr>
+    <tr><td>API 库</td><td>OpenAI Python SDK</td><td>协议细节已封装好，代码聚焦核心逻辑</td></tr>
+    <tr><td>整体框架</td><td>零框架，纯 Python 标准库 + openai 包</td><td>学习项目，需要理解每一行代码</td></tr>
+    <tr><td>工具管理</td><td>注册表模式（ToolRegistry）</td><td>开闭原则，加工具不改代码，查询和分发统一</td></tr>
+    <tr><td>提示词构造</td><td>动态函数（f-string 注入工具列表）</td><td>运行时自动适应工具变化，比模板文件更简单</td></tr>
+    <tr><td>状态管理</td><td>类内维护 history 列表</td><td>最自然的方式，依赖注入让组件可替换</td></tr>
+    <tr><td>错误处理</td><td>传播不吞没（抛出异常）</td><td>学习阶段需要完整 traceback 以便理解问题</td></tr>
+    <tr><td>凭证管理</td><td>环境变量优先，终端输入后备</td><td>安全最佳实践，方便持续使用</td></tr>
+    <tr><td>注释语言</td><td>中文</td><td>母语阅读速度最快，学习效果最好</td></tr>
+  </table>
+</section>
+
+<!-- ============================================================ -->
+<!-- 7. 执行流程 -->
+<!-- ============================================================ -->
+<section id="flow">
+  <h2><span class="section-num">7.</span> 执行流程完整展示</h2>
+
+  <p>以用户输入 "当前目录有什么文件" 为例：</p>
+
+  <div class="flow">
+用户: "当前目录有什么文件"
+
+┌─ Step 1: 构造消息 ─────────────────────────────┐
+│ history = [                                      │
+│   {"role": "system", "content": "你是..."},     │
+│   {"role": "user",   "content": "当前目录有什么"} │
+│ ]                                                │
+└──────────────────────────────────────────────────┘
+         │
+         ▼
+┌─ Step 2: 调 LLM ────────────────────────────────┐
+│ llm.chat(                                        │
+│   messages=history,                              │
+│   tools=[{                                       │
+│     "type": "function",                          │
+│     "function": { "name": "terminal", ... }       │
+│   }]                                             │
+│ )                                                │
+└──────────────────────────────────────────────────┘
+         │
+         ▼
+┌─ Step 3: LLM 返回 tool_call ────────────────────┐
+│ {                                                │
+│   "content": null,                              │
+│   "tool_calls": [{                              │
+│     "id": "call_abc123",                        │
+│     "function": {                               │
+│       "name": "terminal",                       │
+│       "arguments": '{"command": "ls"}'          │
+│     }                                           │
+│   }]                                            │
+│ }                                                │
+└──────────────────────────────────────────────────┘
+         │
+         ▼
+┌─ Step 4: 执行工具 ──────────────────────────────┐
+│ tools.dispatch("terminal", {"command": "ls"})    │
+│ → subprocess.run("ls", shell=True)               │
+│ → 返回 "main.py\ncore.py\nllm.py\n..."           │
+└──────────────────────────────────────────────────┘
+         │
+         ▼
+┌─ Step 5: 回注结果 ──────────────────────────────┐
+│ history.append({                                 │
+│   "role": "tool",                                │
+│   "tool_call_id": "call_abc123",                │
+│   "content": "main.py\ncore.py\nllm.py\n..."    │
+│ })                                               │
+└──────────────────────────────────────────────────┘
+         │
+         ▼
+┌─ Step 6: 再次调 LLM ────────────────────────────┐
+│ llm.chat(messages=history, tools=[...])           │
+│ → LLM 看到 ls 的结果                              │
+│ → 返回文本 "当前目录有以下文件：main.py、..."    │
+└──────────────────────────────────────────────────┘
+         │
+         ▼
+┌─ Step 7: 返回给用户 ────────────────────────────┐
+│ return "当前目录有以下文件：main.py、..."        │
+└──────────────────────────────────────────────────┘
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<!-- 8. 已知局限 -->
+<!-- ============================================================ -->
+<section id="limitations">
+  <h2><span class="section-num">8.</span> 已知局限</h2>
+
+  <ol>
+    <li><strong>无会话持久化：</strong>退出后历史丢失。重启需要重新输入 API Key。</li>
+    <li><strong>无上下文压缩：</strong>长对话会超出 DeepSeek 的 128K token 限制（实际上因为来回 tool calling，消耗得很快）。</li>
+    <li><strong>单工具：</strong>只有 terminal，没有文件读写、Web 搜索等能力。</li>
+    <li><strong>不安全：</strong>terminal 工具直接 <code>shell=True</code>，无任何命令审批。</li>
+    <li><strong>无流式输出：</strong>用户需等待整个响应完成才能看到结果。</li>
+    <li><strong>无错误重试：</strong>API 调用失败直接抛出，不会自动重试。</li>
+    <li><strong>不支持图片/文件输入：</strong>只能处理纯文本。</li>
+  </ol>
+
+  <div class="info">
+    <strong>这些都是 Phase 1 的候选任务。</strong>增加会话持久化和上下文压缩是最优先的，没有它们 Agent 无法进行有意义的长时间交互。
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<!-- 9. 下一步规划 -->
+<!-- ============================================================ -->
+<section id="next">
+  <h2><span class="section-num">9.</span> 下一步规划</h2>
+
+  <p>Phase 0 完成后，以下是下一阶段的候选方向（按优先级排序）：</p>
+
+  <table class="alt-table">
+    <tr><th>Phase</th><th>功能</th><th>说明</th></tr>
+    <tr><td>1</td><td>多工具（file I/O、web search）</td><td>第 2、3 个工具，展示注册表的可扩展性</td></tr>
+    <tr><td>1</td><td>会话持久化（SQLite）</td><td>退出后能恢复对话，支持 /resume</td></tr>
+    <tr><td>1</td><td>命令审批</td><td>执行危险命令前要求用户确认</td></tr>
+    <tr><td>2</td><td>上下文压缩</td><td>超限时自动摘要早期历史</td></tr>
+    <tr><td>2</td><td>流式输出</td><td>逐字显示 LLM 回复，提升体验</td></tr>
+    <tr><td>2</td><td>.env 配置文件</td><td>不再需要每次输入 API Key</td></tr>
+    <tr><td>3</td><td>跨会话记忆</td><td>记住用户偏好和常用信息</td></tr>
+    <tr><td>3</td><td>技能系统</td><td>Agent 能保存和加载"技能"</td></tr>
+    <tr><td>3</td><td>子 Agent 委托</td><td>复杂任务派生子 Agent 并行处理</td></tr>
+    <tr><td>4</td><td>消息平台网关</td><td>接入 Telegram / Discord</td></tr>
+    <tr><td>4</td><td>Cron 调度</td><td>定时执行任务</td></tr>
+  </table>
+
+  <div class="info">
+    <strong>路线图哲学：</strong>不一次性规划所有功能。每完成一个 Phase，根据使用体验来确定下一阶段做什么。有些功能你一开始以为需要，用起来发现不需要；有些你没想到的，用起来会发现缺了它不行。
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<!-- Footer -->
+<!-- ============================================================ -->
+<footer style="text-align: center; padding: 40px 0; border-top: 1px solid var(--border); color: var(--text-dim); font-size: 0.9em;">
+  <p>Dummy Agent — Phase 0 · 设计文档</p>
+  <p style="margin-top: 4px;">启动于 2026-07-23 00:32 CST · 从零开始的 Tool-Calling Agent</p>
+</footer>
+
+</div>
+</body>
+</html>
