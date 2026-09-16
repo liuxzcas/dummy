@@ -380,11 +380,17 @@ class DummyAgent:
 
         # Phase 2.4:按当前输入检索记忆并注入 system prompt
         # (注入在追加 user 消息之前,LLM 首轮就能看到记忆)
-        self._inject_datetime()
+        #
+        # ⚠️ 顺序要求(2026-09-16):**会变的内容必须排在最后**。
+        # system 是 prompt cache 的前缀,变更点越靠前,后面被废掉的越多。
+        # "今天是"(跨天变)是现在唯一会变的字段 —— 所以它**必须最后注入**,
+        # 否则它之后的 cwd/技能索引/教训全部会被连累。
+        # 有测试锁这条:test_volatile_field_is_last_in_system。
         self._inject_cwd()
         self._inject_memories(user_input)
         self._inject_skills()
         self._inject_lessons(user_input)
+        self._inject_datetime()      # ← 必须最后(它是唯一会变的)
         # Phase 3 Step 3:用户纠正 → 即时反思生成教训(旁路 LLM)
         self._learn_from_correction(user_input)
         # 每轮工具错误反思计数(防连错连反思烧 token)

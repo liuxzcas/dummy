@@ -277,6 +277,34 @@ def test_system_prompt_is_stable_across_turns(run_script, tmp_path):
     )
 
 
+def test_volatile_field_is_last_in_system(run_script, tmp_path):
+    """system 里**唯一会变的内容**(日期)必须排在所有稳定内容之后。
+
+    为什么重要:prompt cache 是**前缀匹配** —— 变更点越靠前,后面被废掉的
+    内容越多。现在 system 里唯一会变的是"今天是: YYYY-MM-DD"(跨天变一次),
+    它必须排在技能索引等稳定内容**之后**,这样跨天时受影响的只有它自己。
+
+    2026-09-16 实测过反例:旧实现把"当前时间"(每轮变)放在第 776 字符,
+    后面 641 字符(技能索引)每轮都白算。
+
+    这条测试防的是"以后有人往 system 里加新内容时,把它插到了日期前面"。
+    """
+    agent, _ = run_script([
+        ("read_file", {"path": str(tmp_path / "x.txt")}),
+    ])
+    content = agent.history[0]["content"]
+    date_pos = content.find("今天是:")
+    assert date_pos >= 0, "应有会变的日期字段"
+
+    # 日期之后不应再出现"稳定但可能将来被误插入"的大块内容
+    tail = content[date_pos:]
+    for stable_marker in ("## 可用技能", "## 使用规则", "## 可用工具"):
+        assert stable_marker not in tail, (
+            f"稳定内容 {stable_marker!r} 排在了会变的日期字段之后 —— "
+            "跨天时它会被缓存失效连累,应把它移到日期之前"
+        )
+
+
 # ---------------------------------------------------------------
 # _inject_cwd(当前工作目录注入,§7 设计)
 # ---------------------------------------------------------------
