@@ -127,9 +127,10 @@ what we deliberately chose <em>not</em> to build, and is <strong>intentionally l
 <table>
   <tr><th>Dimension</th><th>Current</th></tr>
   <tr><td>Code size</td><td>~6,700 lines of Python (10 core modules + 5 tools)</td></tr>
-  <tr><td>Tests</td><td>212 tests, <code>pytest</code> green (1 xfail is a deliberately scoped soft criterion)</td></tr>
+  <tr><td>Tests</td><td>212: 211 passed + 1 xfail (a deliberately scoped soft
+      criterion, see §5.4 — not a failure)</td></tr>
   <tr><td>Tools</td><td>5: terminal / read_file / write_file / web_search / web_extract</td></tr>
-  <tr><td>CLI commands</td><td>15 (/help /resume /sessions /history /search /memories /skills /lessons /improve, etc.)</td></tr>
+  <tr><td>CLI commands</td><td>14 (/help /resume /sessions /history /search /memories /skills /lessons /improve, etc.; exit has three aliases /exit /q /quit)</td></tr>
   <tr><td>Persistence</td><td>SQLite (sessions / messages / archive / memories / lessons / dual FTS indexes)</td></tr>
   <tr><td>LLM</td><td>DeepSeek (OpenAI-compatible SDK), <code>max_tokens=8192</code> set manually</td></tr>
 </table>
