@@ -114,8 +114,25 @@ def test_requires_separate_conclusion_section():
     tc.note_tool_result("write_file", {"path": "a.py"}, "写入成功")
     ctx = tc.build_stop_context()
     assert "## 结论" in ctx
-    assert "直接回答用户最初的问题" in ctx
-    assert "不要写成本轮工作记录" in ctx
+    assert "做完了什么" in ctx
+    assert "哪些没验证" in ctx
+
+
+def test_conclusion_must_not_repeat():
+    """结论段必须**不重复**前面的回答。
+
+    实测(conversation_20260916_212258):模型在收尾前已经写了一份完整说明
+    (含验证情况),收到"另起一段给结论"的要求后又写了一遍 —— 同一个启动器
+    被说明了两遍,用户看到两条几乎等价的回复。
+
+    修法:明确要求"只写用户需要知道的,不要重复已经说过的" + 给一个
+    "如果已经说清了就写短一点"的出口。
+    """
+    tc = _tc()
+    tc.note_tool_result("write_file", {"path": "a.py"}, "写入成功")
+    ctx = tc.build_stop_context()
+    assert "不要重复你上面已经说过的内容" in ctx
+    assert "写短一点" in ctx, "应给出「已经说清了就简短」的出口"
 
 
 def test_asks_to_admit_unverified():
