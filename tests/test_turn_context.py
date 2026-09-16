@@ -89,7 +89,33 @@ def test_asks_model_to_self_check():
     tc = _tc()
     tc.note_tool_result("write_file", {"path": "a.py"}, "写入成功")
     ctx = tc.build_stop_context()
-    assert "对照上面的记录核对你的回答" in ctx
+    assert "对照上面的记录核对" in ctx
+
+
+def test_self_check_should_be_brief():
+    """自查结论要简短 —— 2026-09-16 实测:模型把核对表当成给用户的答复了。
+
+    实测(conversation_20260916_203636)最后一条回复是"核对完毕...逐条对照记录",
+    用户看不到任务结论。所以要求它一句话带过。
+    """
+    tc = _tc()
+    tc.note_tool_result("write_file", {"path": "a.py"}, "写入成功")
+    ctx = tc.build_stop_context()
+    assert "一句话带过" in ctx
+    assert "不必逐条复述" in ctx
+
+
+def test_requires_separate_conclusion_section():
+    """必须要求单独给"给用户看的结论"段 —— 否则它只会回应这份记录。
+
+    这是对上面问题的正面修复:核对归核对,答复归答复,两者分开。
+    """
+    tc = _tc()
+    tc.note_tool_result("write_file", {"path": "a.py"}, "写入成功")
+    ctx = tc.build_stop_context()
+    assert "## 结论" in ctx
+    assert "直接回答用户最初的问题" in ctx
+    assert "不要写成本轮工作记录" in ctx
 
 
 def test_asks_to_admit_unverified():
@@ -102,11 +128,11 @@ def test_asks_to_admit_unverified():
 
 
 def test_requires_claims_to_be_traceable():
-    """必须要求"说过的动作能在记录里找到"。"""
+    """必须要求"说过的说法要和记录对得上"。"""
     tc = _tc()
     tc.note_tool_result("write_file", {"path": "a.py"}, "写入成功")
     ctx = tc.build_stop_context()
-    assert "每个动作都要在记录里找得到" in ctx
+    assert "核对你刚才的说法" in ctx
 
 
 def test_allows_late_verification():
