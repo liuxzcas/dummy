@@ -967,14 +967,26 @@ class DummyAgent:
             print(f"    {line}")
 
     def _inject_datetime(self) -> None:
-        """注入当前时间到 system prompt(每轮刷新,省去 date 工具调用)。
+        """注入当前**日期**到 system prompt(精度:天,不是分钟)。
 
-        真机发现:agent 需要当前日期时 call terminal `date`,浪费 token。
-        当前时间是低频变化、频繁需要的环境事实——每轮 chat 注入
-        system(幂等替换),跨天会话自动刷新。
+        ============ 为什么降精度（2026-09-16 改） ============
+        system 消息是**缓存前缀**:LLM 的 prompt cache 按前缀匹配,
+        **前缀里任何一个字节变了,它之后的全部内容都按未命中计费**
+        (缓存价 ¥0.1/M vs 输入价 ¥3.0/M,差 30 倍)。
+
+        旧实现每轮都就地改写 history[0] 里的"当前时间"(精度到分钟),
+        变更点在第 776 字符处 —— 于是后面 641 字符(当前工作目录、技能
+        列表)每轮都白算一遍。实测:单次对话里被废部分成本是命中部分的 25 倍。
+
+        改法:**精度降到天**。同一天内 system 完全不变 → 前缀永远命中。
+        模型需要"几点几分"时,它有 terminal 工具可以 `date`(本来就该这样,
+        分钟级时间戳对它的决策几乎没有价值)。
+
+        注意:这里是**幂等替换**(不是每轮追加),所以同一会话内 system
+        保持稳定;跨天时才会变一次。
         """
-        now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M (%A)")
-        marker = "当前时间:"
+        now = datetime.datetime.now().strftime("%Y-%m-%d")
+        marker = "今天是:"
         content = self.history[0]["content"]
         idx = content.find(marker)
         if idx >= 0:

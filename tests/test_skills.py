@@ -218,11 +218,11 @@ def test_inject_datetime(tmp_path):
     agent.history = [{"role": "system", "content": "基础提示"}]
     agent._inject_datetime()
     content = agent.history[0]["content"]
-    assert "当前时间:" in content
+    assert "今天是:" in content
     assert "基础提示" in content
-    # 幂等:重复注入只一个时间段
+    # 幂等:重复注入只一个日期段
     agent._inject_datetime()
-    assert agent.history[0]["content"].count("当前时间:") == 1
+    assert agent.history[0]["content"].count("今天是:") == 1
 
 
 def test_inject_datetime_refresh(tmp_path, monkeypatch):
@@ -236,14 +236,45 @@ def test_inject_datetime_refresh(tmp_path, monkeypatch):
     fake = _real(2026, 8, 21, 10, 0)
     monkeypatch.setattr("core.datetime.datetime", _FakeDatetime(fake))
     agent._inject_datetime()
-    assert "2026-08-21 10:00" in agent.history[0]["content"]
+    # 精度到"天"(2026-09-16 改:分钟级会每轮打碎缓存前缀)
+    assert "2026-08-21" in agent.history[0]["content"]
     # 时间前进,重新注入刷新
     fake2 = _real(2026, 8, 22, 9, 30)
     monkeypatch.setattr("core.datetime.datetime", _FakeDatetime(fake2))
     agent._inject_datetime()
     content = agent.history[0]["content"]
-    assert "2026-08-22 09:30" in content
-    assert content.count("当前时间:") == 1
+    assert "2026-08-22" in content
+    assert content.count("今天是:") == 1
+    # 同一天内重复注入，system 内容必须**逐字节不变**(缓存前缀稳定的前提)
+    before = agent.history[0]["content"]
+    agent._inject_datetime()
+    assert agent.history[0]["content"] == before
+
+
+def test_system_prompt_is_stable_across_turns(run_script, tmp_path):
+    """system 消息在多轮 chat 之间**逐字节不变** —— 缓存前缀稳定的前提。
+
+    为什么必须锁死:LLM 的 prompt cache 按**前缀匹配**,system 是消息序列的
+    第 0 条 —— 它变一个字节,后面所有内容(含技能索引、本轮全部工具结果)
+    都按未命中计费(¥3.0/M vs 缓存价 ¥0.1/M,差 30 倍)。
+
+    2026-09-16 实测的问题:旧实现每轮改写 system 里的"当前时间"(精度到分钟),
+    变更点在第 776 字符,后面 641 字符每轮白算。
+
+    这条测试防的就是回归 —— 任何"每轮往 system 里写变化内容"的改动都会
+    在这里失败。
+    """
+    agent, _ = run_script([
+        ("read_file", {"path": str(tmp_path / "x.txt")}),
+    ])
+    first = agent.history[0]["content"]
+    agent.chat("再问一句")
+    second = agent.history[0]["content"]
+    assert first == second, (
+        "system 在多轮 chat 之间必须逐字节不变,否则缓存前缀被打碎。\n"
+        f"  第 1 轮: {first[-120:]!r}\n"
+        f"  第 2 轮: {second[-120:]!r}"
+    )
 
 
 # ---------------------------------------------------------------
