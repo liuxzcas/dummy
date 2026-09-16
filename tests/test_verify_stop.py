@@ -304,63 +304,71 @@ def test_evidence_blocked_resets_per_turn():
 
 # ============================================================
 # 端到端(假 LLM 驱动真实循环,夹具见 conftest.py)
+#
+# 语义变更(2026-09-16):原"收尾验证门"是**判决者**(驳回/计次/上限),
+# 现改为**情况说明**(陈述本轮改了什么、跑了什么,由模型自己判断)。
+# 所以这里的断言从"驳回几次"改为"情况说明里有没有这些信息"。
 # ============================================================
-NUDGE_MARK = "[系统: 你在本轮修改了代码"
+CTX_MARK = "[本轮运行情况]"
 
-# 真跑一次 pytest 以便产生"真证据",但只做 collect 以保持测试快速
+# 真跑一次 pytest 以便产生真实的执行记录,但只做 collect 以保持测试快速
 _COLLECT = "python -m pytest tests/ -q --collect-only"
 
 
-def _nudges(history):
+def _contexts(history):
+    """本轮情况说明消息(合成 user 消息)。"""
     return [m for m in history
-            if m.get("role") == "user" and NUDGE_MARK in str(m.get("content"))]
+            if m.get("role") == "user" and CTX_MARK in str(m.get("content"))]
 
 
-def test_e2e_code_edit_blocks_finish(run_script, tmp_path):
-    """改完 .py 就想收工 → 被驳回两次(上限),之后放行。"""
+def test_e2e_context_lists_changed_file(run_script, tmp_path):
+    """改完文件 → 情况说明里列出改动的文件(不判决、不驳回)。"""
     target = str(tmp_path / "app.py")
     agent, llm = run_script(
-        [("write_file", {"path": target, "content": "x = 1\n", "verify": False})],
-        )
+        [("write_file", {"path": target, "content": "x = 1\n", "verify": False})])
 
-    assert len(_nudges(agent.history)) == 2, "默认上限 2 次"
-    assert llm.main_calls == 4, "写入 1 + 两次想收工被驳 + 第三次放行"
-    assert agent.history[-1]["role"] == "assistant", "最终仍以回答收尾"
+    ctxs = _contexts(agent.history)
+    assert len(ctxs) == 1, "情况说明只给一次(给过就不再打扰)"
+    assert "app.py" in ctxs[0]["content"], "应列出改动的文件"
+    assert agent.history[-1]["role"] == "assistant", "最终以回答收尾"
+    assert llm.main_calls == 3, "写入 + 想收工(附情况说明) + 最终收尾"
 
 
-def test_e2e_verified_edit_passes(run_script, tmp_path):
-    """改完 .py 并跑过全量 pytest → 不被驳回。"""
+def test_e2e_context_lists_execution_records(run_script, tmp_path):
+    """跑过命令 → 情况说明里带上执行记录与结果摘要。"""
     target = str(tmp_path / "app.py")
-    agent, llm = run_script([
+    agent, _ = run_script([
         ("write_file", {"path": target, "content": "x = 1\n", "verify": False}),
         ("terminal", {"command": _COLLECT}),
     ])
 
-    assert _nudges(agent.history) == []
-    assert llm.main_calls == 3, "写入 + 验证 + 收尾"
+    ctx = _contexts(agent.history)[0]["content"]
+    assert "pytest" in ctx, "应带上执行过的命令"
+    assert "本轮执行记录" in ctx
 
 
-def test_e2e_doc_edit_passes(run_script, tmp_path):
-    """只改文档 → 不被驳回。"""
-    target = str(tmp_path / "notes.md")
-    agent, llm = run_script(
-        [("write_file", {"path": target, "content": "# hi\n", "verify": False})])
+def test_e2e_no_context_when_nothing_happened(run_script, tmp_path):
+    """什么都没做 → 不附情况说明(不值得打扰)。"""
+    agent, llm = run_script([])
 
-    assert _nudges(agent.history) == []
-    assert llm.main_calls == 2
+    assert _contexts(agent.history) == []
+    assert llm.main_calls == 1
 
 
-def test_e2e_evidence_stale_after_later_edit(run_script, tmp_path):
-    """先验证、后又改动 → 证据过期 → 仍被驳回。"""
-    first = str(tmp_path / "a.py")
-    second = str(tmp_path / "b.py")
+def test_e2e_context_includes_raw_outcome_not_verdict(run_script, tmp_path):
+    """情况说明应包含**原始结果**(含错误文本),而不是"通过/失败"的判决。
+
+    这是新方向的要点:把事实摆出来让模型自己读。
+    """
+    missing = str(tmp_path / "nope.py")
     agent, _ = run_script([
-        ("write_file", {"path": first, "content": "a = 1\n", "verify": False}),
-        ("terminal", {"command": _COLLECT}),
-        ("write_file", {"path": second, "content": "b = 2\n", "verify": False}),
+        ("write_file", {"path": str(tmp_path / "app.py"),
+                        "content": "x = 1\n", "verify": False}),
+        ("read_file", {"path": missing}),
     ])
 
-    assert len(_nudges(agent.history)) == 2
+    ctx = _contexts(agent.history)[0]["content"]
+    assert "不" in ctx or "error" in ctx.lower() or "错误" in ctx,         "原始结果(含错误信息)应原样出现在说明里"
 
 
 def test_e2e_pairing_still_valid(run_script, tmp_path):
