@@ -97,9 +97,7 @@ SYSTEM_PROMPT_TEMPLATE = """你是 Dummy Agent，一个正在学习工具调用�
 
 ## 环境信息
 
-- 操作系统: {os_info}
-- 当前目录: {cwd}
-- 运行时间: {timestamp}"""
+- 操作系统: {os_info}"""
 
 
 def build_system_prompt(tool_names: list[str]) -> str:
@@ -113,8 +111,18 @@ def build_system_prompt(tool_names: list[str]) -> str:
     填充好的 system prompt 字符串。
 
     === 为什么用函数而不是直接导出字符串？===
-    因为需要在运行时动态注入系统环境信息
-    （操作系统、时间等），这些在 import 时是不知道的。
+    因为需要在运行时动态注入系统环境信息（操作系统等），
+    这些在 import 时是不知道的。
+
+    === 为什么这里只留"操作系统"（2026-09-16 改）===
+    system 消息是**缓存前缀**：任何变动都会让它之后的全部内容失效
+    （DeepSeek 缓存价 ¥0.1/M vs 输入价 ¥3.0/M）。所以 system 里
+    **只保留进程生命周期内不变的内容**。原来的两个字段被移走/删除：
+      - "运行时间" —— 僵尸字段(只在建 agent 时算一次,之后永不更新,
+                      模型看到它只会困惑),直接删除
+      - "当前目录" —— 与 core._inject_cwd 重复,由 core 统一注入
+      - "当前时间" —— 每轮都在变,已移到 core 的消息尾部注入
+                      （每轮变的东西不能放在前缀里）
     """
     # 构建工具描述列表
     # 格式：
@@ -128,16 +136,10 @@ def build_system_prompt(tool_names: list[str]) -> str:
 
     tool_descriptions = "\n".join(tool_lines)
 
-    # 环境信息
+    # 环境信息:只放进程生命周期内不变的
     os_info = f"{sys.platform} (Windows via git-bash)"
-    cwd = os.getcwd()
-
-    # 当前时间，让 LLM 知道对话发生的时间上下文
-    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S %Z")
 
     return SYSTEM_PROMPT_TEMPLATE.format(
         tool_descriptions=tool_descriptions,
         os_info=os_info,
-        cwd=cwd,
-        timestamp=timestamp,
     )
