@@ -20,11 +20,11 @@ CORRECTION_PATTERNS = re.compile(
     r"重来|重新来|改成|换成|正确的是|正确做法|根本不是)"
 )
 
-# 工具错误特征:dispatch 返回字符串含这些标记 → 视为工具执行失败。
+# 工具**执行失败**的框架级标记(不含退出码——退出码要看数字,见 is_tool_error)。
+# 保留此常量供外部引用/文档用途;判定逻辑已内联进 is_tool_error。
 TOOL_ERROR_MARKERS = (
     "[ToolDispatch]",
     "[错误]",
-    "[EXIT CODE: ",
 )
 
 # 单会话每轮工具错误反思上限(防连错连反思烧 token)
@@ -36,9 +36,49 @@ def has_correction_signal(user_input: str) -> bool:
     return bool(CORRECTION_PATTERNS.search(user_input))
 
 
+# 工具**未执行**的标记(用户取消 / 拒绝):既不是成功,也不是执行失败。
+# 单独一类,因为它必须同时满足两个相反的要求:
+#   - 对 is_tool_error 而言:要算"非成功"(否则"取消的命令"会被记成通过证据)
+#   - 对"是否真执行过"而言:要能区分出来(不附退出码,不是真失败)
+NOOP_MARKERS = (
+    "[用户取消]",
+    "[用户拒绝]",
+    "[用户拒绝将内容写到项目目录之外]",
+    "[未执行]",
+)
+
+
 def is_tool_error(result: str) -> bool:
-    """判断工具返回是否含错误特征。"""
-    return any(m in result for m in TOOL_ERROR_MARKERS)
+    """判断工具返回是否为"执行失败"。
+
+    ============ 判据(2026-09-16 修正) ============
+    旧实现是三个字面量的子串匹配:
+        ("[ToolDispatch]", "[错误]", "[EXIT CODE: ")
+    它**两个方向都错**:
+      - 误判成功:terminal 每条结果都附 "[EXIT CODE: 0]",而标记表里有
+        "[EXIT CODE: " → **成功的命令被判成失败**(实测 2/2 成功样例全中招)。
+        下游后果:每次成功命令都触发一次旁路 LLM"反思"(白烧 token)、
+        被计入护栏 exact_failure(同命令同输出 6 次会被硬拦)。
+      - 漏判失败:"[用户取消] 命令未执行"不含任何标记 → 被判成成功,
+        "取消的 pytest"于是能当"通过证据"。
+
+    新判据分三类:
+      1. 未执行(用户取消/拒绝)→ **True**(不算成功)
+         —— 为什么算 True:对消费方而言"这次调用没产出结果"与失败等价,
+            都必须阻止它被当成"通过证据"。
+      2. 有退出码标记 → **看数字**,非 0 才是失败
+      3. 框架级错误标记 → True
+    """
+    text = result or ""
+    if any(m in text for m in NOOP_MARKERS):
+        return True
+    if "[ToolDispatch]" in text or "[错误]" in text:
+        return True
+    # [EXIT CODE: N] 必须解析数字 —— 0 是成功,非 0 才是失败
+    for m in re.finditer(r"\[EXIT CODE: (\d+)\]", text):
+        if int(m.group(1)) != 0:
+            return True
+    return False
 
 
 def generate_lesson(llm, event_text: str) -> list[dict]:
