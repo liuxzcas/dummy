@@ -77,7 +77,7 @@
   <li><a href="#tech">技术选型</a></li>
   <li><a href="#arch">架构</a></li>
   <li><a href="#history">对话历史:单一事实来源的演进</a></li>
-  <li><a href="#quality">质量保障:三道闸门</a></li>
+  <li><a href="#quality">质量保障:两道硬闸门 + 一层信息</a></li>
   <li><a href="#modules">模块详解</a></li>
   <li><a href="#decisions">关键决策汇总</a></li>
   <li><a href="#limits">已知局限</a></li>
@@ -142,7 +142,7 @@ Phase 0 的设计文档保存在 <a href="design-phase0.html">design-phase0.html
   <tr><td>Phase 2.3</td><td>会话持久化 + 全文检索 + 归档</td><td>✅</td></tr>
   <tr><td>Phase 2.4</td><td>跨会话记忆(抽取 + 注入)</td><td>✅</td></tr>
   <tr><td>Phase 3 Step 1–4</td><td>技能系统、错误学习(教训)、自我改进闭环</td><td>✅</td></tr>
-  <tr><td>P0–P2(交互加固)</td><td>输入不丢弃、工具护栏、收尾验证门、历史卫生、预算模型</td><td>✅</td></tr>
+  <tr><td>P0–P2(交互加固)</td><td>输入不丢弃、工具护栏、历史卫生、预算模型</td><td>✅</td></tr>
   <tr><td>历史层架构实验</td><td>四路对照,采纳"单点收口"</td><td>✅</td></tr>
   <tr><td>工具结果结构化</td><td>调研完成,设计文档待评审</td><td>🔬 待定</td></tr>
 </table>
@@ -183,7 +183,7 @@ Phase 0 的设计文档保存在 <a href="design-phase0.html">design-phase0.html
        ├─ lessons.py           教训(错误学习)+ 工具失败判据
        ├─ self_improve.py      自我改进(检测→提案→批准→改→验证→回退)
        ├─ tool_guardrails.py   护栏:循环内实时止损(P1a)
-       ├─ verify_stop.py       收尾前验证门(P1b)
+       ├─ turn_context.py      本轮情况说明(只陈述事实,不判决)
        └─ tools/               工具注册表 + 5 个工具
             ├─ registry.py     注册 / dispatch / 确认注入 / 中断穿透
             └─ {...}.py        即插即用工具</code></pre>
@@ -199,10 +199,10 @@ Phase 0 的设计文档保存在 <a href="design-phase0.html">design-phase0.html
           ├─ project_messages(history)   ← 投影成合法 messages(发送侧单点)
           ├─ llm.chat(...)
           └─ 有 tool_calls?
-               ├─ 是 → 逐个执行(护栏前/后挂钩、验证门记账)
+               ├─ 是 → 逐个执行(护栏前/后挂钩、情况记录)
                │       └─ 每批收尾 → 检查打断 → 落库
-               └─ 否 → 验证门:改过代码但无证据? → 驳回(≤2 次)
-                       否则落库 → 返回
+               └─ 否 → 附一次"本轮情况说明"(陈述改了什么/跑了什么)
+                       → 落库 → 返回
      finally: _settle_history()          ← 无论怎么退出,补齐配对再落库</code></pre>
 
 <h2 id="history">5. 对话历史:单一事实来源的演进</h2>
@@ -212,7 +212,7 @@ Phase 0 的设计文档保存在 <a href="design-phase0.html">design-phase0.html
 <h3>5.1 问题</h3>
 <p><code>self.history</code> 是一个共享可变列表,要同时满足四类不变量:
 <strong>协议合法性</strong>(tool_calls↔tool 配对、角色交替)、<strong>持久性</strong>(save/load 无损)、
-<strong>可压缩性</strong>、<strong>可读性</strong>(护栏/验证门要读"本轮"状态)。
+<strong>可压缩性</strong>、<strong>可读性</strong>(护栏/情况记录要读"本轮"状态)。
 这四类<strong>没有归属者</strong>,于是每个组件各自兜底,同一问题堆了 5~7 处修补点。</p>
 
 <h3>5.2 根因(实测得出)</h3>
@@ -270,41 +270,88 @@ finally:
 <code>resume_session()</code> 会修复它(<strong>实测 7/7 种形态全部修好</strong>)。
 </div>
 
-<h2 id="quality">6. 质量保障:三道闸门</h2>
+<h2 id="quality">6. 质量保障:两道硬闸门 + 一层信息</h2>
+
+<div class="note">
+<strong>这里发生过一次方向修正(2026-09-16)</strong><br>
+原「P1b 收尾验证门」是<strong>判决者</strong>:346 行硬规则(全量 pytest / 晚于编辑 /
+豁免名单 / 上限 2 次),对"任务完成了吗""什么算证据"下判决并驳回。<br>
+一份真实对话记录(创建 Windows 启动器)暴露了三个 bug,它们是<strong>同一个病的
+三种症状——规则枚举不完现实</strong>:
+<ul>
+  <li><strong>上限按轮清零</strong>:用户插一句话 → 计数归零 → 同一问题被再次驳回
+      (实测 4 次)。安全阀形同虚设</li>
+  <li><strong><code>.bat</code> 不在豁免名单</strong> → 被要求"跑全量 pytest 证明启动器能用"
+      (逻辑上荒谬)。模型被迫跑了约 8 次 pytest</li>
+  <li><strong>只认一种证据形态</strong> → 模型做的相关验证(drill 测试 / 换行检查)全不被认;
+      唯一被认可的路径证明不了任何事情。最终轮次用尽,任务中断</li>
+</ul>
+<strong>修正方向</strong>:判断还给 LLM,agent 只提供运行过程中产生的信息。
+与既有的"可见性优先"原则一致。
+</div>
 
 <table>
-  <tr><th>闸门</th><th>时机</th><th>机制</th></tr>
+  <tr><th>机制</th><th>时机</th><th>做什么</th><th>性质</th></tr>
   <tr>
-    <td><strong>P1a 工具护栏</strong></td>
+    <td><strong>工具护栏</strong></td>
     <td>循环内实时</td>
     <td>两个信号:<strong>同一份失败反复出现</strong>(同工具+同参数+<em>失败内容也相同</em>)、
         <strong>只读调用无进展</strong>(结果指纹重复)。第 2 次告警 / 第 6 次拦截</td>
+    <td><strong>止损</strong>(死循环是行为事实,不需要语义理解)</td>
   </tr>
   <tr>
-    <td><strong>P1b 收尾验证门</strong></td>
+    <td><strong>本轮情况说明</strong><br><span class="meta">(原收尾验证门)</span></td>
     <td>模型想收尾时</td>
-    <td>本轮改过代码类文件却没拿出"<strong>全量测试通过</strong>"证据 → 驳回
-        (上限 2 次)。证据须晚于最后一次编辑</td>
+    <td>把本轮<strong>改了什么、跑了什么、结果长什么样</strong>整理成一段陈述,附进上下文
+        (只附一次)。不判成败、不驳回、不计次、无上限、无豁免名单</td>
+    <td><strong>提供信息</strong>(判断留给模型)</td>
   </tr>
   <tr>
-    <td><strong>P2b 历史卫生</strong></td>
+    <td><strong>历史卫生</strong></td>
     <td>入口 / 咽喉 / 出口</td>
     <td>配对双向修复(补缺失/删孤儿/去重/删尾部悬空块)+ 角色交替兜底</td>
+    <td><strong>硬保证</strong>(API 协议,LLM 不能违反)</td>
   </tr>
 </table>
 
-<h4>护栏为什么要求"失败内容也相同"</h4>
-<p>只按"工具+参数"计数会把"改一处、跑一次测试"(报错每次不同)误判成原地打转并拦死,
-而验证门又要求"跑通全量测试"——<strong>两者互锁</strong>。实测结局是驳回 2 次后以
-"无证据 + 声称完成"收尾,恰是验证门要防的事。</p>
+<h4>改动前后的实测对比(同一场景:创建一个启动器)</h4>
+<table>
+  <tr><th>对比项</th><th>旧:判决门</th><th>新:情况说明</th></tr>
+  <tr>
+    <td>模型收到的</td>
+    <td>"本轮改动了代码但没有验证证据,暂不接受收工"</td>
+    <td>改动清单 + 执行记录 + <strong>运行 bat 的真实报错</strong></td>
+  </tr>
+  <tr>
+    <td>结果</td>
+    <td>反复跑 pytest 满足规则 → 66 次调用 → 轮次用尽中断</td>
+    <td>主循环 4 次</td>
+  </tr>
+</table>
 
-<h4>验证门的证据定义(档 A)</h4>
+<h4>情况说明长什么样</h4>
+<pre><code>[本轮运行情况]
+本轮改动/新建的文件:
+- E:\新建文件夹\dummy-main\启动Dummy.bat
+本轮执行记录(按时间顺序,最近 12 条):
+- write_file: 写入 E:\...\启动Dummy.bat
+    → 写入成功: 启动Dummy.bat (312 字符)
+- terminal: cmd /c "启动Dummy.bat"
+    → [SHELL: cmd] '…\Git\bin\bash' 不是内部或外部命令 系统找不到指定的路径。 [EXIT CODE: 0]
+以上是本轮实际发生的事,供你判断任务是否完成。如果你认为还需要验证,可以继续;
+如果认为已经足够,请在回答里说明依据。</code></pre>
+
+<h4>什么仍然由代码硬保证(这两类不是语义判断)</h4>
 <ul>
-  <li>必须是一次<strong>完整测试套件</strong>的 pytest 成功执行</li>
-  <li><strong>以 pytest 调用收尾</strong>——管道会掩盖退出码(<code>pytest | tail</code> 返回 tail 的 0)</li>
-  <li>必须<strong>确实执行过</strong>(返回串带 <code>[SHELL:</code>,排除"用户取消")</li>
-  <li>文档类扩展名豁免</li>
+  <li><strong>历史协议合法性</strong>(tool_calls↔tool 配对、角色交替)——API 协议,LLM 再聪明也不能违反,非法历史直接 400</li>
+  <li><strong>安全确认</strong>(要不要执行这条 <code>rm</code>)——这是人的判断,不交给 LLM</li>
 </ul>
+<p>除此之外,"任务完成了吗""执行对了吗""什么算证据"这类<strong>语义判断</strong>,
+都由模型基于 agent 提供的运行信息自行得出——<strong>不再由硬规则代替判断</strong>。</p>
+
+<h4>护栏为什么要求"失败内容也相同"</h4>
+<p>只按"工具+参数"计数会把"改一处、跑一次测试"(报错每次不同)误判成原地打转并拦死。
+这条判据在硬规则时期就修过,保留至今。</p>
 
 <h2 id="modules">7. 模块详解</h2>
 
@@ -335,8 +382,14 @@ finally:
   <li>断路器:连续失败 3 次 → 暂停该机制</li>
 </ul>
 
-<h3>7.4 verify_stop.py / tool_guardrails.py</h3>
-<p>两者都是<strong>纯控制器</strong>:只记账、只给判决,不执行动作、不打印——便于脱离 LLM 单测。</p>
+<h3>7.4 turn_context.py / tool_guardrails.py</h3>
+<p>两者都只记录、不执行动作、不打印——便于脱离 LLM 单测。但<strong>性质不同</strong>:</p>
+<ul>
+  <li><code>tool_guardrails.py</code>:会<strong>给判决</strong>(告警/拦截),因为"原地打转"是
+      可由行为事实判定的</li>
+  <li><code>turn_context.py</code>:<strong>只陈述事实,不给判决</strong>——
+      <code>build_stop_context()</code> 产出"改了什么、跑了什么、结果长什么样"</li>
+</ul>
 
 <h3>7.5 tools/registry.py — 工具注册表</h3>
 <ul>
@@ -359,8 +412,8 @@ finally:
       <td>单用户交互式目标就是止损;环境变量可覆盖</td></tr>
   <tr><td>护栏<strong>跳过"同工具不看参数"信号</strong></td>
       <td>重试有合法用途,只按工具名计数会误伤</td></tr>
-  <tr><td>验证门档 A:证据=<strong>一次全量成功率执行</strong></td>
-      <td>全套通过隐含覆盖被改动文件,无需维护"模块→测试"映射表</td></tr>
+  <tr><td>收尾判断<strong>交还 LLM</strong>,agent 只提供信息</td>
+      <td>硬规则枚举不完现实(实测三个 bug);判断是语义问题,应交给模型</td></tr>
   <tr><td>轮次用尽后<strong>剥工具写总结</strong>,不硬停</td>
       <td>几十轮的工具成果不该只换回一句"已停止"</td></tr>
   <tr><td>加严加在"<strong>证据内容</strong>"轴,不是把阈值调小</td>

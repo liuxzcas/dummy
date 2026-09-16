@@ -77,7 +77,7 @@
   <li><a href="#tech">Technology Choices</a></li>
   <li><a href="#arch">Architecture</a></li>
   <li><a href="#history">Conversation History: Evolving a Single Source of Truth</a></li>
-  <li><a href="#quality">Quality Gates</a></li>
+  <li><a href="#quality">Quality Gates: Two Hard Gates Plus a Layer of Information</a></li>
   <li><a href="#modules">Module Reference</a></li>
   <li><a href="#decisions">Key Decisions</a></li>
   <li><a href="#limits">Known Limitations</a></li>
@@ -145,7 +145,7 @@ what we deliberately chose <em>not</em> to build, and is <strong>intentionally l
   <tr><td>Phase 2.3</td><td>Session persistence + full-text search + archive</td><td>Done</td></tr>
   <tr><td>Phase 2.4</td><td>Cross-session memory (extraction + injection)</td><td>Done</td></tr>
   <tr><td>Phase 3 Steps 1–4</td><td>Skill system, error learning (lessons), self-improvement loop</td><td>Done</td></tr>
-  <tr><td>P0–P2 (interaction hardening)</td><td>Input never dropped, tool guardrails, verify-on-stop gate, history hygiene, budget model</td><td>Done</td></tr>
+  <tr><td>P0–P2 (interaction hardening)</td><td>Input never dropped, tool guardrails, history hygiene, budget model</td><td>Done</td></tr>
   <tr><td>History-layer architecture experiment</td><td>Four-way comparison; adopted "single choke point"</td><td>Done</td></tr>
   <tr><td>Structured tool results</td><td>Research complete; design doc pending review</td><td>Pending</td></tr>
 </table>
@@ -186,7 +186,7 @@ what we deliberately chose <em>not</em> to build, and is <strong>intentionally l
        ├─ lessons.py           lessons (error learning) + tool-failure predicate
        ├─ self_improve.py      self-improvement (detect → propose → approve → edit → verify → roll back)
        ├─ tool_guardrails.py   guardrails: real-time loss-cutting inside the loop (P1a)
-       ├─ verify_stop.py       verify-before-stop gate (P1b)
+       ├─ turn_context.py      turn summary (states facts, issues no verdict)
        └─ tools/               registry + 5 tools
             ├─ registry.py     register / dispatch / confirm injection / interrupt passthrough
             └─ {...}.py        plug-and-play tools</code></pre>
@@ -204,8 +204,8 @@ what we deliberately chose <em>not</em> to build, and is <strong>intentionally l
           └─ tool_calls present?
                ├─ yes → execute each (guardrail pre/post hooks, ledger bookkeeping)
                │        └─ batch end → check interrupts → persist
-               └─ no  → verify gate: code changed but no evidence? → reject (≤2 times)
-                        otherwise persist → return
+               └─ no  → append a one-off "turn summary" (what changed / what ran)
+                        → persist → return
      finally: _settle_history()          ← whatever the exit path, repair pairing and persist</code></pre>
 
 <h2 id="history">5. Conversation History: Evolving a Single Source of Truth</h2>
@@ -277,47 +277,100 @@ A half-batch briefly on disk is <strong>not</strong> a problem: the only read pa
 <code>resume_session()</code>, repairs it (<strong>7 of 7 shapes verified</strong>).
 </div>
 
-<h2 id="quality">6. Quality Gates</h2>
+<h2 id="quality">6. Quality Gates: Two Hard Gates Plus a Layer of Information</h2>
+
+<div class="note">
+<strong>A direction correction happened here (2026-09-16)</strong><br>
+The former "P1b verify-on-stop gate" was a <strong>judge</strong>: 346 lines of hard rules
+(full pytest / later-than-edit / exemption list / max 2 attempts) issuing verdicts on
+"is the task done" and "what counts as evidence", then rejecting.<br>
+A real conversation transcript (creating a Windows launcher) exposed three bugs — three
+symptoms of <strong>one disease: rules cannot enumerate reality</strong>:
+<ul>
+  <li><strong>Attempt cap reset per turn</strong>: one user remark → counter zeroed → the same
+      problem rejected again (4 rejections measured). The safety valve was ineffective</li>
+  <li><strong><code>.bat</code> missing from the exemption list</strong> → the model was required to
+      "prove the launcher works by running the full pytest suite" (logically absurd).
+      It ran pytest ~8 times chasing an unmeetable rule</li>
+  <li><strong>Only one evidence shape recognised</strong> → the model's actually-relevant checks
+      (drill tests, line-ending inspection) were never accepted; the only accepted path
+      proved nothing. The turn budget ran out and the task was interrupted</li>
+</ul>
+<strong>Correction</strong>: give the judgement back to the LLM; the agent only supplies the
+information produced while running. Consistent with the existing "visibility over filtering"
+principle.
+</div>
 
 <table>
-  <tr><th>Gate</th><th>Timing</th><th>Mechanism</th></tr>
+  <tr><th>Mechanism</th><th>Timing</th><th>What it does</th><th>Nature</th></tr>
   <tr>
-    <td><strong>P1a Tool guardrails</strong></td>
-    <td>Real time, inside the loop</td>
+    <td><strong>Tool guardrails</strong></td>
+    <td>Real time, in the loop</td>
     <td>Two signals: <strong>the same failure repeating</strong> (same tool + args +
         <em>identical failure output</em>), and <strong>read-only calls making no progress</strong>
         (repeated result fingerprint). Warn on the 2nd, block on the 6th</td>
+    <td><strong>Loss-cutting</strong> (a loop is a behavioural fact; no semantic understanding needed)</td>
   </tr>
   <tr>
-    <td><strong>P1b Verify-on-stop</strong></td>
+    <td><strong>Turn context</strong><br><span class="meta">(formerly the verify gate)</span></td>
     <td>When the model tries to finish</td>
-    <td>If code files changed this turn but no evidence of a
-        <strong>full test-suite pass</strong> exists → reject (max 2). Evidence must postdate
-        the last edit</td>
+    <td>States <strong>what changed, what ran, what the results looked like</strong> as a
+        narrative appended to context (once only). No verdict, no rejection, no counting,
+        no cap, no exemption list</td>
+    <td><strong>Supplies information</strong> (judgement stays with the model)</td>
   </tr>
   <tr>
-    <td><strong>P2b History hygiene</strong></td>
+    <td><strong>History hygiene</strong></td>
     <td>Entry / throat / exit</td>
     <td>Bidirectional pairing repair (backfill missing / drop orphans / dedupe /
         drop trailing dangling block) plus role-alternation fallback</td>
+    <td><strong>Hard guarantee</strong> (API protocol — the LLM cannot violate it)</td>
   </tr>
 </table>
 
+<h4>Measured before/after (same scenario: creating a launcher)</h4>
+<table>
+  <tr><th>Aspect</th><th>Old: judging gate</th><th>New: turn context</th></tr>
+  <tr>
+    <td>What the model received</td>
+    <td>"You changed code this turn but have no verification evidence; finishing is not accepted"</td>
+    <td>List of changes + execution records + <strong>the launcher's actual runtime error</strong></td>
+  </tr>
+  <tr>
+    <td>Outcome</td>
+    <td>Ran pytest repeatedly to satisfy the rule → 66 tool calls → budget exhausted</td>
+    <td>4 main-loop calls</td>
+  </tr>
+</table>
+
+<h4>What the turn context looks like</h4>
+<pre><code>[Turn summary]
+Files changed/created this turn:
+- E:\...\dummy-main\启动Dummy.bat
+Execution records (chronological, most recent 12):
+- write_file: wrote E:\...\启动Dummy.bat
+    → success: 启动Dummy.bat (312 chars)
+- terminal: cmd /c "启动Dummy.bat"
+    → [SHELL: cmd] '…\Git\bin\bash' is not recognized as an internal or external command
+      The system cannot find the path specified. [EXIT CODE: 0]
+The above is what actually happened this turn, for you to judge whether the task is complete.
+If you think more verification is needed, continue; if you believe it is sufficient, explain your basis.</code></pre>
+
+<h4>What code still guarantees (these are not semantic judgements)</h4>
+<ul>
+  <li><strong>History protocol validity</strong> (tool_calls↔tool pairing, role alternation) —
+      an API protocol the LLM cannot violate; invalid history yields an immediate 400</li>
+  <li><strong>Safety confirmation</strong> (should this <code>rm</code> run) — a human judgement,
+      not delegated to the LLM</li>
+</ul>
+<p>Everything else — "is the task done", "is it correct", "what counts as evidence" — is a
+<strong>semantic judgement</strong> the model now makes itself from the information the agent
+supplies, <strong>rather than one made for it by hard-coded rules</strong>.</p>
+
 <h4>Why the guardrail requires "identical failure output"</h4>
 <p>Counting by tool + args alone flags the normal edit-run-edit cycle (same command, different
-error each time) as spinning and blocks it — while the verification gate <em>requires</em> that
-command to pass. The two <strong>deadlock</strong>. Measured outcome: two rejections, then
-finishing with "no evidence + claims complete" — precisely what the gate exists to prevent.</p>
-
-<h4>Evidence definition (tier A)</h4>
-<ul>
-  <li>Must be a <strong>full test-suite</strong> pytest run that succeeded</li>
-  <li>Must <strong>end with</strong> the pytest invocation — a pipe masks the exit code
-      (<code>pytest | tail</code> returns tail's 0)</li>
-  <li>Must have <strong>actually executed</strong> (result carries <code>[SHELL:</code>,
-      ruling out "user cancelled")</li>
-  <li>Documentation extensions are exempt</li>
-</ul>
+error each time) as spinning and blocks it. That predicate was fixed during the
+hard-rules era and is retained.</p>
 
 <h2 id="modules">7. Module Reference</h2>
 
@@ -357,9 +410,16 @@ finishing with "no evidence + claims complete" — precisely what the gate exist
   <li>Circuit breaker: three consecutive failures pause the mechanism</li>
 </ul>
 
-<h3>7.4 verify_stop.py / tool_guardrails.py</h3>
-<p>Both are <strong>pure controllers</strong>: they only keep records and return verdicts — no
-side effects, no printing — which makes them unit-testable without an LLM.</p>
+<h3>7.4 turn_context.py / tool_guardrails.py</h3>
+<p>Neither executes actions or prints — both keep records only, so they are unit-testable
+without an LLM. But they differ in <strong>nature</strong>:</p>
+<ul>
+  <li><code>tool_guardrails.py</code> <strong>issues verdicts</strong> (warn/block), because
+      "spinning in place" is decidable from behavioural facts</li>
+  <li><code>turn_context.py</code> <strong>states facts and issues no verdict</strong> —
+      <code>build_stop_context()</code> renders "what changed, what ran, what the results
+      looked like"</li>
+</ul>
 
 <h3>7.5 tools/registry.py — tool registry</h3>
 <ul>
