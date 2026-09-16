@@ -73,6 +73,7 @@
 <strong>Contents</strong>
 <ol>
   <li><a href="#overview">Scope &amp; Design Principles</a></li>
+  <li><a href="#boundary">Who Decides: Code or Model?</a></li>
   <li><a href="#status">Current State</a></li>
   <li><a href="#tech">Technology Choices</a></li>
   <li><a href="#arch">Architecture</a></li>
@@ -122,13 +123,164 @@ what we deliberately chose <em>not</em> to build, and is <strong>intentionally l
 <strong>current state</strong>.
 </div>
 
-<h2 id="status">2. Current State</h2>
+<h2 id="boundary">2. Who Decides: Code or Model?</h2>
+
+<p>This is the project's most central architectural principle, and it only became
+clear after two rounds of correction (the history layer and the verification gate).
+It answers: <strong>given a problem, should it become a rule, or go to the model?</strong></p>
+
+<h3>2.1 Test: is it protocol/fact, or semantics?</h3>
+
+<table>
+  <tr><th>Class</th><th>Characteristic</th><th>Owner</th><th>Why</th></tr>
+  <tr>
+    <td><strong>Protocol / fact</strong></td>
+    <td>One correct answer, independent of intent</td>
+    <td><strong>Code, as a hard guarantee</strong></td>
+    <td>The model cannot violate a protocol however smart it is; this needs
+        execution, not understanding</td>
+  </tr>
+  <tr>
+    <td><strong>Semantics / values</strong></td>
+    <td>Depends on intent, context, domain knowledge; may have no unique answer</td>
+    <td><strong>The model</strong> (the agent only supplies information)</td>
+    <td>Rules cannot enumerate reality; any attempt produces absurdity on the
+        cases that were not enumerated</td>
+  </tr>
+</table>
+
+<h3>2.2 The concrete split</h3>
+
+<table>
+  <tr><th>Question</th><th>Class</th><th>Owner</th><th>Status</th></tr>
+  <tr>
+    <td>Is the tool_calls ↔ tool pairing complete</td>
+    <td>Protocol</td>
+    <td>Code</td>
+    <td>Done — history layer (<code>repair_tool_pairing</code> / <code>_settle_history</code>)</td>
+  </tr>
+  <tr>
+    <td>Do roles alternate (system/user/assistant/tool)</td>
+    <td>Protocol</td>
+    <td>Code</td>
+    <td>Done — <code>_append_user_turn</code> / <code>close_interrupted_tool_sequence</code></td>
+  </tr>
+  <tr>
+    <td>Should this <code>rm</code> run</td>
+    <td>Values (human)</td>
+    <td>Human</td>
+    <td>Done — confirmation (<code>y/n</code>)</td>
+  </tr>
+  <tr>
+    <td>Is this call "spinning in place"</td>
+    <td>Fact (behavioural)</td>
+    <td>Code</td>
+    <td>Done — tool guardrails (same args + <em>identical failure output</em>)</td>
+  </tr>
+  <tr>
+    <td><strong>Is the task done</strong></td>
+    <td><strong>Semantics</strong></td>
+    <td><strong>Model</strong></td>
+    <td>Done — turn summary (states facts, no verdict)</td>
+  </tr>
+  <tr>
+    <td><strong>What counts as verified</strong></td>
+    <td><strong>Semantics</strong></td>
+    <td><strong>Model</strong></td>
+    <td>Done — as above</td>
+  </tr>
+  <tr>
+    <td><strong>Is the artifact correct</strong></td>
+    <td><strong>Semantics</strong></td>
+    <td><strong>Model + human</strong></td>
+    <td>Done — via visibility (everything printed) plus a human at the terminal</td>
+  </tr>
+</table>
+
+<div class="note bad">
+<strong>Counter-example: what happens when code overreaches into semantics (measured)</strong><br>
+The former verify-on-stop gate encoded "is the task done / what counts as evidence" as
+346 lines of hard rules. Three measured bugs were three symptoms of one disease —
+<strong>rules cannot enumerate reality</strong>:
+<ul>
+  <li><code>.bat</code> missing from the exemption list → "prove the launcher works by
+      running the full pytest suite" (logically absurd)</li>
+  <li>"Evidence may only be a full pytest pass" → the model's actually-relevant checks
+      (drill tests, line-ending inspection) were never accepted</li>
+  <li>"Cap of 2" reset per turn → one user remark and the safety valve reset</li>
+</ul>
+Outcome: 66 tool calls, 8 irrelevant pytest runs, turn budget exhausted, task interrupted.
+</div>
+
+<h3>2.3 What this principle means for "verification"</h3>
+
+<p><strong>There is no universal verification criterion.</strong> "What counts as
+verification" depends on <strong>what is being verified</strong>:</p>
+
+<table>
+  <tr><th>What you are doing</th><th>What counts as verification</th><th>Who can judge</th></tr>
+  <tr>
+    <td>Changing dummy's own Python code</td>
+    <td>Running dummy's <code>pytest</code></td>
+    <td>Code can decide (green implies the change is covered)</td>
+  </tr>
+  <tr>
+    <td>Writing a launcher <code>.bat</code></td>
+    <td><strong>Running it and seeing whether it starts</strong></td>
+    <td>Only the model/human can judge what "it started" means</td>
+  </tr>
+  <tr>
+    <td>Writing a ROS2 node</td>
+    <td>Running it in the target environment, checking topics/services</td>
+    <td>As above</td>
+  </tr>
+  <tr>
+    <td>Building a quiz web page</td>
+    <td>Clicking through it in a browser, checking grading is correct</td>
+    <td>As above</td>
+  </tr>
+</table>
+
+<div class="note warn">
+<strong>Key realisation: dummy's pytest is unrelated to the target code being written</strong><br>
+Every test under <code>tests/</code> imports dummy's own modules
+(<code>core</code> / <code>compressor</code> / <code>session_store</code> / <code>tool_guardrails</code> …)
+— <strong>they test dummy itself</strong>.<br>
+But this project's <strong>actual usage</strong> is using dummy to write <strong>other</strong>
+code (launchers, ROS2 scripts, web pages). The two coverage sets are
+<strong>disjoint</strong>: have dummy write a ROS2 node, and a green run of dummy's own
+pytest <strong>proves nothing about whether that node runs</strong>.<br>
+So "pytest is green" holds only for the <strong>first</strong> kind of task (changing dummy
+itself), and the latter three — which are the daily reality — are not covered.
+<strong>Fixing on one criterion and applying it to every task is a design error.</strong>
+</div>
+
+<h3>2.4 What code should still do (even when judgement goes to the model)</h3>
+
+<p>"Don't decide for the model" does not mean "do nothing". The code's job is to
+<strong>give the model everything it needs to decide</strong>:</p>
+
+<ul>
+  <li><strong>Record faithfully</strong> what changed, what ran, and what the results looked
+      like (including raw error text — never pre-digested into "success/failure")</li>
+  <li><strong>Preserve raw signals</strong> — exit codes, error output, file paths — without
+      filtering on the model's behalf</li>
+  <li><strong>Impose no artificial thresholds</strong>: no rejection, no counting, no cap,
+      no exemption list</li>
+  <li><strong>Stay hard where hardness is required</strong>: protocol validity (or a 400),
+      safety confirmation (a human judgement)</li>
+</ul>
+
+<p>In one line: <strong>the agent makes the facts visible; the model draws the
+conclusion.</strong> This is §1's "visibility over filtering" applied at another level.</p>
+
+<h2 id="status">3. Current State</h2>
 
 <table>
   <tr><th>Dimension</th><th>Current</th></tr>
   <tr><td>Code size</td><td>~6,700 lines of Python (10 core modules + 5 tools)</td></tr>
   <tr><td>Tests</td><td>212: 211 passed + 1 xfail (a deliberately scoped soft
-      criterion, see §5.4 — not a failure)</td></tr>
+      criterion, see §6.4 — not a failure)</td></tr>
   <tr><td>Tools</td><td>5: terminal / read_file / write_file / web_search / web_extract</td></tr>
   <tr><td>CLI commands</td><td>14 (/help /resume /sessions /history /search /memories /skills /lessons /improve, etc.; exit has three aliases /exit /q /quit)</td></tr>
   <tr><td>Persistence</td><td>SQLite (sessions / messages / archive / memories / lessons / dual FTS indexes)</td></tr>
@@ -150,7 +302,7 @@ what we deliberately chose <em>not</em> to build, and is <strong>intentionally l
   <tr><td>Structured tool results</td><td>Research complete; design doc pending review</td><td>Pending</td></tr>
 </table>
 
-<h2 id="tech">3. Technology Choices</h2>
+<h2 id="tech">4. Technology Choices</h2>
 
 <table>
   <tr><th>Choice</th><th>Rationale</th></tr>
@@ -173,7 +325,7 @@ what we deliberately chose <em>not</em> to build, and is <strong>intentionally l
   </tr>
 </table>
 
-<h2 id="arch">4. Architecture</h2>
+<h2 id="arch">5. Architecture</h2>
 
 <pre><code>main.py            CLI entry: command dispatch, exit paths, session-lock release
   └─ core.py       DummyAgent: tool loop + history + injection + compression trigger
@@ -208,11 +360,11 @@ what we deliberately chose <em>not</em> to build, and is <strong>intentionally l
                         → persist → return
      finally: _settle_history()          ← whatever the exit path, repair pairing and persist</code></pre>
 
-<h2 id="history">5. Conversation History: Evolving a Single Source of Truth</h2>
+<h2 id="history">6. Conversation History: Evolving a Single Source of Truth</h2>
 
 <p>This is the most winding thread in the project, and where most architecture effort went.</p>
 
-<h3>5.1 The problem</h3>
+<h3>6.1 The problem</h3>
 <p><code>self.history</code> is a shared mutable list that must satisfy four classes of invariant
 simultaneously: <strong>protocol validity</strong> (tool_calls↔tool pairing, role alternation),
 <strong>durability</strong> (lossless save/load), <strong>compressibility</strong>, and
@@ -220,7 +372,7 @@ simultaneously: <strong>protocol validity</strong> (tool_calls↔tool pairing, r
 These four had <strong>no owner</strong>, so every component added its own fallback — five to
 seven patches for a single problem.</p>
 
-<h3>5.2 Root cause (established empirically)</h3>
+<h3>6.2 Root cause (established empirically)</h3>
 <div class="note bad">
 <strong>Illegal state was actively written to disk.</strong><br>
 The old implementation persisted <em>inside</em> the time window between
@@ -228,7 +380,7 @@ The old implementation persisted <em>inside</em> the time window between
 Exceptions, hard kills, and power loss were merely <em>who triggered it</em>, not the root cause.
 </div>
 
-<h3>5.3 Four-way measured comparison</h3>
+<h3>6.3 Four-way measured comparison</h3>
 <p>The criteria fall into three groups: <strong>AR-chat</strong> (history must be valid on any
 exit through chat), <strong>AR-stop</strong> (disk must be valid after a mid-batch stop), and
 <strong>SOFT1</strong> (soft criterion: illegal state never appears on disk — bonus, not a gate).</p>
@@ -254,7 +406,7 @@ exit through chat), <strong>AR-stop</strong> (disk must be valid after a mid-bat
   </tr>
 </table>
 
-<h3>5.4 Final design: single choke point (route 3)</h3>
+<h3>6.4 Final design: single choke point (route 3)</h3>
 <pre><code>try:
     return self._chat_impl(user_input)   # body: the tool loop
 finally:
@@ -277,7 +429,7 @@ A half-batch briefly on disk is <strong>not</strong> a problem: the only read pa
 <code>resume_session()</code>, repairs it (<strong>7 of 7 shapes verified</strong>).
 </div>
 
-<h2 id="quality">6. Quality Gates: Two Hard Gates Plus a Layer of Information</h2>
+<h2 id="quality">7. Quality Gates: Two Hard Gates Plus a Layer of Information</h2>
 
 <div class="note">
 <strong>A direction correction happened here (2026-09-16)</strong><br>
@@ -372,9 +524,9 @@ supplies, <strong>rather than one made for it by hard-coded rules</strong>.</p>
 error each time) as spinning and blocks it. That predicate was fixed during the
 hard-rules era and is retained.</p>
 
-<h2 id="modules">7. Module Reference</h2>
+<h2 id="modules">8. Module Reference</h2>
 
-<h3>7.1 core.py — the tool loop</h3>
+<h3>8.1 core.py — the tool loop</h3>
 <ul>
   <li><code>_parse_tool_arguments</code>: three-tier tolerance
       (<code>json</code> → <code>json5</code> → regex + unescape)</li>
@@ -387,7 +539,7 @@ hard-rules era and is retained.</p>
       rather than hard-stopping</li>
 </ul>
 
-<h3>7.2 session_store.py — persistence</h3>
+<h3>8.2 session_store.py — persistence</h3>
 <ul>
   <li><code>load_history</code>: <strong>faithful read</strong> (never rewrites data;
       self-healing belongs at the agent boundary)</li>
@@ -399,7 +551,7 @@ hard-rules era and is retained.</p>
       (folded originals)</li>
 </ul>
 
-<h3>7.3 compressor.py — context compression</h3>
+<h3>8.3 compressor.py — context compression</h3>
 <ul>
   <li><strong>L1 folding</strong>: long tool results truncated head+tail, originals archived
       (zero LLM cost)</li>
@@ -410,7 +562,7 @@ hard-rules era and is retained.</p>
   <li>Circuit breaker: three consecutive failures pause the mechanism</li>
 </ul>
 
-<h3>7.4 turn_context.py / tool_guardrails.py</h3>
+<h3>8.4 turn_context.py / tool_guardrails.py</h3>
 <p>Neither executes actions or prints — both keep records only, so they are unit-testable
 without an LLM. But they differ in <strong>nature</strong>:</p>
 <ul>
@@ -421,7 +573,7 @@ without an LLM. But they differ in <strong>nature</strong>:</p>
       looked like"</li>
 </ul>
 
-<h3>7.5 tools/registry.py — tool registry</h3>
+<h3>8.5 tools/registry.py — tool registry</h3>
 <ul>
   <li>Registry pattern: adding a tool means editing <code>tools/__init__.py</code> only</li>
   <li>Hardened dispatch: exception fallback + result normalisation</li>
@@ -431,7 +583,7 @@ without an LLM. But they differ in <strong>nature</strong>:</p>
       <code>/p</code></li>
 </ul>
 
-<h2 id="decisions">8. Key Decisions</h2>
+<h2 id="decisions">9. Key Decisions</h2>
 
 <table>
   <tr><th>Decision</th><th>Rationale</th></tr>
@@ -456,14 +608,14 @@ without an LLM. But they differ in <strong>nature</strong>:</p>
   <tr><td>Add strictness on the <strong>evidence content</strong> axis, not by lowering thresholds</td>
       <td>The "judge" axis is already hard (exit codes are read directly)</td></tr>
   <tr><td>History uses a <strong>single choke point</strong> (not atomic batches)</td>
-      <td>See §5.4: mutually exclusive with Ctrl+C retention; decided on frequency × cost</td></tr>
+      <td>See §6.4: mutually exclusive with Ctrl+C retention; decided on frequency × cost</td></tr>
   <tr><td>No elaborate prompt-injection filtering</td>
       <td>Local single-user use; visibility plus a human at the terminal covers it</td></tr>
 </table>
 
-<h2 id="limits">9. Known Limitations</h2>
+<h2 id="limits">10. Known Limitations</h2>
 
-<h4>9.1 Tool success/failure is still inferred from strings</h4>
+<h4>10.1 Tool success/failure is still inferred from strings</h4>
 <p><code>is_tool_error</code> has been fixed for its two directional bugs (success read as failure,
 cancelled read as success), but it <strong>still guesses at wording</strong>. The root-cause fix
 (structured fields) has completed research and design — see
@@ -473,23 +625,23 @@ cancelled read as success), but it <strong>still guesses at wording</strong>. Th
       (a test records this limitation)</li>
 </ul>
 
-<h4>9.2 Exit-code semantics are not distinguished</h4>
+<h4>10.2 Exit-code semantics are not distinguished</h4>
 <p><code>grep</code> returning 1 for "no match" is <strong>normal</strong>, but the current
 predicate treats it as failure. Research found this to be a <strong>genuine gap in the
 literature</strong> — no dedicated study exists.</p>
 
-<h4>9.3 Other</h4>
+<h4>10.3 Other</h4>
 <ul>
   <li><strong>No backup mechanism</strong>: <code>session.db</code> is a single point of failure;
       one bad DELETE is unrecoverable</li>
   <li><strong>The archive table only grows</strong>: folded originals have no pruning path
       (measured at 80 rows today, not urgent)</li>
   <li><strong>Soft criterion unmet</strong>: a half-batch briefly exists on disk
-      (judged acceptable — see §5.4)</li>
+      (judged acceptable — see §6.4)</li>
   <li><strong>Not built</strong>: streaming output, multi-platform gateway</li>
 </ul>
 
-<h2 id="next">10. Next Steps</h2>
+<h2 id="next">11. Next Steps</h2>
 
 <table>
   <tr><th>Item</th><th>Status</th><th>Notes</th></tr>
