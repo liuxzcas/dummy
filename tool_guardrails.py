@@ -154,7 +154,22 @@ class ToolCallSignature:
 
 @dataclass(frozen=True)
 class GuardrailDecision:
-    """护栏决策。action: allow | warn | block"""
+    """护栏决策。action: allow | warn | pause
+
+    ============ 为什么是 pause 而不是 block ============
+    原设计用 block:第 N 次起**不再执行**该调用,直到轮次用尽。
+    这有两个问题:
+      1. 它是**判决**——"你在打转,不许再跑",模型无法反驳,只能绕路;
+         而"这次重复是否合理"其实是**语义判断**,该由模型自己做。
+      2. 它和别的机制会互锁(历史实测:护栏禁止跑测试,验证门又要求跑通测试)。
+
+    现在改为 pause:**只拦下这一次**,并把事实(重复了几次、结果长什么样)
+    如实报告给模型,然后**循环照常继续**。模型下一步自己决定:
+      - 改变参数再试    → 正常继续(护栏不阻止)
+      - 说明理由后重跑  → 也行(护栏只是再报告一次)
+      - 输出文本收尾    → 也行
+    **不需要任何"继续"信号** —— 模型的行为本身就是答案。
+    """
 
     action: str = "allow"
     code: str = "allow"
@@ -165,7 +180,7 @@ class GuardrailDecision:
 
     @property
     def allows_execution(self) -> bool:
-        """allow / warn 都允许执行；只有 block 不允许。"""
+        """allow / warn 允许执行；pause 拦下这一次（但不终止循环）。"""
         return self.action in {"allow", "warn"}
 
 
@@ -201,14 +216,9 @@ class ToolCallGuardrailController:
         count = self._exact_failures.get(signature, (None, 0))[1]
         if count >= self.config.exact_failure_block_after:
             decision = GuardrailDecision(
-                action="block",
-                code="exact_failure_block",
-                message=(
-                    f"{tool_name} 已连续 {count} 次返回**完全相同**的失败"
-                    "(同参数、同报错),判定为原地打转。"
-                    "请停止原样重试：检查最近一次报错、改变方案，"
-                    "或直接说明卡在哪里。"
-                ),
+                action="pause",
+                code="repeated_same_failure",
+                message="",   # 由 Agent 用 build_report() 渲染
                 tool_name=tool_name, count=count, signature=signature,
             )
             return decision
@@ -219,13 +229,9 @@ class ToolCallGuardrailController:
                 _result_hash, repeat = record
                 if repeat >= self.config.no_progress_block_after:
                     decision = GuardrailDecision(
-                        action="block",
-                        code="idempotent_no_progress_block",
-                        message=(
-                            f"{tool_name} 已连续 {repeat} 次返回完全相同的结果，"
-                            "判定为无进展。请直接使用已有结果，或换成不同的查询/路径，"
-                            "不要再用同样参数重复调用。"
-                        ),
+                        action="pause",
+                        code="idempotent_no_progress",
+                        message="",   # 由 Agent 用 build_report() 渲染
                         tool_name=tool_name, count=repeat, signature=signature,
                     )
                     return decision
@@ -233,7 +239,31 @@ class ToolCallGuardrailController:
         return GuardrailDecision(tool_name=tool_name, signature=signature)
 
     # -----------------------------------------------------------
-    # 调用后：记账 + 判断要不要告警
+    # 报告文案：陈述事实，不下判决
+    # -----------------------------------------------------------
+    def build_report(self, decision: GuardrailDecision,
+                     extra_facts: list[str] | None = None) -> str:
+        """把护栏决策渲染成发给模型的**事实报告**(公开入口,供 Agent 调用)。
+
+        extra_facts 由 Agent 补充"护栏自己不知道"的事实
+        (如"这期间你改动过 N 个文件")。
+        """
+        fact = (f"{decision.tool_name} 连续 {decision.count} 次返回完全相同的结果"
+                if decision.code == "idempotent_no_progress"
+                else f"{decision.tool_name} 连续 {decision.count} 次返回完全相同的失败")
+        lines = [f"[护栏提示] {fact}。", "", f"· 工具: {decision.tool_name}",
+                 f"· 连续相同次数: {decision.count}"]
+        for f in (extra_facts or []):
+            lines.append(f"· {f}")
+        lines += [
+            "",
+            "请根据以上事实自行判断:如果你确实需要再看一次,可以换个参数或"
+            "说明理由后继续;如果已有信息够用,直接给出结论即可。",
+        ]
+        return "\n".join(lines)
+
+    # -----------------------------------------------------------
+    # 调用后：记账 + 判断要不要报告
     # -----------------------------------------------------------
     def after_call(
         self,
@@ -263,11 +293,8 @@ class ToolCallGuardrailController:
             if self.config.warnings_enabled and count >= self.config.exact_failure_warn_after:
                 return GuardrailDecision(
                     action="warn",
-                    code="exact_failure_warning",
-                    message=(
-                        f"{tool_name} 已连续 {count} 次返回完全相同的失败，"
-                        "看起来陷入循环。先看最近一次报错再决定，不要原样重试。"
-                    ),
+                    code="repeated_same_failure_warn",
+                    message="",   # 由 Agent 用 build_report() 渲染
                     tool_name=tool_name, count=count, signature=signature,
                 )
             return GuardrailDecision(tool_name=tool_name, count=count, signature=signature)
@@ -311,22 +338,15 @@ class ToolCallGuardrailController:
 # ---------------------------------------------------------------
 # 运行时辅助（把"决策"翻译成能塞回历史的东西）
 # ---------------------------------------------------------------
-def synthetic_result(decision: GuardrailDecision) -> str:
-    """被拦截时回注给 LLM 的合成工具结果（替代真实执行）。"""
-    return (
-        f"[护栏拦截] {decision.message}\n"
-        f"(guardrail: {decision.code}, count={decision.count})"
-    )
-
-
 def append_guidance(result: str, decision: GuardrailDecision) -> str:
-    """把告警追加到真实工具结果末尾——这是发给 LLM 看的，不是打印给人。"""
-    if decision.action != "warn" or not decision.message:
+    """把护栏报告追加到真实工具结果末尾——这是发给 LLM 看的，不是打印给人。
+
+    报告文本由 Agent 渲染（见 ToolCallGuardrailController.build_report），
+    因为 Agent 才知道"这期间改过哪些文件"这类护栏看不到的事实。
+    """
+    if not decision.message:
         return result
-    return (
-        f"{result}\n\n[工具循环告警: {decision.code}; "
-        f"count={decision.count}; {decision.message}]"
-    )
+    return f"{result}\n\n{decision.message}"
 
 
 # ---------------------------------------------------------------
