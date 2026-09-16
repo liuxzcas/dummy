@@ -362,6 +362,19 @@ class DummyAgent:
         收尾总结(见 _finalize_after_budget_exhausted)——几十轮的工具成果
         不该只换回一句"已停止"。
         """
+        # ===============================================================
+        # 本体整体包在 try/finally 里 —— 这是路线 3"单点收口"的落点。
+        # finally 覆盖**所有**退出方式(正常返回 / 异常 / Ctrl+C / SystemExit),
+        # 保证无论这轮怎么结束,落到磁盘的历史都是合法的。
+        # 详见 _settle_history 的说明。
+        # ===============================================================
+        try:
+            return self._chat_impl(user_input)
+        finally:
+            self._settle_history()
+
+    def _chat_impl(self, user_input: str) -> str:
+        """chat() 的本体(工具循环)。调用方负责收口,见 chat()。"""
         # 先确保当前会话已存在（首次 chat 时才创建）
         self._ensure_session()
 
@@ -629,6 +642,36 @@ class DummyAgent:
         # 这通常意味着 agent 陷入了无限工具循环
         # -------------------------------------------------------
         return self._finalize_after_budget_exhausted()
+
+    def _settle_history(self) -> None:
+        """把内存历史结算干净:补齐残缺 tool 配对并落库。
+
+        ============ 这是"收口",不是"补丁" ============
+        危险时刻 = "assistant(tool_calls) 已入历史,同批 tool 回复未写全"。
+        能让进程停在这个时刻的原因很多(异常 / Ctrl+C / 强杀 / 断电),
+        逐个出口去堵既堵不全也难维护——因为出口是**原因**的集合,而原因
+        永远比我们能枚举的多。
+
+        所以只在唯一出口收口:chat() 的 finally。无论这轮怎么结束
+        (正常返回 / 抛异常 / KeyboardInterrupt / SystemExit),都会走到这。
+
+        ============ 为什么必须是 finally 而不是 except ============
+        except 只覆盖"抛异常",漏掉正常返回(正常返回也可能停在危险时刻:
+        轮次用尽、验证门放行、模型在批次中途返回文本)。
+        finally 覆盖所有退出方式——这就是"单点"的含义。
+
+        ============ 为什么这里必须静默 ============
+        finally 里再抛异常会**盖掉原始异常**,调用方看到的是个莫名其妙的
+        收尾错误,而非真正的故障原因。所以收尾失败只提示、不外抛;
+        启动时 resume 还有一次自愈兜底(见 resume_session)。
+
+        幂等:_repair_history 只在确有改动时才落库,干净历史零额外 IO。
+        """
+        try:
+            self._repair_history()
+        except Exception as e:
+            # 尽力而为:收尾失败不能成为新的故障点
+            print(f"  {paint('⚠️ 历史收尾失败', YELLOW)}: {type(e).__name__}: {e}")
 
     def _finalize_after_budget_exhausted(self) -> str:
         """轮次用尽:剥掉工具再放一次调用,让模型用已有信息写收尾总结。
