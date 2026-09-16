@@ -1,0 +1,617 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Dummy Agent — Phase 0 Design Document</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --bg-card: #161b22;
+    --bg-code: #1c2128;
+    --border: #30363d;
+    --text: #e6edf3;
+    --text-dim: #8b949e;
+    --accent: #58a6ff;
+    --accent2: #3fb950;
+    --accent3: #d2a8ff;
+    --warn: #d29922;
+    --danger: #f85149;
+    --font-mono: 'JetBrains Mono', 'Cascadia Code', 'Fira Code', monospace;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    line-height: 1.7;
+    padding: 0;
+  }
+  .container { max-width: 960px; margin: 0 auto; padding: 40px 24px; }
+
+  header {
+    text-align: center;
+    padding: 60px 0 40px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 48px;
+  }
+  header h1 { font-size: 2.4em; font-weight: 700; letter-spacing: -0.02em; }
+  header h1 span { color: var(--accent); }
+  header .subtitle { color: var(--text-dim); font-size: 1.05em; margin-top: 8px; }
+  header .badge {
+    display: inline-block; margin-top: 16px;
+    background: var(--bg-card); border: 1px solid var(--border);
+    padding: 4px 14px; border-radius: 20px; font-size: 0.85em; color: var(--accent2);
+  }
+
+  .toc {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px 32px;
+    margin-bottom: 48px;
+  }
+  .toc h2 { font-size: 1em; color: var(--text-dim); margin-bottom: 12px; text-transform: uppercase; letter-spacing: 0.05em; }
+  .toc ol { padding-left: 20px; }
+  .toc li { margin: 6px 0; }
+  .toc a { color: var(--accent); text-decoration: none; }
+  .toc a:hover { text-decoration: underline; }
+
+  section { margin-bottom: 48px; }
+  h2 {
+    font-size: 1.6em; font-weight: 700;
+    padding-bottom: 8px; border-bottom: 2px solid var(--border);
+    margin-bottom: 24px;
+  }
+  h2 .section-num { color: var(--text-dim); margin-right: 8px; }
+  h3 {
+    font-size: 1.2em; font-weight: 600;
+    margin-top: 28px; margin-bottom: 12px;
+    color: var(--accent);
+  }
+  h4 {
+    font-size: 1em; font-weight: 600;
+    margin-top: 20px; margin-bottom: 8px;
+  }
+  p { margin-bottom: 14px; }
+
+  .decision {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-left: 4px solid var(--accent);
+    border-radius: 8px;
+    padding: 20px 24px;
+    margin: 16px 0;
+  }
+  .decision .decis-title { font-weight: 700; color: var(--accent); margin-bottom: 8px; }
+  .decision .decis-meta { font-size: 0.9em; color: var(--text-dim); }
+  .decision .decis-solution { margin-top: 8px; }
+  .decision .decis-why { margin-top: 8px; color: var(--accent2); }
+
+  .alt-table {
+    width: 100%; border-collapse: collapse;
+    margin: 16px 0; font-size: 0.92em;
+  }
+  .alt-table th, .alt-table td {
+    border: 1px solid var(--border);
+    padding: 10px 14px; text-align: left;
+    vertical-align: top;
+  }
+  .alt-table th { background: var(--bg-card); color: var(--text-dim); font-weight: 600; }
+  .alt-table .chosen { background: rgba(63, 185, 80, 0.08); border-left: 3px solid var(--accent2); }
+  .alt-table tr:hover { background: rgba(88, 166, 255, 0.04); }
+
+  pre {
+    background: var(--bg-code);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px 20px;
+    overflow-x: auto;
+    font-family: var(--font-mono);
+    font-size: 0.88em;
+    line-height: 1.5;
+    margin: 16px 0;
+  }
+  code { font-family: var(--font-mono); font-size: 0.88em; }
+  p code, li code { background: var(--bg-code); padding: 2px 6px; border-radius: 4px; }
+
+  .flow {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px;
+    margin: 16px 0;
+    text-align: center;
+    font-family: var(--font-mono);
+    font-size: 0.85em;
+    line-height: 1.8;
+    white-space: pre;
+    overflow-x: auto;
+  }
+
+  ul, ol { margin-bottom: 14px; padding-left: 24px; }
+  li { margin: 4px 0; }
+
+  .info {
+    background: rgba(88, 166, 255, 0.06);
+    border: 1px solid rgba(88, 166, 255, 0.2);
+    border-radius: 8px;
+    padding: 16px 20px;
+    margin: 16px 0;
+  }
+  .info strong { color: var(--accent); }
+  .warn-box {
+    background: rgba(210, 153, 34, 0.06);
+    border: 1px solid rgba(210, 153, 34, 0.2);
+    border-radius: 8px;
+    padding: 16px 20px;
+    margin: 16px 0;
+  }
+  .warn-box strong { color: var(--warn); }
+
+  .filetree {
+    font-family: var(--font-mono);
+    font-size: 0.9em;
+    line-height: 2;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px 24px;
+    margin: 16px 0;
+  }
+
+  @media (max-width: 640px) {
+    header h1 { font-size: 1.6em; }
+    .container { padding: 24px 16px; }
+    .alt-table { font-size: 0.82em; }
+    .alt-table th, .alt-table td { padding: 6px 8px; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+<header>
+  <h1>Dummy Agent — <span>Phase 0</span></h1>
+  <div class="subtitle">Building a Tool-Calling Agent from Scratch · Design Document</div>
+  <div class="badge">📅 2026-07-23 · Launched at 00:32 CST</div>
+</header>
+
+<!-- ============================================================ -->
+<!-- TOC -->
+<!-- ============================================================ -->
+<nav class="toc">
+  <h2>Contents</h2>
+  <ol>
+    <li><a href="#overview">Project Overview</a></li>
+    <li><a href="#goals">Phase 0 Goals &amp; Scope</a></li>
+    <li><a href="#tech">Technology Choices</a></li>
+    <li><a href="#arch">Architecture</a></li>
+    <li><a href="#modules">Module Design</a></li>
+    <li><a href="#decisions">Decision Summary</a></li>
+    <li><a href="#flow">Execution Walkthrough</a></li>
+    <li><a href="#limitations">Known Limitations</a></li>
+    <li><a href="#next">What's Next</a></li>
+  </ol>
+</nav>
+
+<!-- ============================================================ -->
+<!-- 1. Overview -->
+<!-- ============================================================ -->
+<section id="overview">
+  <h2><span class="section-num">1.</span> Project Overview</h2>
+
+  <p><strong>Dummy Agent</strong> is a learning-oriented project that builds an AI agent similar to <a href="https://hermes-agent.nousresearch.com" style="color:var(--accent)">Hermes Agent</a> (Nous Research's open-source agent framework) from absolute scratch.</p>
+
+  <p>The goal is <em>not</em> to replicate all of Hermes' features — that's thousands of lines of code and years of iteration. Instead, the core objectives are:</p>
+
+  <ul>
+    <li><strong>Understand the essence:</strong> Implement the minimal Tool-Calling Loop by hand to truly understand how agents work</li>
+    <li><strong>Build incrementally:</strong> Start with a minimal prototype, add components one by one, knowing exactly <em>why</em> each is needed</li>
+    <li><strong>Document everything:</strong> Every decision records alternatives, chosen solution, and rationale — building reusable knowledge</li>
+  </ul>
+
+  <p>The project uses <strong>DeepSeek API</strong> as its LLM provider — rationale is in the Technology Choices section.</p>
+</section>
+
+<!-- ============================================================ -->
+<!-- 2. Goals -->
+<!-- ============================================================ -->
+<section id="goals">
+  <h2><span class="section-num">2.</span> Phase 0 Goals &amp; Scope</h2>
+
+  <h3>Goals</h3>
+  <ol>
+    <li>A working minimal Tool-Calling Agent that runs on the development machine</li>
+    <li>Agent can call a <code>terminal</code> tool to execute shell commands and see results</li>
+    <li>Interactive CLI so the user can observe each tool-calling step in real time</li>
+    <li>Code has detailed comments in Chinese for learning purposes</li>
+  </ol>
+
+  <h3>Explicitly Out of Scope</h3>
+  <ul>
+    <li>Session persistence (SQLite storage)</li>
+    <li>Context compression (long conversation handling)</li>
+    <li>Multiple tools (Phase 0 only has <code>terminal</code>)</li>
+    <li>Streaming output</li>
+    <li>Safety/approval mechanism</li>
+    <li>Multi-platform gateway</li>
+    <li>Skills/memory system</li>
+  </ul>
+
+  <h3>Success Criteria</h3>
+  <ul>
+    <li><code>python main.py</code> starts without errors</li>
+    <li>Connects to DeepSeek API with user-provided API key</li>
+    <li>"List files in current directory" → Agent calls <code>terminal("ls")</code> → returns results</li>
+    <li>Built-in commands: /help, /reset, /tools, /quit all work</li>
+  </ul>
+</section>
+
+<!-- ============================================================ -->
+<!-- 3. Technology Choices -->
+<!-- ============================================================ -->
+<section id="tech">
+  <h2><span class="section-num">3.</span> Technology Choices</h2>
+
+  <h3>3.1 LLM Provider: DeepSeek</h3>
+
+  <table class="alt-table">
+    <tr><th>Option</th><th>Pros</th><th>Cons</th></tr>
+    <tr class="chosen">
+      <td><strong>✓ DeepSeek API</strong> (chosen)</td>
+      <td>
+        - OpenAI-compatible API (same tool-calling interface)<br>
+        - Very low cost ($0.27 / 1M input tokens)<br>
+        - 128K context window<br>
+        - No overseas credit card required
+      </td>
+      <td>- Rate limited (3 RPM for free users)<br>- May be unstable during peak hours</td>
+    </tr>
+    <tr>
+      <td>OpenAI API</td>
+      <td>- Most mature tool-calling support<br>- GPT-4o high accuracy</td>
+      <td>- Requires overseas payment<br>- Higher cost<br>- Unstable access from China</td>
+    </tr>
+    <tr>
+      <td>Local model (vLLM/llama.cpp)</td>
+      <td>- Fully offline<br>- No API cost<br>- Data never leaves machine</td>
+      <td>- GPU required (high VRAM)<br>- Small models have poor TC accuracy<br>- High setup complexity</td>
+    </tr>
+  </table>
+
+  <div class="info">
+    <strong>Why:</strong> DeepSeek's OpenAI-compatible API means zero code change to switch providers later. Low cost makes experimentation essentially free. Local models are too complex for Phase 0 setup.
+  </div>
+
+  <h3>3.2 API Client: OpenAI SDK vs Raw HTTP</h3>
+
+  <table class="alt-table">
+    <tr><th>Option</th><th>Pros</th><th>Cons</th></tr>
+    <tr class="chosen">
+      <td><strong>✓ OpenAI Python SDK</strong> (chosen)</td>
+      <td>- Auto auth, retry, timeout<br>- Full IDE type hints<br>- Tool-calling data structures built in<br>- 20+ providers use same SDK</td>
+      <td>- One more abstraction layer<br>- Extra dependency</td>
+    </tr>
+    <tr>
+      <td>Raw httpx/requests</td>
+      <td>- Zero dependencies<br>- Fully transparent (educational)<br>- Full control</td>
+      <td>- Manual JSON serialization, auth headers<br>- Manual tool_calls parsing<br>- Double the code</td>
+    </tr>
+  </table>
+
+  <div class="info">
+    <strong>Why:</strong> Phase 0 is about learning agent architecture (loop, registry, dispatch), not HTTP protocol. The SDK handles protocol details so code focuses on core logic. Comments explain what happens under the hood.
+  </div>
+
+  <h3>3.3 Framework: Raw Python vs LangChain</h3>
+
+  <table class="alt-table">
+    <tr><th>Option</th><th>Pros</th><th>Cons</th></tr>
+    <tr class="chosen">
+      <td><strong>✓ Pure Python (no framework)</strong></td>
+      <td>- Understand every line<br>- Low learning curve<br>- Maximum flexibility<br>- Easy debugging</td>
+      <td>- Missing advanced features<br>- Must build infrastructure</td>
+    </tr>
+    <tr>
+      <td>LangChain</td>
+      <td>- Built-in tools, memory, chains<br>- Large community</td>
+      <td>- Thick abstraction, opaque internals<br>- Hard to debug<br>- Fast-changing API</td>
+    </tr>
+    <tr>
+      <td>AutoGen / CrewAI</td>
+      <td>- Multi-agent out of the box<br>- Advanced orchestration</td>
+      <td>- Overkill for single agent<br>- Phase 0 doesn't need it</td>
+    </tr>
+  </table>
+
+  <div class="info">
+    <strong>Why:</strong> This is a learning project. Frameworks teach you "how to use the framework," not "how agents work." Raw Python means you must understand HTTP calls, message formats, tool_calls parsing, and result injection — which is precisely the core knowledge.
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<!-- 4. Architecture -->
+<!-- ============================================================ -->
+<section id="arch">
+  <h2><span class="section-num">4.</span> Architecture</h2>
+
+  <h3>4.1 Module Map</h3>
+
+  <div class="flow">
+┌──────────────────────────────────────────────────────────┐
+│                       main.py                           │
+│          CLI entry · credential mgmt · init · REPL       │
+└──────┬───────────────────────────────────┬───────────────┘
+       │                                   │
+       ▼                                   ▼
+┌──────────────┐                 ┌──────────────────────┐
+│   llm.py     │                 │      tools.py         │
+│ DeepSeek API │                 │  ToolRegistry + tools  │
+│  wrapper     │                 │                      │
+└──────┬───────┘                 └─────────┬────────────┘
+       │                                   │
+       └──────────┬───────────────────────┘
+                  ▼
+       ┌──────────────────────┐
+       │      core.py          │
+       │  DummyAgent class     │
+       │  Tool-Calling Loop    │
+       └──────────────────────┘
+                  │
+                  ▼
+       ┌──────────────────────┐
+       │     prompt.py         │
+       │  System Prompt Builder │
+       └──────────────────────┘
+  </div>
+
+  <h3>4.2 File Structure</h3>
+
+  <div class="filetree">
+D:/Engineering/dummy/
+├── main.py              CLI entry · user interaction
+├── core.py              Agent loop · the brain
+├── llm.py               LLM API wrapper · the mouth
+├── tools.py             Tool registry · the hands
+├── prompt.py            System Prompt builder · memory
+├── requirements.txt     Dependencies
+└── docs/                Design documents
+    ├── design.html      (English)
+    └── design-zh.html   (Chinese)
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<!-- 5. Module Design -->
+<!-- ============================================================ -->
+<section id="modules">
+  <h2><span class="section-num">5.</span> Module Design</h2>
+
+  <h3>5.1 llm.py — LLM API Wrapper</h3>
+
+  <div class="decision">
+    <div class="decis-title">Design: LLMClient class</div>
+    <div class="decis-meta">Alternatives: module-level functions vs dataclass vs wrapper class</div>
+    <div class="decis-solution"><strong>Chosen:</strong> <code>LLMClient(api_key, base_url, model)</code> class with a <code>chat(messages, tools)</code> method, wrapping the <code>openai.OpenAI</code> SDK.</div>
+    <div class="decis-why"><strong>Why:</strong> A class holds client state (HTTP session, config), avoiding repetitive parameter passing. The OpenAI SDK handles auth, serialization, and protocol compliance. DeepSeek's API is fully compatible.</div>
+  </div>
+
+  <p><strong>Key design points:</strong></p>
+  <ul>
+    <li><strong>Temperature 0.3:</strong> Tool calling needs deterministic output. High temperature causes hallucinations (invented tool names, malformed arguments).</li>
+    <li><strong>Empty tools handling:</strong> Skip the <code>tools</code> parameter when no tools are provided — some providers reject empty tool arrays.</li>
+    <li><strong>No retry:</strong> Phase 0 propagates errors. API failures usually mean wrong credentials or insufficient balance — human intervention needed.</li>
+  </ul>
+
+  <h3>5.2 tools.py — Tool Registry</h3>
+
+  <div class="decision">
+    <div class="decis-title">Design: Registry pattern</div>
+    <div class="decis-meta">Alternatives: if-else central dispatch vs registry vs decorators</div>
+    <div class="decis-solution"><strong>Chosen:</strong> <code>ToolRegistry</code> class + factory <code>create_default_registry()</code>. Each tool registers its name, description, JSON Schema, and handler.</div>
+    <div class="decis-why"><strong>Why:</strong> The registry pattern is the standard in agent frameworks. Adding a tool is one <code>registry.register(...)</code> call — no existing code changes (open/closed principle). The registry provides both tool definitions (for the API call) and dispatch (for the loop).</div>
+  </div>
+
+  <div class="warn-box">
+    <strong>⚠️ Security:</strong> The terminal tool uses <code>subprocess.run(shell=True)</code>. This is extremely dangerous — a prompt injection attack could execute arbitrary commands. Phase 1 must add command approval and blacklists.
+  </div>
+
+  <h3>5.3 prompt.py — System Prompt Builder</h3>
+
+  <div class="decision">
+    <div class="decis-title">Design: Runtime dynamic construction</div>
+    <div class="decis-meta">Alternatives: hardcoded string vs template file vs dynamic function</div>
+    <div class="decis-solution"><strong>Chosen:</strong> Python function <code>build_system_prompt(tool_names)</code> using f-string injection.</div>
+    <div class="decis-why"><strong>Why:</strong> Dynamic injection is the sweet spot — hardcoding can't adapt to tool changes, YAML templates are over-designed for Phase 0. The function can also inject runtime OS info and timestamps.</div>
+  </div>
+
+  <p><strong>Prompt strategy:</strong></p>
+  <ul>
+    <li><strong>Identity:</strong> "You are Dummy Agent, an AI assistant learning tool calling." — honest about being a learning prototype.</li>
+    <li><strong>Tool description in two places:</strong> Natural language in the prompt (so LLM knows <em>when</em> to use tools) and structured schema in the API <code>tools</code> parameter (so LLM knows <em>how</em>).</li>
+    <li><strong>Environment info:</strong> OS info and timestamp help the LLM understand its runtime context.</li>
+  </ul>
+
+  <h3>5.4 core.py — Agent Loop</h3>
+
+  <div class="decision">
+    <div class="decis-title">Design: DummyAgent class</div>
+    <div class="decis-meta">Alternatives: stateless functions vs generator vs class</div>
+    <div class="decis-solution"><strong>Chosen:</strong> <code>DummyAgent(llm_client, tool_registry)</code> class. Maintains <code>self.history</code>. Provides <code>chat(user_input) → str</code> and <code>reset()</code>.</div>
+    <div class="decis-why"><strong>Why:</strong> Conversation history must persist across multiple chat turns. A class is the most natural approach, and dependency injection makes testing and component swapping easy.</div>
+  </div>
+
+  <p><strong>Core loop (pseudocode):</strong></p>
+  <pre>
+def chat(user_input):
+    history.append({"role": "user", "content": user_input})
+
+    for turn in range(MAX_TOOL_TURNS):       # max 10
+        response = llm.chat(history, tools)
+
+        if response.tool_calls:              # LLM wants tools
+            history.append(response)
+            for tc in response.tool_calls:
+                result = tools.dispatch(tc.function.name,
+                                        json.load(tc.function.arguments))
+                history.append({
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "content": result
+                })
+            continue
+
+        # LLM responded with text
+        history.append({"role": "assistant", "content": response.content})
+        return response.content
+
+    return "[Max tool turns reached]"
+  </pre>
+
+  <p><strong>Key points:</strong></p>
+  <ul>
+    <li><strong>MAX_TOOL_TURNS = 10:</strong> Safety net against infinite tool loops. (Hermes defaults to 90.)</li>
+    <li><strong>Role alternation:</strong> OpenAI format requires strict user → assistant → tool → assistant → user alternation.</li>
+    <li><strong>tool_call_id matching:</strong> The tool_call_id when injecting results must match the original call ID exactly — this is how LLMs correlate results with calls.</li>
+    <li><strong>Diagnostic logging:</strong> 🛠 and 📝 markers let the user observe each step in real time.</li>
+  </ul>
+
+  <h3>5.5 main.py — CLI Entry</h3>
+
+  <div class="decision">
+    <div class="decis-title">Design: Interactive REPL</div>
+    <div class="decis-meta">Alternatives: interactive vs one-shot query vs Web UI</div>
+    <div class="decis-solution"><strong>Chosen:</strong> while-loop REPL with built-in commands (/help, /reset, /tools, /history, /quit). Credentials read from environment variables first, fallback to input.</div>
+    <div class="decis-why"><strong>Why:</strong> Interactive mode lets you observe every tool-calling step — best for learning. Environment variables are more secure than typing keys every time.</div>
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<!-- 6. Decision Summary -->
+<!-- ============================================================ -->
+<section id="decisions">
+  <h2><span class="section-num">6.</span> Decision Summary</h2>
+
+  <table class="alt-table">
+    <tr><th>Decision</th><th>Choice</th><th>Rationale (one line)</th></tr>
+    <tr><td>Development strategy</td><td>Iterative: prototype → add features</td><td>Avoid "big bang" debugging hell; every phase produces something useful</td></tr>
+    <tr><td>LLM provider</td><td>DeepSeek API (OpenAI-compatible)</td><td>Very low cost, no overseas credit card needed, good tool-calling support</td></tr>
+    <tr><td>API library</td><td>OpenAI Python SDK</td><td>Protocol details handled; code stays focused on core logic</td></tr>
+    <tr><td>Framework</td><td>Raw Python (stdlib + openai package)</td><td>Learning project — must understand every line</td></tr>
+    <tr><td>Tool management</td><td>Registry pattern (ToolRegistry)</td><td>Open/closed principle; unified query + dispatch</td></tr>
+    <tr><td>Prompt construction</td><td>Dynamic function (f-string injection)</td><td>Auto-adapts to tool list; simpler than template files</td></tr>
+    <tr><td>State management</td><td>In-class history list</td><td>Most natural approach; DI makes components swappable</td></tr>
+    <tr><td>Error handling</td><td>Propagate (don't swallow)</td><td>Learning phase needs full tracebacks</td></tr>
+    <tr><td>Credentials</td><td>Env var first, terminal fallback</td><td>Security best practice</td></tr>
+  </table>
+</section>
+
+<!-- ============================================================ -->
+<!-- 7. Execution Flow -->
+<!-- ============================================================ -->
+<section id="flow">
+  <h2><span class="section-num">7.</span> Execution Walkthrough</h2>
+
+  <p>Example: user asks "List files in current directory":</p>
+
+  <div class="flow">
+User: "List files in current directory"
+
+Step 1: Build messages
+  history = [
+    {"role": "system", "content": "You are Dummy Agent..."},
+    {"role": "user",   "content": "List files in current directory"}
+  ]
+
+Step 2: Call LLM with tools definition
+  llm.chat(messages=history, tools=[terminal_schema])
+
+Step 3: LLM returns tool_call
+  {
+    "content": null,
+    "tool_calls": [{
+      "id": "call_abc123",
+      "function": {
+        "name": "terminal",
+        "arguments": '{"command": "ls"}'
+      }
+    }]
+  }
+
+Step 4: Execute tool
+  tools.dispatch("terminal", {"command": "ls"})
+  → subprocess.run("ls", shell=True)
+  → returns "main.py\ncore.py\nllm.py\n..."
+
+Step 5: Inject result
+  history.append({
+    "role": "tool",
+    "tool_call_id": "call_abc123",
+    "content": "main.py\ncore.py\nllm.py\n..."
+  })
+
+Step 6: Call LLM again (sees ls output)
+  llm.chat(messages=history, tools=[...])
+  → returns "The directory contains: main.py, core.py, llm.py, ..."
+
+Step 7: Return to user
+  print("The directory contains: main.py, core.py, llm.py, ...")
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<!-- 8. Limitations -->
+<!-- ============================================================ -->
+<section id="limitations">
+  <h2><span class="section-num">8.</span> Known Limitations</h2>
+
+  <ol>
+    <li><strong>No session persistence:</strong> History lost on exit. Must re-enter API key on restart.</li>
+    <li><strong>No context compression:</strong> Long conversations hit DeepSeek's 128K token limit fast (tool calling consumes tokens rapidly).</li>
+    <li><strong>Single tool:</strong> Only <code>terminal</code>. No file I/O, web search, etc.</li>
+    <li><strong>Unsafe:</strong> <code>shell=True</code> with no command approval.</li>
+    <li><strong>No streaming:</strong> Users wait for the complete response.</li>
+    <li><strong>No retry:</strong> API errors propagate immediately.</li>
+    <li><strong>Text-only:</strong> No image/file input support.</li>
+  </ol>
+
+  <div class="info">
+    <strong>These are Phase 1 candidates.</strong> Session persistence and context compression are the highest priority — without them, meaningful long interactions are impossible.
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<!-- 9. Roadmap -->
+<!-- ============================================================ -->
+<section id="next">
+  <h2><span class="section-num">9.</span> What's Next</h2>
+
+  <table class="alt-table">
+    <tr><th>Phase</th><th>Feature</th><th>Description</th></tr>
+    <tr><td>1</td><td>More tools (file I/O, web search)</td><td>Demonstrate registry extensibility</td></tr>
+    <tr><td>1</td><td>Session persistence (SQLite)</td><td>Resume conversations after restart</td></tr>
+    <tr><td>1</td><td>Command approval</td><td>Confirm before executing dangerous commands</td></tr>
+    <tr><td>2</td><td>Context compression</td><td>Auto-summarize early history when near token limit</td></tr>
+    <tr><td>2</td><td>Streaming output</td><td>Real-time character-by-character display</td></tr>
+    <tr><td>2</td><td>.env config file</td><td>No more typing API key every session</td></tr>
+    <tr><td>3</td><td>Cross-session memory</td><td>Remember user preferences and common facts</td></tr>
+    <tr><td>3</td><td>Skills system</td><td>Agent saves and loads "skills"</td></tr>
+    <tr><td>3</td><td>Sub-agent delegation</td><td>Spawn child agents for parallel tasks</td></tr>
+    <tr><td>4</td><td>Message platform gateway</td><td>Connect to Telegram / Discord</td></tr>
+    <tr><td>4</td><td>Cron scheduling</td><td>Scheduled task execution</td></tr>
+  </table>
+
+  <div class="info">
+    <strong>Roadmap philosophy:</strong> Don't plan everything upfront. After each Phase, decide the next based on actual usage experience. Some features you think you need turn out unnecessary; others you didn't anticipate become essential.
+  </div>
+</section>
+
+<footer style="text-align: center; padding: 40px 0; border-top: 1px solid var(--border); color: var(--text-dim); font-size: 0.9em;">
+  <p>Dummy Agent — Phase 0 · Design Document</p>
+  <p style="margin-top: 4px;">Started 2026-07-23 00:32 CST · Building a Tool-Calling Agent from Scratch</p>
+</footer>
+
+</div>
+</body>
+</html>
