@@ -18,7 +18,6 @@ from tool_guardrails import (
     ToolCallGuardrailController,
     ToolCallSignature,
     append_guidance,
-    synthetic_result,
     _result_hash,
 )
 from tools import create_default_registry
@@ -32,18 +31,18 @@ ARGS = {"path": "nope.txt"}
 SAME = "line1\nline2"
 
 
-def test_exact_failure_warns_then_blocks():
+def test_exact_failure_warns_then_pauses():
     """完全相同调用反复失败:第 2 次告警,第 6 次拦截(即 5 次执行后)。"""
     c = ToolCallGuardrailController()
     actions = []
     for i in range(1, 7):
         if not c.before_call("read_file", ARGS).allows_execution:
-            actions.append(("block", i))
+            actions.append(("pause", i))
             break
         actions.append((c.after_call("read_file", ARGS, FAIL).action, i))
     assert actions[1] == ("warn", 2)
     assert actions[4][1] == 5, "第5次应仍放行"
-    assert actions[-1] == ("block", 6)
+    assert actions[-1] == ("pause", 6)
 
 
 def test_varying_failures_are_not_a_loop():
@@ -61,7 +60,7 @@ def test_varying_failures_are_not_a_loop():
         assert d.action == "allow", f"第 {i} 次报错不同,不该告警"
 
 
-def test_identical_failure_restarts_count_then_blocks():
+def test_identical_failure_restarts_count_then_pauses():
     """报错变了就重新计数;此后**连续同一份失败**满 5 次仍会被拦。"""
     c = ToolCallGuardrailController()
     args = {"command": "python -m pytest tests/ -q"}
@@ -86,20 +85,20 @@ def test_different_args_are_independent():
     for _ in range(5):
         c.after_call("read_file", {"path": "a.txt"}, FAIL)
     assert c.before_call("read_file", {"path": "b.txt"}).action == "allow"
-    assert c.before_call("read_file", {"path": "a.txt"}).action == "block"
+    assert c.before_call("read_file", {"path": "a.txt"}).action == "pause"
 
 
-def test_idempotent_no_progress_warns_then_blocks():
+def test_idempotent_no_progress_warns_then_pauses():
     """只读工具同结果重复:第 2 次告警,第 6 次拦截。"""
     c = ToolCallGuardrailController()
     actions = []
     for i in range(1, 7):
         if not c.before_call("read_file", {"path": "x.txt"}).allows_execution:
-            actions.append(("block", i))
+            actions.append(("pause", i))
             break
         actions.append((c.after_call("read_file", {"path": "x.txt"}, SAME).action, i))
     assert actions[1] == ("warn", 2)
-    assert actions[-1] == ("block", 6)
+    assert actions[-1] == ("pause", 6)
 
 
 def test_mutating_tool_never_tracked_for_no_progress():
@@ -153,25 +152,22 @@ def test_result_hash_treats_json_semantically_equal():
     assert _result_hash('{"a":1,"b":2}') == _result_hash('{"b": 2, "a": 1}')
 
 
-def test_synthetic_and_guidance_text_markers():
-    """拦截结果 / 告警文本的标记可辨识;非 warn 不改动结果。"""
+def test_report_text_markers():
+    """护栏报告应带"[护栏提示]"前缀,且不含判决语气(不替模型下结论)。"""
     c = ToolCallGuardrailController()
-    for _ in range(5):
-        c.after_call("read_file", ARGS, FAIL)
-    assert "[护栏拦截]" in synthetic_result(c.before_call("read_file", ARGS))
+    d = c.after_call("read_file", ARGS, FAIL)          # 第 1 次:不报
+    assert d.action == "allow"
+    d = c.after_call("read_file", ARGS, FAIL)          # 第 2 次达阈值 → 报告
+    assert d.action == "warn"
+    report = c.build_report(d)
+    assert "[护栏提示]" in report
+    for banned in ("不要", "禁止", "不许", "判定为"):
+        assert banned not in report, f"报告里不该有判决措辞: {banned}"
 
-    c2 = ToolCallGuardrailController()
-    c2.after_call("read_file", ARGS, FAIL)
-    warn = c2.after_call("read_file", ARGS, FAIL)
-    assert "[工具循环告警:" in append_guidance("原始结果", warn)
-    assert append_guidance("原始结果", c2.before_call("read_file", ARGS)) == "原始结果"
 
 
-# ============================================================
-# 端到端(假 LLM 驱动真实循环,夹具见 conftest.py)
-# ============================================================
-def _blocks(history):
-    return [c for c in tool_contents(history) if "[护栏拦截]" in c]
+def _pauses(history):
+    return [c for c in tool_contents(history) if "[护栏提示]" in c]
 
 def _contexts(history):
     return [m for m in history if m.get("role") == "user"
@@ -180,19 +176,21 @@ def _contexts(history):
 
 
 def _warns(history):
-    return [c for c in tool_contents(history) if "[工具循环告警" in c]
+    """同 _pauses —— warn 与 pause 现在用同一种报告格式("[护栏提示]")。"""
+    return _pauses(history)
 
 
-def test_e2e_exact_failure_blocks_after_five(run_script, tmp_path):
+def test_e2e_exact_failure_pauses_after_five(run_script, tmp_path):
     """同一调用反复真失败:5 次执行 + 第 6 次拦截,循环随后正常收尾。"""
     missing = str(tmp_path / "nope.txt")
     agent, llm = run_script([("read_file", {"path": missing})] * 6)
     history = agent.history
 
     assert len([c for c in tool_contents(history) if "[错误]" in c]) == 5
-    assert len(_blocks(history)) == 1
-    assert len(_warns(history)) >= 1, "第 2 次失败起应注入告警"
-    assert llm.main_calls == 8, "被拦后应还能继续到模型给出文本(含一轮情况说明)"
+    # 新语义:从第 2 次起每次失败都追加报告(不再"只在第 6 次拦一次")
+    assert len(_pauses(history)) >= 4
+    assert len(_warns(history)) >= 1, "第 2 次失败起应注入报告"
+    assert llm.main_calls == 8, "报告后应还能继续到模型给出文本(含一轮情况说明)"
 
 
 def test_e2e_fix_run_iteration_not_blocked(tmp_path, monkeypatch):
@@ -225,7 +223,7 @@ def test_e2e_fix_run_iteration_not_blocked(tmp_path, monkeypatch):
 
     agent.chat("修好测试")
 
-    assert _blocks(agent.history) == [], "正常迭代不该被拦"
+    assert _pauses(agent.history) == [], "正常迭代不该被拦"
     # 跑绿之后应有一份情况说明(含执行记录),而不是"通过证据"这种判决
     ctxs = [m for m in agent.history if m.get("role") == "user"
             and "[本轮运行情况]" in str(m.get("content"))]
@@ -258,22 +256,22 @@ def test_e2e_blocked_still_gets_context(tmp_path, monkeypatch):
 
     result = agent.chat("修好测试")
 
-    blocks = [c for c in tool_contents(agent.history) if "[护栏拦截]" in c]
-    assert len(blocks) == 1, "同一份失败连续 5 次 → 仍应拦截(护栏职责不变)"
+    blocks = [c for c in tool_contents(agent.history) if "[护栏提示]" in c]
+    assert len(blocks) >= 4, "同一份失败反复出现 → 每轮都报告(不再拦截到底)"
     assert _contexts(agent.history), "被拦的事实应出现在情况说明里"
     assert result, "仍以回答收尾"
 
 
-def test_e2e_idempotent_no_progress_blocks(run_script, tmp_path):
+def test_e2e_idempotent_no_progress_pauses(run_script, tmp_path):
     """同一只读调用返回同内容:5 次成功 + 第 6 次拦截。"""
     same = tmp_path / "same.txt"
     same.write_text("固定内容\n", encoding="utf-8")
     agent, _ = run_script([("read_file", {"path": str(same)})] * 6)
 
     assert len([c for c in tool_contents(agent.history) if "固定内容" in c]) == 5
-    blocks = _blocks(agent.history)
-    assert len(blocks) == 1
-    assert "无进展" in blocks[0]
+    blocks = _pauses(agent.history)
+    assert len(blocks) >= 4, "重复的只读调用应反复报告(不再拦一次就止)"
+    assert "完全相同的结果" in blocks[-1]
 
 
 def test_e2e_normal_flow_untouched(run_script, tmp_path):
@@ -285,7 +283,7 @@ def test_e2e_normal_flow_untouched(run_script, tmp_path):
         paths.append(str(p))
     agent, llm = run_script([("read_file", {"path": p}) for p in paths])
 
-    assert _blocks(agent.history) == []
+    assert _pauses(agent.history) == []
     assert _warns(agent.history) == []
     assert llm.main_calls == 6, "4 次读取 + 收尾 + 一轮情况说明"
 

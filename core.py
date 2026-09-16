@@ -84,6 +84,7 @@ import re
 import datetime
 import threading
 import time
+from dataclasses import replace
 from typing import Optional
 
 from llm import LLMClient, extract_cached_tokens, resolve_window_tokens, is_local_endpoint, DEFAULT_WINDOW_TOKENS
@@ -100,7 +101,6 @@ from tool_guardrails import (
     GuardrailConfig,
     ToolCallGuardrailController,
     append_guidance,
-    synthetic_result,
 )
 from turn_context import TurnContext
 from colors import paint, GRAY, BLUE, SLATE, PURPLE, YELLOW, NEUTRAL, RED, GREEN
@@ -494,9 +494,14 @@ class DummyAgent:
                     print(f"\n  {paint('🛠 Agent 调用了', BLUE)} [{tool_name}] 参数={tool_args}")
 
                     # ---------------------------------------------------
-                    # P1a 护栏(调用前):完全相同调用反复失败 / 只读调用无进展
-                    # → 判 block 时**不执行**工具,直接回注合成结果,
-                    #   让模型明确看到"这条为什么没执行",而不是静默无反应。
+                    # P1a 护栏(调用前):同一份失败反复出现 / 只读调用无进展
+                    # → 判 pause 时**只拦下这一次**,并把事实报告给模型,
+                    #   然后循环照常继续(不是"拦截到底")。
+                    #
+                    #   为什么不 block 到底:这次重复是否合理是**语义判断**,
+                    #   该由模型自己定。它可能确实需要重跑(比如刚改了东西)。
+                    #   我们只提供事实,不替它做决定,也不给它"继续"的暗号——
+                    #   它下一步的行为(换参数/说明理由/收尾)本身就是答案。
                     # ---------------------------------------------------
                     # 签名用参数快照:dispatch 可能往参数里注入内部字段(如 _confirm),
                     # 用同一份快照保证"调用前/调用后"判定的是同一次调用。
@@ -519,22 +524,25 @@ class DummyAgent:
                                 "content": "[用户打断,工具未执行]"})
                             break
 
-                        # P1a 护栏(调用后):记账,需要时把告警**追加进工具结果**。
+                        # P1a 护栏(调用后):记账,需要时把报告**追加进工具结果**。
                         # 这是发给 LLM 看的(只有模型自己知道它在打转),
-                        # 不是打印给人看的——所以"只告警不拦截"也有实际作用。
+                        # 不是打印给人看的——所以"只报告不拦截"也有实际作用。
                         guard_after = self.guardrails.after_call(
                             tool_name, sig_args, result)
                         if guard_after.action == "warn":
-                            result = append_guidance(result, guard_after)
+                            report = self._guardrail_report(guard_after, sig_args)
+                            result = append_guidance(
+                                result, replace(guard_after, message=report))
 
                         # 本轮情况:如实记录"做了什么 + 结果长什么样"。
-                        # 只对**真实执行过**的调用记账(被护栏拦截的不算)。
+                        # 只对**真实执行过**的调用记账(被护栏暂停的不算)。
                         self.turn_context.note_tool_result(
                             tool_name, sig_args, result)
                     else:
-                        # 被拦截:回注合成结果(不执行工具),并打印一行便于观察
-                        result = synthetic_result(guard)
-                        print(f"  {paint('⛔ 护栏拦截', RED)}: {guard.message}")
+                        # 暂停:这一次不执行,把事实报告给模型(循环继续)。
+                        result = self._guardrail_report(guard, sig_args)
+                        print(f"  {paint('⏸ 护栏暂停一次', YELLOW)}: "
+                              f"{guard.tool_name} 连续相同 {guard.count} 次")
 
                     # 打印执行结果摘要
                     result_preview = result[:300] + "..." if len(result) > 300 else result
@@ -718,6 +726,23 @@ class DummyAgent:
 
         self._save_conversation_log()
         return text or fallback
+
+    def _guardrail_report(self, guard, sig_args: dict) -> str:
+        """把护栏决策变成一份**事实报告**发给模型(见 _pause_report 的说明)。
+
+        这里补的是 Agent 才知道的事实:本轮改过哪些文件。
+        因为"我重复调用,但这期间我刚改过东西"与"我什么都没改还在重跑"
+        是完全不同的两种情况 —— 后者才像空转,而这个区别**只有 Agent 知道**。
+        """
+        facts: list[str] = []
+        changed = list(dict.fromkeys(self.turn_context.changed))
+        if changed:
+            facts.append(f"这期间你改动过 {len(changed)} 个文件: "
+                         + "、".join(changed[:3])
+                         + ("…" if len(changed) > 3 else ""))
+        else:
+            facts.append("这期间你没有改动任何文件")
+        return self.guardrails.build_report(guard, extra_facts=facts)
 
     def _append_user_turn(self, content: str, synthetic: str | None = None) -> None:
         """追加一条 user 消息——**所有** user 消息的唯一入口。
