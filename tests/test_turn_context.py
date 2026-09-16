@@ -89,7 +89,7 @@ def test_asks_model_to_self_check():
     tc = _tc()
     tc.note_tool_result("write_file", {"path": "a.py"}, "写入成功")
     ctx = tc.build_stop_context()
-    assert "请对照它检查你刚才的回答" in ctx
+    assert "对照上面的记录核对你的回答" in ctx
 
 
 def test_asks_to_admit_unverified():
@@ -97,9 +97,16 @@ def test_asks_to_admit_unverified():
     tc = _tc()
     tc.note_tool_result("write_file", {"path": "a.py"}, "写入成功")
     ctx = tc.build_stop_context()
-    assert "没做的事就说没做" in ctx
-    assert "未验证" in ctx, "应给出「未验证」这个说法,而不是只说「已通过」"
-    assert "不确定" in ctx
+    assert "没做/没验的直说" in ctx
+    assert "别写成已完成" in ctx
+
+
+def test_requires_claims_to_be_traceable():
+    """必须要求"说过的动作能在记录里找到"。"""
+    tc = _tc()
+    tc.note_tool_result("write_file", {"path": "a.py"}, "写入成功")
+    ctx = tc.build_stop_context()
+    assert "每个动作都要在记录里找得到" in ctx
 
 
 def test_allows_late_verification():
