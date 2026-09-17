@@ -35,7 +35,22 @@ class FakeLLM:
 
 
 def R(content):
-    return type("R", (), {"get": lambda self, k, d=None: content})()
+    """构造一个假的 LLM 响应对象。
+
+    ============ 为什么必须只有 .content（2026-09-17 教训） ============
+    旧版是 `type("R", (), {"get": lambda self, k, d=None: content})()` ——
+    **有 .get() 但没有 .content**,而真实返回的是 OpenAI SDK 的
+    ChatCompletionMessage(**有 .content,没有 .get()**)。
+
+    形态不一致的后果很严重:调用方用 `resp.get("content")` 取值时,
+    在测试里能拿到(假对象恰好有 .get),在生产里恒为空 —— **测试全绿,
+    生产全坏**。这个 bug 因此潜伏了一个多月(4 处同款:lessons 的教训生成、
+    self_improve 的提案与内容生成)。
+
+    现在让假对象与真实形态一致:只有 .content。
+    这样"用错方式取值"的代码会在测试里就失败。
+    """
+    return type("R", (), {"content": content})()
 
 
 # ---------------------------------------------------------------

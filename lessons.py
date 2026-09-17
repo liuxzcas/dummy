@@ -11,6 +11,7 @@ lessons.py — 教训生成(Phase 3 Step 3:错误学习)
 
 import json
 import re
+from llm import message_content
 
 # 用户纠正信号(强词,降低误报):命中即视为用户纠正,触发反思生成。
 # 弱词(应该/不是/改一下)不触发——日常对话误报率高,教训由
@@ -100,12 +101,7 @@ def generate_lesson(llm, event_text: str) -> list[dict]:
         resp = llm.chat(
             messages=[{"role": "user", "content": prompt}],
         )
-        if isinstance(resp, dict):
-            content = resp.get("content") or ""
-        elif resp is not None and hasattr(resp, "get"):
-            content = resp.get("content") or ""
-        else:
-            content = ""
+        content = message_content(resp)
     except Exception:
         return []
     return _parse_lessons_response(content)

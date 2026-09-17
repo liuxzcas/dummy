@@ -22,6 +22,8 @@ import shutil
 import subprocess
 import sys
 
+from llm import message_content   # 取 llm.chat() 返回值的文本(见 llm.message_content)
+
 # 项目根(本文件上一级)
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 # 改进记录(§3.5 量化评估数据源)
@@ -116,12 +118,7 @@ def generate_proposal(llm, tool_name: str, stat: dict) -> dict:
     )
     try:
         resp = llm.chat(messages=[{"role": "user", "content": prompt}])
-        if isinstance(resp, dict):
-            content = resp.get("content") or ""
-        elif resp is not None and hasattr(resp, "get"):
-            content = resp.get("content") or ""
-        else:
-            content = ""
+        content = message_content(resp)
     except Exception:
         return {}
     return _parse_proposal_response(content)
@@ -154,12 +151,7 @@ def _generate_new_content(llm, file_path: str, description: str) -> str:
         "- 不要输出任何解释,直接输出文件内容"
     )
     resp = llm.chat(messages=[{"role": "user", "content": prompt}])
-    if isinstance(resp, dict):
-        content = resp.get("content") or ""
-    elif resp is not None and hasattr(resp, "get"):
-        content = resp.get("content") or ""
-    else:
-        content = ""
+    content = message_content(resp)
     # 围栏剥离
     if content.startswith("```"):
         lines = content.splitlines()
