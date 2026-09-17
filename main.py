@@ -37,7 +37,7 @@ from dotenv import load_dotenv
 from llm import LLMClient
 from tools import create_default_registry
 from colors import paint, GREEN, GRAY_DIM, WHITE, YELLOW, RED, NEUTRAL, CYAN, PURPLE
-from ui import ui, KIND_SPINNER, KIND_AGENT
+from ui import ui, KIND_SPINNER, KIND_AGENT, KIND_DIVIDER
 from core import DummyAgent
 
 
@@ -446,6 +446,8 @@ def main():
             ui.show(KIND_AGENT, response)
             # 用量统计(当前会话累计 + 本次请求 + 成本 + 窗口占用)
             ui.raw(f"{agent.format_usage_line()}\n")
+            # 一轮结束:画分隔线把轮次切开(line 样式下才有;plain 下是空行)
+            ui.show(KIND_DIVIDER)
 
         except KeyboardInterrupt:
             # Ctrl+C 处理 —— 优雅退出
