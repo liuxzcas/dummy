@@ -37,6 +37,7 @@ from dotenv import load_dotenv
 from llm import LLMClient
 from tools import create_default_registry
 from colors import paint, GREEN, GRAY_DIM, WHITE, YELLOW, RED, NEUTRAL, CYAN, PURPLE
+from ui import ui, KIND_SPINNER, KIND_AGENT
 from core import DummyAgent
 
 
@@ -57,7 +58,7 @@ def format_local_time(iso_str: str) -> str:
 
 def print_banner():
     """打印启动横幅。"""
-    print("""
+    ui.raw("""
     ╔══════════════════════════════════════════╗
     ║         Dummy Agent — Phase 0            ║
     ║    从零开始的 Tool-Calling Agent         ║
@@ -142,7 +143,7 @@ def _release_current_session_lock(agent):
 
 def print_help():
     """打印帮助信息。"""
-    print("""
+    ui.raw("""
     可用命令:
       /help     显示此帮助
       /reset    重置对话历史
@@ -207,8 +208,8 @@ def main():
     if not api_key:
         api_key = input("请输入你的 API Key (DeepSeek / OpenAI / 其他兼容服务): ").strip()
         if not api_key:
-            print("错误: API Key 不能为空。")
-            print("你可以设置环境变量 DUMMY_API 或 DUMMY_AGENT_API_KEY 避免每次都输入。")
+            ui.raw("错误: API Key 不能为空。")
+            ui.raw("你可以设置环境变量 DUMMY_API 或 DUMMY_AGENT_API_KEY 避免每次都输入。")
             sys.exit(1)
 
     # 尝试从环境变量读取 Base URL
@@ -222,9 +223,9 @@ def main():
     # 任何 OpenAI 兼容服务的模型名都可以(如 gpt-4o / qwen2.5 / llama3 等)。
     model = os.environ.get("DUMMY_AGENT_MODEL", "deepseek-v4-flash").strip()
 
-    print(f"\n  模型: {model}")
-    print(f"  地址: {base_url}")
-    print()
+    ui.raw(f"\n  模型: {model}")
+    ui.raw(f"  地址: {base_url}")
+    ui.raw()
 
     # ===========================================================
     # Step 2: 初始化组件（依赖注入）
@@ -243,12 +244,12 @@ def main():
     # 这是一个典型的 REPL（Read-Eval-Print Loop）模式：
     # 读取用户输入 → 交给 Agent 处理 → 打印结果 → 继续
     # ===========================================================
-    print("输入 /help 查看命令列表，输入 /quit 退出。\n")
+    ui.raw("输入 /help 查看命令列表，输入 /quit 退出。\n")
 
     while True:
         try:
-            # 读取
-            user_input = input(f"{paint('你 > ', GREEN)}").strip()
+            # 读取(提示符由 UI 层给,样式可插拔)
+            user_input = input(ui.prompt()).strip()
 
             # ---------------------------------------------------
             # 处理内置命令（不经过 Agent 处理）
@@ -257,7 +258,7 @@ def main():
                 continue
 
             if user_input.lower() in ("/quit", "/exit", "/q"):
-                print("再见！")
+                ui.raw("再见！")
                 _release_current_session_lock(agent)
                 break
 
@@ -267,7 +268,7 @@ def main():
 
             if user_input.lower() == "/reset":
                 agent.reset()
-                print(f"{paint('✅ 对话历史已重置', GREEN)}\n")
+                ui.raw(f"{paint('✅ 对话历史已重置', GREEN)}\n")
                 continue
 
             if user_input.lower() == "/resume":
@@ -275,10 +276,10 @@ def main():
                 if ok:
                     restored_session_id = agent.current_session_id
                     restored_count = len(agent.get_history())
-                    print(f"{paint('✅ 已恢复上一个会话', GREEN)}: {restored_session_id}")
-                    print(f"📝 当前会话历史 ({restored_count} 条消息)\n")
+                    ui.raw(f"{paint('✅ 已恢复上一个会话', GREEN)}: {restored_session_id}")
+                    ui.raw(f"📝 当前会话历史 ({restored_count} 条消息)\n")
                 else:
-                    print(f"{paint('⚠️ 没有可恢复的历史会话', YELLOW)}。\n")
+                    ui.raw(f"{paint('⚠️ 没有可恢复的历史会话', YELLOW)}。\n")
                 continue
 
             if user_input.lower().startswith("/resume "):
@@ -286,10 +287,10 @@ def main():
                 ok = agent.resume_session(session_id)
                 if ok:
                     restored_count = len(agent.get_history())
-                    print(f"{paint('✅ 已恢复会话', GREEN)}: {agent.current_session_id}")
-                    print(f"📝 当前会话历史 ({restored_count} 条消息)\n")
+                    ui.raw(f"{paint('✅ 已恢复会话', GREEN)}: {agent.current_session_id}")
+                    ui.raw(f"📝 当前会话历史 ({restored_count} 条消息)\n")
                 else:
-                    print(f"{paint('⚠️ 无法恢复会话', YELLOW)}: {session_id}\n")
+                    ui.raw(f"{paint('⚠️ 无法恢复会话', YELLOW)}: {session_id}\n")
                 continue
 
             if user_input.lower().startswith("/sessions"):
@@ -301,38 +302,38 @@ def main():
                         # 删除当前会话:删库后自动开启新会话,避免悬空
                         agent.session_store.delete_session(sid)
                         agent.reset()
-                        print(f"{paint('🗑️ 已删除当前会话', NEUTRAL)} {sid},并已开启新会话。\n")
+                        ui.raw(f"{paint('🗑️ 已删除当前会话', NEUTRAL)} {sid},并已开启新会话。\n")
                     else:
                         ok = agent.session_store.delete_session(sid)
                         if ok:
-                            print(f"{paint('🗑️ 已删除会话', NEUTRAL)} {sid}(消息/归档/记忆已级联清除)。\n")
+                            ui.raw(f"{paint('🗑️ 已删除会话', NEUTRAL)} {sid}(消息/归档/记忆已级联清除)。\n")
                         else:
-                            print(f"{paint('⚠️ 会话不存在', YELLOW)}: {sid}\n")
+                            ui.raw(f"{paint('⚠️ 会话不存在', YELLOW)}: {sid}\n")
                     continue
                 sessions = agent.session_store.list_sessions()
                 if not sessions:
-                    print(f"{paint('🗂️ 当前没有任何持久化会话', NEUTRAL)}。\n")
+                    ui.raw(f"{paint('🗂️ 当前没有任何持久化会话', NEUTRAL)}。\n")
                 else:
-                    print(f"{paint('🗂️ 持久化会话列表', NEUTRAL)}:")
+                    ui.raw(f"{paint('🗂️ 持久化会话列表', NEUTRAL)}:")
                     for idx, session in enumerate(sessions, start=1):
                         message_count = int(session.get("message_count", 0))
                         created_at = format_local_time(session.get("created_at", ""))
                         updated_at = format_local_time(session.get("updated_at", ""))
-                        print(
+                        ui.raw(
                             f"  [{idx}] {session['id']} "
                             f"| messages={message_count} "
                             f"| created={created_at} "
                             f"| updated={updated_at}"
                         )
-                print()
+                ui.raw()
                 continue
 
             if user_input.lower() == "/tools":
                 tool_list = registry.list_tools()
-                print(f"{paint('📦 可用工具', NEUTRAL)} ({len(tool_list)}):")
+                ui.raw(f"{paint('📦 可用工具', NEUTRAL)} ({len(tool_list)}):")
                 for name in tool_list:
-                    print(f"   - {name}")
-                print()
+                    ui.raw(f"   - {name}")
+                ui.raw()
                 continue
 
             if user_input.lower().startswith("/history"):
@@ -342,19 +343,19 @@ def main():
                     try:
                         idx = int(parts[2])
                     except ValueError:
-                        print("用法: /history del <序号>(序号见 /history 列表)")
-                        print()
+                        ui.raw("用法: /history del <序号>(序号见 /history 列表)")
+                        ui.raw()
                         continue
                     if idx < 0 or idx >= len(agent.history):
-                        print(
+                        ui.raw(
                             f"序号越界: 历史共 {len(agent.history)} 条"
                             f" (0-{len(agent.history) - 1})"
                         )
-                        print()
+                        ui.raw()
                         continue
                     if idx == 0:
-                        print("不能删除 system prompt(第 0 条)。")
-                        print()
+                        ui.raw("不能删除 system prompt(第 0 条)。")
+                        ui.raw()
                         continue
                     to_delete = {idx}
                     role = agent.history[idx]["role"]
@@ -395,44 +396,44 @@ def main():
                     for i in sorted(to_delete, reverse=True):
                         agent.history.pop(i)
                     agent._persist_history()
-                    print(f"{paint('🗑️ 已删除', NEUTRAL)} {len(to_delete)} 条记录(序号 {idx} 及其关联)。\n")
-                    print()
+                    ui.raw(f"{paint('🗑️ 已删除', NEUTRAL)} {len(to_delete)} 条记录(序号 {idx} 及其关联)。\n")
+                    ui.raw()
                     continue
                 history = agent.get_history()
-                print(f"{paint('📝 对话历史', NEUTRAL)} ({len(history)} 条消息):")
+                ui.raw(f"{paint('📝 对话历史', NEUTRAL)} ({len(history)} 条消息):")
                 for i, msg in enumerate(history):
                     role = msg["role"]
                     content_preview = (str(msg.get("content", ""))[:100]
                                        if msg.get("content") else "(tool_calls)")
-                    print(f"  [{i}] {role}: {content_preview}")
-                print()
+                    ui.raw(f"  [{i}] {role}: {content_preview}")
+                ui.raw()
                 continue
 
             if user_input.lower().startswith("/search"):
                 for line in handle_search_command(user_input, agent.session_store):
-                    print(line)
+                    ui.raw(line)
                 continue
 
             if user_input.lower().startswith("/memories"):
                 for line in handle_memories_command(user_input, agent.session_store):
-                    print(line)
+                    ui.raw(line)
                 continue
 
             if user_input.lower().startswith("/skills"):
                 for line in handle_skills_command(user_input):
-                    print(line)
+                    ui.raw(line)
                 continue
 
             if user_input.lower().startswith("/lessons"):
                 for line in handle_lessons_command(user_input, agent.session_store):
-                    print(line)
+                    ui.raw(line)
                 continue
 
             if user_input.lower().startswith("/improve"):
                 parts = user_input.split()
                 tool = parts[1] if len(parts) > 1 else ""
                 if not tool:
-                    print("用法: /improve <工具名>（如 terminal / read_file）")
+                    ui.raw("用法: /improve <工具名>（如 terminal / read_file）")
                     continue
                 agent.run_improvement(tool)
                 continue
@@ -440,31 +441,31 @@ def main():
             # ---------------------------------------------------
             # 交给 Agent 处理
             # ---------------------------------------------------
-            print(f"  {paint('🤔 Agent 思考中...', GRAY_DIM)}")
+            ui.show(KIND_SPINNER, "Agent 思考中...")
             response = agent.chat(user_input)
-            print(f"\n{paint('🤖 Agent:', WHITE)} {response}\n")
+            ui.show(KIND_AGENT, response)
             # 用量统计(当前会话累计 + 本次请求 + 成本 + 窗口占用)
-            print(f"{agent.format_usage_line()}\n")
+            ui.raw(f"{agent.format_usage_line()}\n")
 
         except KeyboardInterrupt:
             # Ctrl+C 处理 —— 优雅退出
             # 历史收口由 chat() 的 finally 负责(路线 3 单点收口),
             # 这里只需释放会话锁。
-            print("\n\n再见！")
+            ui.raw("\n\n再见！")
             _release_current_session_lock(agent)
             break
 
         except EOFError:
             # Ctrl+D 处理（Unix 终端下）
-            print("\n\n再见！")
+            ui.raw("\n\n再见！")
             _release_current_session_lock(agent)
             break
 
         except Exception as e:
             # 捕获并显示未预期的错误
             # 对于 Phase 0 学习项目，显示完整 traceback 更有教育意义
-            print(f"\n{paint('❌ 发生错误', RED)}: {type(e).__name__}: {e}")
-            print("   详细信息请看上方 traceback。\n")
+            ui.raw(f"\n{paint('❌ 发生错误', RED)}: {type(e).__name__}: {e}")
+            ui.raw("   详细信息请看上方 traceback。\n")
             # 不退出，让用户可以继续
 
 

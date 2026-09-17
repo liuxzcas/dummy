@@ -29,8 +29,11 @@ core 注入的 _confirm 函数统一处理。_confirm 为 None 时跳过确认�
 """
 
 import os
+import sys
 
-from colors import paint, CYAN, YELLOW
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from colors import paint, CYAN, YELLOW   # noqa: E402
+from ui import ui                        # noqa: E402
 
 
 def read_file_handler(path: str, offset: int = 1, limit: int | None = None, _confirm=None) -> str:
@@ -44,8 +47,10 @@ def read_file_handler(path: str, offset: int = 1, limit: int | None = None, _con
     """
     # ---- 读取前确认 ----
     if _confirm is not None:
-        print(f"\n  {paint('📖 即将读取文件', CYAN)}: {path}")
-        print(f"     {paint('⚠️ 隐私提示', YELLOW)}: 文件内容将发送给在线模型(LLM API),请确认不含敏感信息。")
+        # 走 ui.raw:这是"问用户话"的交互面板,不是对话流
+        # (边界见 ui.py 模块头;收口是为了将来 GUI 能接管)
+        ui.raw(f"\n  {paint('📖 即将读取文件', CYAN)}: {path}")
+        ui.raw(f"     {paint('⚠️ 隐私提示', YELLOW)}: 文件内容将发送给在线模型(LLM API),请确认不含敏感信息。")
         choice = _confirm("     按 Enter 允许读取, 输入 n 取消: ").strip().lower()
         if choice == "n":
             return "[用户取消] 文件未读取"

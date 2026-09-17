@@ -103,6 +103,7 @@ from tool_guardrails import (
 )
 from turn_context import TurnContext
 from colors import paint, GRAY, BLUE, SLATE, PURPLE, YELLOW, NEUTRAL, RED, GREEN
+from ui import ui, KIND_THINKING, KIND_TOOL_CALL, KIND_TOOL_RESULT
 from skills_manager import build_skills_index
 from lessons import (
     has_correction_signal, is_tool_error, generate_lesson,
@@ -455,7 +456,7 @@ class DummyAgent:
             # 非推理模型为 None 时静默跳过)
             reasoning = getattr(self.llm, "last_reasoning", None)
             if reasoning:
-                print(f"\n  {paint('💭 思考:', GRAY)} {reasoning}")
+                ui.show(KIND_THINKING, reasoning)
 
             # -------------------------------------------------------
             # 2b. 检查是否有 tool_calls
@@ -496,7 +497,7 @@ class DummyAgent:
                     tool_args = self._parse_tool_arguments(tool_call.function.arguments)
 
                     # 打印工具调用日志
-                    print(f"\n  {paint('🛠 Agent 调用了', BLUE)} [{tool_name}] 参数={tool_args}")
+                    ui.show(KIND_TOOL_CALL, tool=tool_name, args=tool_args)
 
                     # 签名用参数快照:dispatch 可能往参数里注入内部字段(如 _confirm),
                     # 用同一份快照保证"判定的是同一次调用"。
@@ -542,7 +543,7 @@ class DummyAgent:
 
                     # 打印执行结果摘要
                     result_preview = result[:300] + "..." if len(result) > 300 else result
-                    print(f"  {paint(f'📝 {tool_name} 返回:', SLATE)} {result_preview}")
+                    ui.show(KIND_TOOL_RESULT, result_preview, tool=tool_name, indent="  ")
 
                     # Phase 3 Step 3:工具错误 → 即时反思生成教训
                     # (旁路 LLM,每轮限 1 次;检查点 A 之前,不打断主流程)
