@@ -100,7 +100,8 @@ class PlainRenderer:
         if k == KIND_ERROR:
             return f"{self.indent}{paint(f'❌ {msg.text}', RED)}"
         if k == KIND_DIVIDER:
-            return ""
+            # plain 不画线,也不留空行(收口前这里本来就没有输出)
+            return None
         if k == KIND_RAW:
             return msg.raw
         return msg.text

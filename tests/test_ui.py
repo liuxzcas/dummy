@@ -96,6 +96,22 @@ def test_plain_renderer_unchanged():
     assert not out.startswith("┃")
 
 
+def test_divider_only_draws_in_line_mode():
+    """分隔线只在 line 模式画。
+
+    plain 下必须**完全无输出**(连空行都不能有)—— 因为收口前这里本来
+    就没有任何输出,多一个空行就是视觉变化,会破坏"plain 可无痛回退"。
+    """
+    plain_out = _capture(lambda: UI(PlainRenderer()).show(KIND_DIVIDER))
+    assert plain_out == "", f"plain 下 divider 应无输出,实际 {plain_out!r}"
+
+    line_out = _capture(lambda: UI(LineRenderer()).show(KIND_DIVIDER))
+    assert "─" in line_out, "line 下应画分隔线"
+
+    silent_out = _capture(lambda: UI(SilentRenderer()).show(KIND_DIVIDER))
+    assert silent_out == "", "silent 下应静音"
+
+
 # ============================================================
 # ③ raw:静音时必须保留(方案 B)
 # ============================================================
