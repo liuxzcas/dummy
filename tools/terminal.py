@@ -41,6 +41,7 @@ from colors import paint, YELLOW, CYAN
 # env_probe 在项目根(terminal.py 位于 tools/ 下)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from env_probe import describe_environment   # noqa: E402
+from ui import ui                            # noqa: E402
 
 
 def _find_bash() -> str | None:
@@ -115,10 +116,11 @@ def terminal_handler(command: str, _confirm=None) -> str:
     """
     # ---- 执行前确认 ----
     if _confirm is not None:
-        print(f"\n  {paint('⚠️ 即将执行:', YELLOW)} {command}")
+        # 走 ui.raw:这是"问用户话"的交互面板,不是对话流
+        ui.raw(f"\n  {paint('⚠️ 即将执行:', YELLOW)} {command}")
         hint = _command_hint(command)
         if hint:
-            print(f"     {hint}")
+            ui.raw(f"     {hint}")
         choice = _confirm("    按 Enter 确认执行, 输入 n 取消: ").strip().lower()
         if choice == "n":
             return "[用户取消] 命令未执行"
