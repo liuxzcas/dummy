@@ -131,6 +131,45 @@ def _show_diff(old: str, new: str, path: str, _confirm) -> bool:
     return choice == "y"
 
 
+def _detect_line_ending(path: str) -> str:
+    """读文件头判断**实际**写出的换行符,用于回报给模型。
+
+    ============ 为什么要这个(2026-09-17 实测) ============
+    Python 的 open(..., "w") 在 Windows 上会把 \n 转成 \r\n(平台换行转换),
+    所以 dummy 写 .bat 时**本来就是 CRLF** —— 但模型不知道这件事。
+
+    实测(conversation_20260917_175951):模型写完 .bat 后,又额外跑了一次
+        sed -i 's/\r$//; s/$/\r/'
+    去"修"换行符 —— 那一次调用**完全是多余的**(转换后还是 CRLF)。
+
+    根因不是能力缺失(它已经写对了),是**信息缺失**:模型看不到写出来的
+    是什么换行,只能假设"可能是 LF",于是去修。
+
+    ============ 为什么"读"而不是"假设" ============
+    可以按"Windows 上 Python 会转 CRLF"直接返回 "[CRLF]",但那是**假设**
+    —— 一旦 newline 参数、Python 版本或调用方式变化,报告就成了假话。
+    **读文件头拿到的才是事实**,和本项目"报告事实不报告假设"的原则一致。
+    成本:读一次文件头(几毫秒)。
+    """
+    try:
+        with open(path, "rb") as f:
+            head = f.read(8192)
+    except OSError:
+        return "?"
+    # 区分"纯 CRLF / 纯 LF / 混合" —— 混合是需要模型知道的信息
+    # (line 模式改单行时,新内容若是 LF 而原文件是 CRLF,就会混)
+    CRLF = b"\r" + b"\n"
+    crlf = head.count(CRLF)
+    lf_only = head.replace(CRLF, b"").count(b"\n")
+    if crlf and lf_only:
+        return f"混合(CRLF×{crlf}, LF×{lf_only})"
+    if crlf:
+        return "CRLF"
+    if lf_only:
+        return "LF"
+    return "无换行"
+
+
 def write_file_handler(path: str, content: str, mode: str = "overwrite", verify: bool = True, line: int | None = None, line_end: int | None = None, _confirm=None) -> str:
     """写入内容到文件。自动创建父目录，路径安全受控。
 
@@ -260,7 +299,8 @@ def write_file_handler(path: str, content: str, mode: str = "overwrite", verify:
         # 统计
         lines = content.count("\n") + 1
         chars = len(content)
-        result = f"{action}成功: {path} ({lines} 行, {chars} 字符)"
+        result = (f"{action}成功: {path} ({lines} 行, {chars} 字符)"
+                  f" [换行 {_detect_line_ending(full_path)}]")
 
         # ---- 文件验证（仅 verify=True 且有对应验证器时） ----
         if verify:
