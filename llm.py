@@ -265,6 +265,42 @@ class LLMClient:
         return self.model
 
 
+def message_content(resp) -> str:
+    """从 llm.chat() 的返回值里取出文本内容。
+
+    ============ 为什么需要这个函数（2026-09-17 修 bug） ============
+    llm.chat() 返回的是 **response.choices[0].message**
+    —— OpenAI SDK 的 ChatCompletionMessage 对象（见本文件 `return message`）。
+
+    但有三处调用方用**错误的模式**去取内容:
+        if isinstance(resp, dict):
+            content = resp.get("content") or ""
+        elif resp is not None and hasattr(resp, "get"):
+            content = resp.get("content") or ""
+        else:
+            content = ""          # ← 永远走这里
+    ChatCompletionMessage **没有 .get()**,于是 content 恒为空串 ——
+    而且外层 `except Exception: return []` 兜住了一切,**不报错**。
+
+    实测影响(4 处同款):
+      lessons.generate_lesson       → 教训机制从 Phase 3 Step 3 起就没工作过
+      self_improve.generate_proposal→ /improve 报"无法生成修复提案"
+      self_improve._generate_new_content → 会生成空文件
+
+    教训:同一个"取内容"的动作散落三处、各写各的 → 一起错。
+    现在收口到本函数,调用方只写 `content = message_content(resp)`。
+
+    兼容三种形态(dict / 字符串 / SDK 对象),这样测试里的假 LLM 也能用。
+    """
+    if resp is None:
+        return ""
+    if isinstance(resp, str):
+        return resp
+    if isinstance(resp, dict):
+        return resp.get("content") or ""
+    return getattr(resp, "content", None) or ""
+
+
 def extract_cached_tokens(usage) -> int:
     """从 usage 中提取缓存命中 token 数(双字段兼容)。
 

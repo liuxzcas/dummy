@@ -228,7 +228,7 @@ def test_literal_error_word_in_content_still_matches():
 
 def test_generate_lesson_valid_json():
     llm = FakeLLM([
-        type("R", (), {"get": lambda self, k, d=None: json.dumps(
+        type("R", (), {"content": json.dumps(
             [{"lesson": "做X会错,应该Y", "category": "测试"}])})(),
     ])
     items = L.generate_lesson(llm, "事件")
@@ -237,16 +237,15 @@ def test_generate_lesson_valid_json():
 
 def test_generate_lesson_fenced():
     llm = FakeLLM([
-        type("R", (), {"get": lambda self, k, d=None:
-             "```json\n[{\"lesson\": \"规则B\", \"category\": \"终端\"}]\n```"})(),
+        type("R", (), {"content": "```json\n[{\"lesson\": \"规则B\", \"category\": \"终端\"}]\n```"})(),
     ])
     items = L.generate_lesson(llm, "事件")
     assert items and items[0]["lesson"] == "规则B"
 
 
 def test_generate_lesson_invalid_returns_empty():
-    llm = FakeLLM([type("R", (), {"get": lambda self, k, d=None: "不是JSON"})(),
-                   type("R", (), {"get": lambda self, k, d=None: ""})()])
+    llm = FakeLLM([type("R", (), {"content": "不是JSON"})(),
+                   type("R", (), {"content": ""})()])
     assert L.generate_lesson(llm, "事件") == []
     assert L.generate_lesson(llm, "事件") == []
 
@@ -300,7 +299,7 @@ def test_inject_lessons_pending_marked(tmp_path, store, sid):
 # ---------------------------------------------------------------
 def test_learn_from_correction(tmp_path, store, sid):
     llm = FakeLLM([
-        type("R", (), {"get": lambda self, k, d=None: json.dumps(
+        type("R", (), {"content": json.dumps(
             [{"lesson": "应该用 pytest", "category": "测试"}])})(),
     ])
     agent = DummyAgent(llm, create_default_registry(), system_prompt="P")
@@ -316,7 +315,7 @@ def test_learn_from_correction(tmp_path, store, sid):
 
 def test_learn_from_tool_error_limit(tmp_path, store, sid):
     llm = FakeLLM([
-        type("R", (), {"get": lambda self, k, d=None: json.dumps(
+        type("R", (), {"content": json.dumps(
             [{"lesson": "命令错了", "category": "terminal"}])})(),
     ])
     agent = DummyAgent(llm, create_default_registry(), system_prompt="P")
