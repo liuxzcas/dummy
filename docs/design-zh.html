@@ -167,9 +167,10 @@ Phase 0 的设计文档保存在 <a href="design-phase0.html">design-phase0.html
   </tr>
   <tr>
     <td>这次调用是不是在"原地打转"</td>
-    <td>事实(行为)</td>
-    <td>代码</td>
-    <td>✅ 工具护栏(同参数 + <em>同失败内容</em> 才算)</td>
+    <td><strong>语义</strong>(是否合理)</td>
+    <td><strong>模型</strong></td>
+    <td>✅ 工具护栏<strong>只报告事实</strong>(连续 N 次同参数 + 同失败内容),
+        判断"该不该继续"归模型</td>
   </tr>
   <tr>
     <td><strong>任务完成了吗</strong></td>
