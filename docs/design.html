@@ -173,9 +173,10 @@ It answers: <strong>given a problem, should it become a rule, or go to the model
   </tr>
   <tr>
     <td>Is this call "spinning in place"</td>
-    <td>Fact (behavioural)</td>
-    <td>Code</td>
-    <td>Done — tool guardrails (same args + <em>identical failure output</em>)</td>
+    <td><strong>Semantics</strong> (is it justified?)</td>
+    <td><strong>Model</strong></td>
+    <td>Done — the guardrail <strong>only reports the fact</strong> (N consecutive identical
+        args + identical failure output); deciding whether to continue is the model's</td>
   </tr>
   <tr>
     <td><strong>Is the task done</strong></td>
