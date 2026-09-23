@@ -25,14 +25,19 @@ def create_default_registry() -> ToolRegistry:
             "通过 git-bash 执行（类 Unix shell，bash 语法），"
             "bash 不可用时回退系统默认 shell。"
             "路径两种写法都支持：/d/xxx 或 D:/xxx。"
-            "每条命令有 30 秒超时限制。"
+            "命令一执行完就立刻返回（即使 timeout 设得很大也不会变慢），"
+            "所以给构建、安装、测试套件这类长任务设大一点的 timeout 没有额外代价。"
             "注意：此命令会在用户系统上直接执行，请谨慎使用 rm、del 等破坏性操作。"
         ),
         parameters={
             "command": {
                 "type": "string",
                 "description": "要执行的 shell 命令。使用 POSIX shell 语法（ls, cat, grep 等）。路径用斜杠（C:/Users/ 或 /c/Users/）。",
-            }
+            },
+            "timeout": {
+                "type": "integer",
+                "description": "可选，单位秒。默认 120，最大 600。只影响长任务的等待上限；命令提前结束会立刻返回。",
+            },
         },
         handler=terminal_handler,
         confirm=True,  # 执行本地命令,需用户确认(确认交互在 handler 内)
