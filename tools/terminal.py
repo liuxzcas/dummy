@@ -58,6 +58,23 @@ def _find_bash() -> str | None:
        (System32\\bash.exe,WSL 正常时可用);Linux/macOS 命中
        系统自带 bash
     3. 都没有 → None(回退 shell=True)
+
+    ============ 为什么第 1 步必须返回**绝对路径**(2026-09-18 实测) ============
+    实测: 直接让子进程执行 "bash"(靠 PATH 解析)会**被 WSL 劫持**:
+
+        shutil.which("bash")
+          → C:\\Users\\xlinz\\AppData\\Local\\hermes\\git\\usr\\bin\\bash.EXE
+        subprocess.run(["bash", "-lc", "echo hi"])
+          → stderr: WSL (25 - Relay) ERROR: CreateProcessCommon:818:
+                    execvpe(/bin/bash) failed: No such file or directory
+          → returncode: 1
+
+    也就是说:Windows 会把裸命令名 "bash" 交给 WSL 启动器,而 WSL 里的
+    bash 不可用(本机 WSL 已知损坏)—— 命令直接失败,且报错信息与真实
+    原因(WSL 抢走)看起来不相关,极难排查。
+
+    用绝对路径(C:\\Program Files\\Git\\bin\\bash.exe)可以绕开这一层。
+    **不要把第 1 步改成 shutil.which("bash")** —— 那会重新引入这个问题。
     """
     configured = os.environ.get("DUMMY_BASH_PATH") or r"C:\Program Files\Git\bin\bash.exe"
     if configured and os.path.isfile(configured):
