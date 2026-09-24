@@ -274,7 +274,11 @@ def terminal_handler(command: str, timeout: int | None = None, _confirm=None) ->
         if rc != 0:
             output_parts.append(f"[EXIT CODE: {rc}]")
 
-        return "\n".join(output_parts) if output_parts else "(命令执行成功，无输出)"
+        # output_parts 里至少有环境声明那条,所以不需要"无输出"分支。
+        # (历史上这里曾写 `if output_parts else "(命令执行成功，无输出)"`,
+        #  但自 [SHELL:] 声明加入后,output_parts 永远非空 —— 那个分支
+        #  永远不会执行。2026-09-18 删除,避免误导。)
+        return "\n".join(output_parts)
 
     except Exception as e:
         tasks.finish(task, timed_out=True)
