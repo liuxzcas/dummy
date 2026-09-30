@@ -24,16 +24,45 @@ cd dummy
 
 > 本项目兼容**任何 OpenAI 格式的 LLM API**(DeepSeek / OpenAI / Ollama 本地 / vLLM 等),只需配置上述变量。前提:服务端支持 tool calling。
 
-**3. 启动**
-
-Windows:双击 `start.bat`(会自动检测 git-bash 供 terminal 工具使用)
-其他平台:
+**3. 安装依赖**
 
 ```bash
-python main.py
+# Windows
+python -m pip install -r requirements.txt
+
+# Linux / macOS
+python3 -m pip install -r requirements.txt
 ```
 
+> **Ubuntu 23.04+**:`pip install` 可能报
+> `externally-managed-environment`(PEP 668 保护)。改用 venv 即可 ——
+> 依赖会装在项目内的 `.venv/`,不污染系统:
+>
+> ```bash
+> python3 -m venv .venv
+> source .venv/bin/activate
+> pip install -r requirements.txt
+> ```
+
+> **可以忽略的 warning**:`WARNING: The script dotenv is installed in
+> '/home/<用户>/.local/bin' which is not on PATH`。它说的是**命令行入口
+> 脚本**没进 PATH,与 Python 模块无关 —— dummy 用的是 `import dotenv`,
+> 不受影响。(唯一区别:想在命令行直接敲 `pytest` 得改成 `python3 -m pytest`。)
+
+**4. 启动**
+
+| 平台 | 命令 |
+|------|------|
+| Windows | 双击 `start.bat`(自动检测 git-bash 供 terminal 工具使用) |
+| Linux / macOS | `bash start.sh`(或 `./start.sh`) |
+| 通用 | `python main.py` / `python3 main.py` |
+
+`start.sh` 会先进入项目目录、探测可用的 Python(`python3` → `python`)、
+检查依赖,再启动 —— 保证运行产物都落在项目内。
+
 启动后直接输入文字对话即可,agent 会自动调用工具。每轮回答后显示用量统计(模型/本次/累计/缓存命中率/成本/窗口占用)。
+
+> **首次运行**会交互式询问 API Base URL / 模型名(如果没用环境变量或 `.env` 配置过)。
 
 ## 基本命令
 
@@ -131,6 +160,21 @@ docs/             设计文档与验证报告
 ## 常见问题
 
 **启动时提示输入 API Key?** 设置 `DUMMY_API` 环境变量即可跳过。
+
+**装了 requirements 却报 `ModuleNotFoundError: No module named 'dotenv'`?**
+依赖装到了**另一个 Python** 下,和跑 dummy 的解释器不是同一个。解法:
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+python main.py
+```
+
+关键是 `python3 -m pip`(而不是裸 `pip`)—— 它能保证 pip 和解释器属于同一套环境。
+
+**出现 `WARNING: The script X is installed in '~/.local/bin' which is not on PATH`?**
+可以忽略。它说的是**命令行入口脚本**没进 PATH,与 Python 模块无关 ——
+`import dotenv` 不受影响。(唯一区别:想在命令行直接敲 `pytest` 得改成 `python3 -m pytest`。)
 
 **想换模型/换服务?** 设置 `DUMMY_AGENT_BASE_URL` 和 `DUMMY_AGENT_MODEL`:
 

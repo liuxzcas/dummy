@@ -28,18 +28,50 @@ cd dummy
 > local Ollama / vLLM, etc.) — just set the variables above.
 > Requirement: the endpoint must support tool calling.
 
-**3. Launch**
-
-Windows: double-click `start.bat` (auto-detects git-bash for the terminal
-tool). Other platforms:
+**3. Install dependencies**
 
 ```bash
-python main.py
+# Windows
+python -m pip install -r requirements.txt
+
+# Linux / macOS
+python3 -m pip install -r requirements.txt
 ```
+
+> **Ubuntu 23.04+**: `pip install` may fail with
+> `externally-managed-environment` (PEP 668). Use a venv instead —
+> dependencies then live in `.venv/` inside the project:
+>
+> ```bash
+> python3 -m venv .venv
+> source .venv/bin/activate
+> pip install -r requirements.txt
+> ```
+
+> **Safe to ignore**: `WARNING: The script dotenv is installed in
+> '/home/<user>/.local/bin' which is not on PATH`. This concerns
+> *command-line entry-point scripts*, not Python modules. dummy uses
+> `import dotenv`, which is unaffected. (It only means you'd need
+> `python3 -m pytest` instead of a bare `pytest`.)
+
+**4. Launch**
+
+| Platform | Command |
+|---|---|
+| Windows | double-click `start.bat` (auto-detects git-bash for the terminal tool) |
+| Linux / macOS | `bash start.sh` (or `./start.sh`) |
+| any | `python main.py` / `python3 main.py` |
+
+`start.sh` enters the project directory, probes for a usable Python
+(`python3` → `python`), and checks dependencies before launching — so
+runtime artifacts always land inside the project.
 
 Type messages directly to start a conversation; the agent calls tools
 automatically. After each reply, a usage line shows model / tokens /
 cache hit rate / cost / window usage.
+
+> **First run** asks for the API base URL / model interactively if not
+> already set via environment variables or `.env`.
 
 ## Commands
 
@@ -165,6 +197,24 @@ docs/             Design docs & verification reports
 
 **Prompted for an API key at launch?** Set the `DUMMY_API` environment
 variable to skip the prompt.
+
+**`ModuleNotFoundError: No module named 'dotenv'` after installing
+requirements?** The packages were installed for a *different* Python than
+the one running dummy. Fix:
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+python main.py
+```
+
+The key is `python3 -m pip` (not a bare `pip`) — that guarantees the pip
+and the interpreter belong to the same environment.
+
+**`WARNING: The script X is installed in '~/.local/bin' which is not on
+PATH`?** Safe to ignore. It refers to *command-line entry-point scripts*,
+not Python modules — `import dotenv` is unaffected. (Only consequence:
+use `python3 -m pytest` instead of a bare `pytest`.)
 
 **Switch models / providers?** Set `DUMMY_AGENT_BASE_URL` and
 `DUMMY_AGENT_MODEL`:

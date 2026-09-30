@@ -6,6 +6,11 @@ __pycache__/
 dist/
 build/
 
+# 虚拟环境(README 建议用 venv 装依赖)
+.venv/
+venv/
+env/
+
 # Environment
 .env
 .env.local
