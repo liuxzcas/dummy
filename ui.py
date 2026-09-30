@@ -32,7 +32,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from colors import (
-    paint, GREEN, BLUE, SLATE, WHITE, GRAY, GRAY_DIM,
+    paint, paint_prompt, GREEN, BLUE, SLATE, WHITE, GRAY, GRAY_DIM,
     PURPLE, YELLOW, RED, NEUTRAL, CYAN,
 )
 
@@ -232,8 +232,10 @@ class UI:
         print(out, end=end)
 
     # ---- 输入提示符(需要返回字符串给 input()) ----
+    # 用 paint_prompt 而非 paint:提示符的 ANSI 码要用 \001/\002 包裹,
+    # 否则 readline 会把转义字节也算进宽度,导致光标错位(见 colors.paint_prompt)
     def prompt(self) -> str:
-        return paint("你 > ", GREEN)
+        return paint_prompt("你 > ", GREEN)
 
 
 def _make_ui() -> UI:
