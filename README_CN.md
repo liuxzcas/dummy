@@ -176,6 +176,21 @@ python main.py
 可以忽略。它说的是**命令行入口脚本**没进 PATH,与 Python 模块无关 ——
 `import dotenv` 不受影响。(唯一区别:想在命令行直接敲 `pytest` 得改成 `python3 -m pytest`。)
 
+**输入时无法正常编辑 —— 退格中文只擦掉半个字、方向键光标不动?**(Linux/macOS 已修,见下)
+
+`input()` 只有在 **`import readline` 之后**才有完整的行编辑;
+否则会退回 tty canonical 模式 —— 它按"列"计算,不懂 UTF-8、不懂宽字符
+(汉字占 2 列,而它只擦 1 列)。dummy 现在会自动导入(`main.py`),
+并且把提示符里的 ANSI 码用 `\001`/`\002` 包住,
+让 readline 不把它们计入宽度。
+
+- **Linux / macOS**:CPython 内置,无需安装。
+- **Windows**:CPython 不提供(`readline` 是 POSIX 库的绑定)。
+  `requirements.txt` 会自动装 `pyreadline3`。不装 dummy 也能跑,
+  只是提示符里没有行编辑。
+  **已知局限**:pyreadline3 不处理 CJK 字符宽度,
+  所以中文输入时的光标对齐可能仍有轻微偏差。
+
 **想换模型/换服务?** 设置 `DUMMY_AGENT_BASE_URL` 和 `DUMMY_AGENT_MODEL`:
 
 ```bash

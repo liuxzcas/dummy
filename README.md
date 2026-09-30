@@ -216,6 +216,22 @@ PATH`?** Safe to ignore. It refers to *command-line entry-point scripts*,
 not Python modules — `import dotenv` is unaffected. (Only consequence:
 use `python3 -m pytest` instead of a bare `pytest`.)
 
+**Can't edit what I type — backspace leaves half a Chinese character,
+arrow keys don't move the cursor?** (Linux/macOS, fixed; see below)
+
+`input()` only gets full line editing if the `readline` module is
+imported — otherwise it falls back to tty canonical mode, which counts
+*columns* and doesn't understand UTF-8 or wide (CJK) characters. dummy
+now imports it automatically (`main.py`), and the prompt wraps ANSI codes
+in `\001`/`\002` so readline doesn't count them as visible width.
+
+- **Linux / macOS**: built into CPython — nothing to install.
+- **Windows**: CPython has no `readline` (it's a POSIX library).
+  `requirements.txt` pulls in `pyreadline3` automatically. Without it
+  dummy still runs, but the prompt has no line editing.
+  **Known limitation**: pyreadline3 doesn't handle CJK character width,
+  so cursor alignment with Chinese input may still be slightly off.
+
 **Switch models / providers?** Set `DUMMY_AGENT_BASE_URL` and
 `DUMMY_AGENT_MODEL`:
 

@@ -29,6 +29,34 @@ from datetime import datetime
 from dotenv import load_dotenv
 
 # ===========================================================
+# 启用行编辑(必须在任何 input() 之前)
+# ===========================================================
+# 为什么需要(2026-09-30 实测,Ubuntu):
+#   Python 的 input() 分两种行为 ——
+#     · 已 import readline → 走 GNU readline,有完整行编辑
+#       (光标移动、按词跳转、↑ 翻历史、宽字符按 2 列处理)
+#     · 未 import readline → 退回 tty canonical 模式(最原始的输入)
+#
+#   canonical 模式按"字节/列"处理,不懂 UTF-8、不懂宽字符:
+#     · 汉字占 2 列,退格只擦 1 列 → 每字残留一半(实测回显 \x08\x08)
+#     · 方向键转义序列 \x1b[D 被当普通字节塞进缓冲区(回显字面量 ^[[D)
+#     · 上述字节混进 UTF-8 序列 → input() 抛 UnicodeDecodeError
+#   bash 自带 readline,所以终端里正常、而本程序的提示符不正常。
+#
+# 平台差异(重要):
+#   · Linux/macOS:CPython **内置** readline(链接系统 GNU readline)
+#   · Windows:CPython **不提供**(GNU readline 是 POSIX 库)。
+#     装了 pyreadline3 的话,它会在 site-packages 放一个 readline.py
+#     壳,使 import 能成功 —— 但那是**仿真实现**,功能不如 GNU 版
+#     (例如它不处理 CJK 字符宽度,中文光标对齐可能仍有偏差)。
+#     没装则 ImportError,静默跳过(下面的 try/except)。
+try:
+    import readline          # noqa: F401  (副作用式导入:导入即注册行编辑钩子)
+    _HAS_READLINE = True
+except ImportError:
+    _HAS_READLINE = False
+
+# ===========================================================
 # 先加载 .env,再 import 项目模块(顺序不能颠倒)
 # ===========================================================
 # 为什么必须在这里(2026-09-17 实测发现的问题):

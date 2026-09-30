@@ -51,3 +51,63 @@ def paint(prefix: str, color_code: str) -> str:
     if not _ENABLED:
         return prefix
     return f"{color_code}{prefix}{_RESET}"
+
+
+def _detect_readline() -> bool:
+    """探测 readline 是否可用(用于 paint_prompt 决定要不要加 \\001/\\002)。
+
+    为什么在 colors.py 里自己探测、而不是从 main.py 传进来:
+      colors.py 是最底层模块(被 ui.py import),反过来 import main
+      会形成循环依赖。而"readline 是否可用"是**进程级事实**,
+      自己探测一次即可,不需要外部注入。
+
+    平台差异:
+      · Linux/macOS:CPython 内置 readline → 通常为 True
+      · Windows:CPython 不提供;装了 pyreadline3 才为 True
+    """
+    try:
+        import readline      # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+# readline 是否可用:决定提示符要不要用 \001/\002 包裹 ANSI 码。
+# 这里只探测一次(import 期的进程级事实,不会变)。
+_HAS_READLINE = _detect_readline()
+
+
+def paint_prompt(prefix: str, color_code: str) -> str:
+    """给**输入提示符**着色 —— 与 paint() 的区别在于是否用 \\001/\\002 包裹。
+
+    ============ 为什么提示符要特殊处理(2026-09-30 实测) ============
+    直接把手涂色的字符串(含 \\033[…m)交给 input() 会踩第二个坑:
+    readline 计算提示符宽度时,会把 ANSI 字节**也当成可见字符**,
+    导致光标定位/擦除偏移(表现为输入时字符错位、退格擦不干净)。
+
+    readline 的标准解法是用 \\001(SOH) … \\002(STX) 把每个转义序列包住 ——
+    它见到这两个字节就跳过,不计宽度。
+    实测:pyreadline3 的源码用的正则也是 `\\001?\\033\\[…m\\002?`(两个量词可选),
+    说明这个约定在 GNU readline 和 pyreadline3 上都成立。
+
+    ============ 为什么必须判断 _HAS_READLINE ============
+    没有 readline 时,input() 不认识这两个字节,它们会**原样漏出去**:
+
+        实测(Windows,无 readline):
+            b'\\x01\\x1b[92m\\x02你 > \\x01\\x1b[0m\\x02'   ← 含 \\x01 \\x02
+        终端显示:  ^A^[[92m^B你 > ^A^[[0m^B            ← 乱码
+
+    而"不加包裹"在那种环境下本来就是对的:
+    input() 直接把提示符写给终端,终端的 ANSI 解析自己知道
+    \\033[92m 是颜色、不占宽度 —— 不需要额外标记。
+
+    三种环境的行为(实测确认,无 readline 时字节与旧版完全一致):
+      Linux (GNU readline)  → 加包裹  ✅
+      Windows + pyreadline3 → 加包裹  ✅ (源码确认识别)
+      Windows 无 readline   → 不加    ✅ (干净输出)
+    """
+    if not _ENABLED:
+        return prefix
+    if not _HAS_READLINE:
+        return f"{color_code}{prefix}{_RESET}"
+    return f"\001{color_code}\002{prefix}\001{_RESET}\002"

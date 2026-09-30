@@ -26,3 +26,11 @@ python-dotenv>=1.0
 
 # Phase 2.2 : 压缩模块测试集(tests/test_compression.py)
 pytest>=7.0
+
+# 行编辑(输入提示符里正确退格中文、方向键移动光标、↑ 翻历史)
+#
+# Linux/macOS:CPython **内置** readline,无需安装。
+# Windows:CPython 不提供(GNU readline 是 POSIX 库),需要下面这个仿真实现。
+#   不装也能跑,只是输入提示符里无法编辑(退格中文会留残影)。
+#   注意:pyreadline3 不处理 CJK 字符宽度,中文光标对齐可能仍有偏差。
+pyreadline3; sys_platform == "win32"
