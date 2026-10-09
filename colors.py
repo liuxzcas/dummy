@@ -54,21 +54,43 @@ def paint(prefix: str, color_code: str) -> str:
 
 
 def _detect_readline() -> bool:
-    """探测 readline 是否可用(用于 paint_prompt 决定要不要加 \\001/\\002)。
+    """探测 readline 的 \\001/\\002 标记在当前环境下**是否真的会被识别**。
 
     为什么在 colors.py 里自己探测、而不是从 main.py 传进来:
       colors.py 是最底层模块(被 ui.py import),反过来 import main
-      会形成循环依赖。而"readline 是否可用"是**进程级事实**,
-      自己探测一次即可,不需要外部注入。
+      会形成循环依赖。而这是**进程级事实**,自己探测一次即可。
+
+    ============ 为什么不能只判断 "能否 import readline" ============
+    2026-09-30 实测发现的边界缺陷:
+        stdin 不是 TTY 时(管道 / 重定向 / IDE 调用),
+        input() **不会走 readline** —— 但模块仍然 import 得成功。
+        此时加了 \\001/\\002 就会原样漏出去:
+
+            $ echo "hi" | python main.py
+            提示符显示: [^A^[[38;2;152;195;121m^B你 > ^A^[[0m^B]
+                          ↑↑                          ↑↑ 漏出
+
+    所以判据要**同时**满足两个条件:
+      ① readline 模块可导入(Linux 内置 / Windows 需 pyreadline3)
+      ② stdin 是 TTY(input() 才会真的走 readline)
+
+    第二个条件的行为依据:
+      CPython 的 input() 只在 stdin/stdout 都是交互式时才走
+      readline 路径;否则退回普通读取(此时提示符是原样 write 出去的)。
 
     平台差异:
-      · Linux/macOS:CPython 内置 readline → 通常为 True
-      · Windows:CPython 不提供;装了 pyreadline3 才为 True
+      · Linux/macOS:CPython 内置 readline
+      · Windows:CPython 不提供;装了 pyreadline3 才可导入
     """
     try:
         import readline      # noqa: F401
-        return True
     except ImportError:
+        return False
+
+    # 非交互式(管道/重定向)时 input() 不走 readline,标记会漏出去
+    try:
+        return bool(sys.stdin.isatty())
+    except Exception:
         return False
 
 

@@ -145,3 +145,71 @@ def test_ui_prompt_has_no_marker_when_readline_absent(monkeypatch):
     got = u.prompt()
     assert "\x01" not in got
     assert "你 > " in got
+
+
+# ============================================================
+# stdin 非 TTY 的判断（2026-09-30 实测补充的边界缺陷）
+# ============================================================
+def test_no_marker_when_stdin_not_tty(monkeypatch):
+    """**管道/重定向下不能加 \001/\002** —— 那一刻 input() 不走 readline。
+
+    实测依据(强制开色的管道场景):
+        DUMMY_COLOR=1 + 管道 →
+          有 stdin 判断: b'\x1b[38;2;...m你 > \x1b[0m'      ✅ 无标记
+          无 stdin 判断: b'\x01\x1b[38;2;...m\x02你 > ...'  ❌ 标记漏出
+    终端会把 \001/\002 显示成 ^A/^B。
+
+    注意这个场景与 _ENABLED 是**独立**的:
+      · 默认配置下 _ENABLED=False(stdout 非 TTY),paint_prompt 直接返回纯文本 ——
+        碰不到标记,所以看不出问题。
+      · 但用户设了 DUMMY_COLOR=1 强制开色时,_ENABLED=True,就会走到标记那步 ——
+        此时只能靠 stdin.isatty() 挡住。
+    """
+    monkeypatch.setattr(colors, "_ENABLED", True)
+    monkeypatch.setattr(colors, "_HAS_READLINE", False)   # 模拟"非 TTY 探测结果"
+    p = colors.paint_prompt("你 > ", colors.GREEN)
+    assert "\x01" not in p and "\x02" not in p
+    assert colors.GREEN in p        # 颜色仍保留
+
+
+def test_detect_readline_requires_tty(monkeypatch):
+    """_detect_readline() 必须**同时**检查 stdin 是否 TTY。
+
+    只判断"能否 import readline"是不够的:pytest 里 stdin 不是 TTY,
+    此时 input() 不会走 readline,标记会漏出。
+    """
+    import io
+    # 模拟:readline 可导入,但 stdin 不是 TTY
+    fake_stdin = io.StringIO("")
+    monkeypatch.setattr("sys.stdin", fake_stdin)
+    # readline 在本机可导入(cygwin/linux 内置或 pyreadline3),
+    # 但 stdin 非 TTY → 必须返回 False
+    result = colors._detect_readline()
+    assert result is False, (
+        "stdin 非 TTY 时应返回 False(否则 \001/\002 会漏出);"
+        f"实际返回 {result}"
+    )
+
+
+def test_detect_readline_true_when_tty(monkeypatch):
+    """stdin 是 TTY 且 readline 可导入时,应返回 True。"""
+    class FakeTTY:
+        def isatty(self):
+            return True
+    monkeypatch.setattr("sys.stdin", FakeTTY())
+    try:
+        import readline      # noqa: F401
+        has_rl = True
+    except ImportError:
+        has_rl = False
+    expected = has_rl
+    assert colors._detect_readline() is expected
+
+
+def test_detect_readline_false_when_isatty_raises(monkeypatch):
+    """stdin.isatty() 抛异常时不能崩(某些特殊流会这样)。"""
+    class BadStdin:
+        def isatty(self):
+            raise OSError("bad stream")
+    monkeypatch.setattr("sys.stdin", BadStdin())
+    assert colors._detect_readline() is False
