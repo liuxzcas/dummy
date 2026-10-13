@@ -503,10 +503,18 @@ def main():
             break
 
         except Exception as e:
-            # 捕获并显示未预期的错误
-            # 对于 Phase 0 学习项目，显示完整 traceback 更有教育意义
+            # 捕获并显示未预期的错误。
+            #
+            # ★ 必须真的打印 traceback(2026-10-09 修):
+            #   原代码注释写着"显示完整 traceback 更有教育意义",但
+            #   **没有 import traceback、也没有调用它** —— 实际只打了
+            #   一行 "详细信息请看上方 traceback",而上方什么都没有。
+            #   用户报的 "TypeError: process() takes no keyword arguments"
+            #   就是被这个吞掉行号的(只能看到异常类型,看不到位置)。
+            import traceback
+            traceback.print_exc()
             ui.raw(f"\n{paint('❌ 发生错误', RED)}: {type(e).__name__}: {e}")
-            ui.raw("   详细信息请看上方 traceback。\n")
+            ui.raw("   详细信息见上方 traceback。\n")
             # 不退出，让用户可以继续
 
 
