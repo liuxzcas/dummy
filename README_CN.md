@@ -191,6 +191,20 @@ python main.py
   **已知局限**:pyreadline3 不处理 CJK 字符宽度,
   所以中文输入时的光标对齐可能仍有轻微偏差。
 
+**每次发消息都报 `TypeError: process() takes no keyword arguments`?**
+你的 `openai` 被升到了 3.x,而它依赖 **`httpx2`**(注意结尾的 2 ——
+它是 pydantic 团队接手的 httpx 新版,包名不同)。截至 `httpx2` 2.13.1,
+它的 `_decoders.py` 调用 Google 版 `brotli` 时传了一个关键字参数,
+而那个 C 扩展不接受。三种解法任选:
+
+```bash
+pip install -r requirements.txt     # 锁 openai<2(推荐)
+pip uninstall brotli                # 或:去掉那条坏分支
+pip install brotlicffi              # 或:让 httpx2 走正确的分支
+```
+
+`requirements.txt` 现在给每个包都配了上界,原因见该文件顶部的注释。
+
 **想换模型/换服务?** 设置 `DUMMY_AGENT_BASE_URL` 和 `DUMMY_AGENT_MODEL`:
 
 ```bash

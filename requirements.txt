@@ -1,31 +1,46 @@
 # ============================================================
-# Dummy Agent — Phase 0 依赖清单
+# Dummy Agent — 依赖清单
 # 目标：最小可用的 Tool-Calling Agent
 #
-# openai: OpenAI 兼容 API 的 Python SDK
-#         DeepSeek API 完全兼容 OpenAI 的 Chat Completions 接口，
-#         包括 tool_calls / function calling 功能。
-#         版本 >=1.0 引入 native tool calling 支持。
+# ============ 为什么每个包都写了上界(2026-10-09) ============
+# 起因:用户在 Ubuntu 上装完依赖,dummy 一发消息就报
+#       TypeError: process() takes no keyword arguments
+#
+# 根因链(已定位到具体代码行):
+#   requirements 只写 "openai>=1.0" → Ubuntu 的 pip 装了最新的 3.22.0
+#   → openai 3.x 依赖 httpx2>=2.12(注意:包名是 httpx2,不是 httpx)
+#   → httpx2 2.13.1(当前最新)的 _decoders.py:182 有 bug:
+#         self._decompress = self.decompressor.process   # Google 版 brotli
+#         ... self._decompress(data, output_buffer_limit=...)   # ← 传关键字
+#     而 Google 版 brotli 的 process() 是 C 扩展,**不接受关键字参数** → 崩
+#     (装了 brotlicffi 就没事 —— 它走 decompress 分支;没装 brotli 也没事
+#      —— 它根本不发 Accept-Encoding: br)
+#
+# 教训:**只锁下界不锁上界,等于把"上游会不会做不兼容改动"赌在运气上。**
+# 所以下面每个包都配上主版本上界。上界取"当前最新稳定版的主版本 +1"。
 # ============================================================
-# Phase 0
-openai>=1.0
 
-# Phase 1 : 文件读写
-# openpyxl (Phase 2+)
+# openai: OpenAI 兼容 API 的 Python SDK
+#   DeepSeek API 完全兼容 OpenAI 的 Chat Completions 接口(含 tool_calls)。
+#   上界 <2 的理由:openai 3.x 全系依赖 httpx2(当前版本有上述 bug);
+#   本项目代码在 1.97.1 上验证通过。等 httpx2 修好再评估升 3.x。
+openai>=1.0,<2
 
-# Phase 1 : 网络工具
-requests>=2.31
-beautifulsoup4>=4.12
-lxml>=5.0.0
+# requests: web_fetch 等工具用
+requests>=2.31,<3
 
-# Phase 1 : JSON 容错解析（LLM 常生成非法 JSON）
-json5>=0.15
+# beautifulsoup4 + lxml: HTML 解析(web 工具用)
+beautifulsoup4>=4.12,<5
+lxml>=5.0.0,<7
 
-# Phase 2.1 : .env 文件自动加载
-python-dotenv>=1.0
+# json5: JSON 容错解析(LLM 常生成非法 JSON)
+json5>=0.15,<1
 
-# Phase 2.2 : 压缩模块测试集(tests/test_compression.py)
-pytest>=7.0
+# python-dotenv: .env 文件自动加载
+python-dotenv>=1.0,<2
+
+# pytest: 测试套件
+pytest>=7.0,<10
 
 # 行编辑(输入提示符里正确退格中文、方向键移动光标、↑ 翻历史)
 #
@@ -33,4 +48,4 @@ pytest>=7.0
 # Windows:CPython 不提供(GNU readline 是 POSIX 库),需要下面这个仿真实现。
 #   不装也能跑,只是输入提示符里无法编辑(退格中文会留残影)。
 #   注意:pyreadline3 不处理 CJK 字符宽度,中文光标对齐可能仍有偏差。
-pyreadline3; sys_platform == "win32"
+pyreadline3>=3.5,<4; sys_platform == "win32"

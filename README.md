@@ -232,6 +232,22 @@ in `\001`/`\002` so readline doesn't count them as visible width.
   **Known limitation**: pyreadline3 doesn't handle CJK character width,
   so cursor alignment with Chinese input may still be slightly off.
 
+**`TypeError: process() takes no keyword arguments` on every message?**
+Your `openai` got upgraded to 3.x, which depends on `httpx2` (note the
+trailing 2 — it's the pydantic-maintained successor to `httpx`). As of
+`httpx2` 2.13.1 its `_decoders.py` calls Google's `brotli` package with
+a keyword argument that package's C extension doesn't accept. Fix — any
+one of:
+
+```bash
+pip install -r requirements.txt     # pins openai<2 (recommended)
+pip uninstall brotli                # or: strips the broken code path
+pip install brotlicffi              # or: brotlicffi takes the good branch
+```
+
+`requirements.txt` now pins upper bounds on every package for exactly
+this reason — see the comment block at the top of that file.
+
 **Switch models / providers?** Set `DUMMY_AGENT_BASE_URL` and
 `DUMMY_AGENT_MODEL`:
 
