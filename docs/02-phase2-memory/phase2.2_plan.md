@@ -473,4 +473,4 @@ C. 格式合法性:压缩后 history 过 API schema 校验(严格 mock 或真实
 - Step 7(测试集):质量门,最花时间但最值得
 
 > 配套文档:docs/context-compression.md(设计决策 D1-D7)
-> 调研背景:docs/memory-research.md、docs/agent-memory-report.html(08 节)
+> 调研背景:docs/90-research/memory-research.md、docs/90-research/agent-memory-report.html(08 节)

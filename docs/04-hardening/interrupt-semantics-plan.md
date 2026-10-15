@@ -1,7 +1,7 @@
 # 打断语义改进：实施方案
 
 > 编写时间：2026-09-17
-> 前置调研：`docs/agent-concurrency-interrupt-survey.md`
+> 前置调研：`docs/05-cross-platform/agent-concurrency-interrupt-survey.md`
 > 本文件性质：**可执行的实施方案**（含具体文件、行号、改法、验证方法、影响评估）
 > 状态：**待评审**（未动手改代码）
 

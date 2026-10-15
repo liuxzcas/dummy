@@ -179,19 +179,26 @@ skills_manager.py Skill management (SKILL.md parse/validate/index)
 self_improve.py   Self-improvement (detect/propose/verify/rollback)
 compressor.py     Context compression (L1 folding + L2 incremental summary)
 skills/           Skill library (5 built-in skills)
-tests/            pytest suite (115 tests)
+tests/            pytest suite (fully mocked, 300+ tests)
 docs/             Design docs & verification reports
 ```
 
 ## Documentation
 
-- Phase 3 research & design: `docs/phase3-research.md` (skills / error
+**Start here: [`docs/README.md`](./docs/README.md)** — full navigation, organised by
+development phase (folder order = chronological).
+
+- **Development history** (why things are the way they are):
+  `docs/00-overview/development-history.md`
+- **Overall design** (incl. §2 "who decides what — code vs model"):
+  `docs/00-overview/design.html` / `design-zh.html`
+- Phase 3 research & design: `docs/03-phase3-learning/phase3-research.md` (skills / error
   learning / self-improvement / safety / metrics / workspace / 3-store boundary)
-- Memory system design: `docs/memory-system.md` (dual-channel injection)
-- Full-text search design: `docs/fts-search.md` (dual-table scheme)
+- Memory system design: `docs/02-phase2-memory/memory-system.md` (dual-channel injection)
+- Full-text search design: `docs/02-phase2-memory/fts-search.md` (dual-table scheme)
 - Changelog: `WHATS-NEW.md`
-- Regression tests: `python -m pytest tests/` (115 tests, fully mocked,
-  zero API cost)
+- Regression tests: `python -m pytest tests/` (fully mocked, zero API cost)
+- Docs: `docs/README.md`
 
 ## FAQ
 

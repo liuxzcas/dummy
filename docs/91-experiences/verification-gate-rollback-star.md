@@ -521,7 +521,7 @@ dummy 的情境:  单用户交互式,有人在场
 
 ## 七、最终确立的原则
 
-这次推翻之后,项目把结论写进了总设计文档 `docs/design-zh.html` **§2「判断的归属：哪些给代码，哪些给模型」**：
+这次推翻之后,项目把结论写进了总设计文档 `docs/00-overview/design-zh.html` **§2「判断的归属：哪些给代码，哪些给模型」**：
 
 ### 判据
 
@@ -603,6 +603,6 @@ dummy 的情境:  单用户交互式,有人在场
 
 **相关设计文档**：
 - `docs/p1b-verification-design.md` — 验证门的**当时**设计依据（其结论已被本复盘取代,**保留作历史记录**）
-- `docs/design-zh.html` §2 — 推翻后确立的原则
+- `docs/00-overview/design-zh.html` §2 — 推翻后确立的原则
 - `docs/cross-component-audit.md` — 护栏与验证门互锁的审计记录
 - `docs/experiences/tool-interrupt-star.md` — 工具打断功能的 STAR 复盘（另一件事,可对照阅读）

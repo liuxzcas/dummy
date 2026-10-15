@@ -145,17 +145,22 @@ skills_manager.py 技能管理(SKILL.md 解析/校验/索引)
 self_improve.py   自我改进(检测/提案/验证门/回退)
 compressor.py     上下文压缩(L1 折叠 + L2 增量摘要)
 skills/           技能库(5 个预置技能)
-tests/            pytest 测试套件(115 项)
+tests/            pytest 测试套件(300+ 项,全 mock 零成本)
 docs/             设计文档与验证报告
 ```
 
 ## 文档导航
 
-- 设计研究:`docs/phase3-research.md`(技能/错误学习/自我改进/安全保障/量化评估/workspace/三库边界)
-- 记忆系统设计:`docs/memory-system.md`(双通道注入)
-- 全文搜索设计:`docs/fts-search.md`(双表方案)
+**从这里开始:[`docs/README.md`](./docs/README.md)** —— 完整导航,按开发阶段组织(文件夹顺序 = 时间先后)。
+
+- **开发演进史**(为什么是现在这样):`docs/00-overview/development-history.md`
+- **总体设计**(含 §2「判断的归属:哪些给代码,哪些给模型」):
+  `docs/00-overview/design-zh.html` / `design.html`
+- 设计研究:`docs/03-phase3-learning/phase3-research.md`(技能/错误学习/自我改进/安全保障/量化评估/workspace/三库边界)
+- 记忆系统设计:`docs/02-phase2-memory/memory-system.md`(双通道注入)
+- 全文搜索设计:`docs/02-phase2-memory/fts-search.md`(双表方案)
 - 更新记录:`WHATS-NEW.md`
-- 回归测试:`python -m pytest tests/`(115 项,全 mock 零成本)
+- 回归测试:`python -m pytest tests/`(300+ 项,全 mock 零成本)
 
 ## 常见问题
 

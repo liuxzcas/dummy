@@ -50,7 +50,7 @@
 | 自动回退 | 验证失败 → git checkout + 备份还原(双保险)+ 记教训 + 报告 |
 | 安全三层分区 | 自由区(技能/文档)/ 受控区(核心代码,改必须批准)/ 禁止区(.git,永不触碰) |
 | 改进记录 | logs/self-improve.jsonl(§3.5 量化评估数据:状态/工具/前后错误率) |
-| 手动测试指南 | docs/phase3-step4-manual-test.md(10 组测试项 + 9 步流程) |
+| 手动测试指南 | docs/03-phase3-learning/phase3-step4-manual-test.md(10 组测试项 + 9 步流程) |
 
 提交:9056bbf / 384e0af / f08a0d4
 
@@ -86,11 +86,11 @@
 
 | 文档 | 内容 |
 |------|------|
-| docs/phase3-research.md | 研究(工程实践 > SOTA)+ 三能力域 + 安全保障 §3.4 + 量化评估 §3.5 + workspace 机制 §7 + 三库边界 §8 |
-| docs/phase3-step1/2-verification.md | Step 1/2 验证报告(方法论+过程+结果) |
-| docs/phase3-step4-manual-test.md | Step 4 手动测试指南 |
-| docs/discussion-notes.md | 待讨论事项清单(已全部定稿) |
-| docs/scratch/architecture-review.md | 架构评估(不重构结论 + 3 项定向重构待办) |
+| docs/03-phase3-learning/phase3-research.md | 研究(工程实践 > SOTA)+ 三能力域 + 安全保障 §3.4 + 量化评估 §3.5 + workspace 机制 §7 + 三库边界 §8 |
+| docs/03-phase3-learning/phase3-step1-verification.md、phase3-step2-verification.md | Step 1/2 验证报告(方法论+过程+结果) |
+| docs/03-phase3-learning/phase3-step4-manual-test.md | Step 4 手动测试指南 |
+| docs/99-scratch/discussion-notes.md | 待讨论事项清单(已全部定稿) |
+| docs/99-scratch/architecture-review.md | 架构评估(不重构结论 + 3 项定向重构待办) |
 
 提交:304a508 / 94bf8be / 9505026 / 983533b / fb43319 / f08a0d4 / 4ee4449 等
 
@@ -203,10 +203,10 @@
 
 | 文档 | 说明 |
 |------|------|
-| `docs/design.html` / `design-zh.html` | **总设计文档**(中英双版,11 章)。原 Phase 0 文档归档为 `design-phase0*.html` |
+| `docs/00-overview/design.html` / `design-zh.html` | **总设计文档**(中英双版,11 章)。原 Phase 0 文档归档为 `design-phase0*.html` |
 | **§2 判断的归属** | 新增章节:哪些判断给代码、哪些给模型(本项目最核心的架构原则) |
-| `docs/agent-concurrency-interrupt-survey.md` | 工具并发与打断机制横向调研(1370 行,8 个系统) |
-| `docs/interrupt-semantics-plan.md` | 打断语义改进实施方案(894 行) |
+| `docs/05-cross-platform/agent-concurrency-interrupt-survey.md` | 工具并发与打断机制横向调研(1370 行,8 个系统) |
+| `docs/04-hardening/interrupt-semantics-plan.md` | 打断语义改进实施方案(894 行) |
 | `CHANGELOG.md` | 按主题整理的变更记录 |
 | `docs/agent-concurrency-*.md` 等 | 见 `docs/` 目录 |
 | `pytest.ini` | 让外部工具能识别本项目的规范测试命令 |

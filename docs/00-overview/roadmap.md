@@ -17,7 +17,7 @@
 | `prompt.py` | System Prompt 构建器，动态从注册表获取工具列表 |
 | `main.py` | CLI REPL 入口 |
 
-设计文档：`docs/design.html`（英文）、`docs/design-zh.html`（中文）
+设计文档：`docs/00-overview/design.html`（英文）、`docs/00-overview/design-zh.html`（中文）
 
 ### Phase 1 — 工具扩展（已基本完成）
 
