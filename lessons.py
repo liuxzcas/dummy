@@ -94,7 +94,18 @@ def generate_lesson(llm, event_text: str) -> list[dict]:
         f"事件: {event_text}\n\n"
         "反思:发生了什么、为什么错、下次应该怎么做。\n"
         "如果这暴露了一条可复用的规则,输出 JSON 数组(最多 1 条):\n"
-        '[{"lesson": "一句话规则,格式:做X会错,应该Y", "category": "类别"}]\n'
+        '[{"lesson": "一句话规则,格式:做X会错,应该Y", '
+        '"category": "类别", '
+        '"applies_when": "这条规则在什么条件下成立"}]\n'
+        "\n"
+        "关于 applies_when(适用条件):\n"
+        "- 写**具体的、可判断的**条件,不要写\"某些情况下\"这类空话。\n"
+        "- 如果这条规则的成立依赖环境(超时上限、操作系统、工具版本、"
+        "路径规模等),把那个依赖写出来。\n"
+        "- 例:\"终端超时上限为 30 秒时\"、\"在 Windows 上\"、"
+        "\"目标目录含上万文件时\"。\n"
+        "- 如果它无条件成立(如通用编程规范),留空字符串。\n"
+        "\n"
         "如果是信息不足或一次性失误,输出 []。\n"
         "只输出 JSON,不要其他内容。"
     )
@@ -139,9 +150,11 @@ def _parse_lessons_response(content: str) -> list[dict]:
         m = re.search(r'"lesson"\s*:\s*"([^"]+)"', text)
         if m:
             cat = re.search(r'"category"\s*:\s*"([^"]+)"', text)
+            aw = re.search(r'"applies_when"\s*:\s*"([^"]*)"', text)
             candidates = [{
                 "lesson": m.group(1),
                 "category": cat.group(1) if cat else "general",
+                "applies_when": aw.group(1) if aw else "",
             }]
     result = []
     for item in candidates:
@@ -153,5 +166,7 @@ def _parse_lessons_response(content: str) -> list[dict]:
         result.append({
             "lesson": lesson[:200],
             "category": str(item.get("category") or "general")[:40],
+            # 适用条件:模型生成,可能没给(老格式)→ 空串
+            "applies_when": str(item.get("applies_when") or "").strip()[:200],
         })
     return result

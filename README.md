@@ -80,7 +80,7 @@ cache hit rate / cost / window usage.
 | `/search <keyword>` | Full-text search over history + archived tool output (EN/ZH) |
 | `/memories` | List remembered facts; `/memories del <id>` to remove |
 | `/skills` | List skills; `/skills show <name>` full content; `/skills del <name>` remove |
-| `/lessons` | List learned lessons; `/lessons confirm <id>` verify; `/lessons del <id>` remove |
+| `/lessons` | List learned lessons; `confirm <id>` verify; `del <id>` remove; `retire <id>` / `restore <id>` (Phase 3 Step 5); `-a` include retired |
 | `/improve <tool>` | Self-improvement: analyze a tool's errors and propose a fix (needs approval; auto-rollback on failure) |
 | `/history` / `/history del <n>` | View current session history / delete a record |
 | `/sessions` / `/sessions del <id>` | List sessions / delete a session (cascades its data) |
@@ -137,8 +137,16 @@ Learn from mistakes to avoid repeating them:
   rule lesson into the lessons store
 - **Injection**: each turn, relevant lessons are retrieved and injected
   (≤5, relevance-based, pending ones marked "待验证")
-- **Management**: `/lessons` to view; `/lessons confirm <id>` to verify;
-  hits ≥2 auto-verifies; `/lessons del <id>` to remove
+- **Management**: `/lessons` to view (retired ones are hidden);
+  `/lessons confirm <id>` to verify; `/lessons del <id>` to remove
+- **Applicability & retirement** (Phase 3 Step 5): each lesson carries an
+  `applies_when` clause written by the model at generation time and shown
+  alongside the lesson at injection — so the model can tell that a rule tied
+  to "a 30-second timeout cap" no longer applies once the cap becomes 120s.
+  The code never parses it (judgement stays with the model). Stale rules can
+  be shelved with `/lessons retire <id>` (kept for the record, not injected;
+  `/lessons restore <id>` undoes it). `hits` now counts **retrieval matches**
+  only — not fallback padding.
 
 ## Self-Improvement (/improve)
 

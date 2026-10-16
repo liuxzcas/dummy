@@ -1073,7 +1073,7 @@ class DummyAgent:
         幂等:重复注入先移除旧教训段。三库边界(§8):教训 = 规则,
         独立段"已知教训(规则):",与记忆/技能分开。
         """
-        lessons = self.session_store.list_lessons()
+        lessons = self.session_store.list_lessons()      # 默认已排除 retired
         if not lessons:
             return
         lessons.sort(
@@ -1082,6 +1082,7 @@ class DummyAgent:
         )
         by_id = {l["id"]: l for l in lessons}
         picked: list[dict] = []
+        retrieved_ids: list[int] = []      # ★ 只记【检索命中】的,不含保底填充
         seen: set[int] = set()
         for r in self.session_store.search(user_input, source="lesson", limit=8):
             lid = r.get("seq")
@@ -1089,6 +1090,7 @@ class DummyAgent:
                 continue
             picked.append(by_id[lid])
             seen.add(lid)
+            retrieved_ids.append(lid)
         # 保底:检索命中不足时补高频教训(verified 优先,lessons 已排序;
         # pending 也补——新教训库注入不空转,标记"待验证"即可)
         if len(picked) < 3:
@@ -1106,6 +1108,10 @@ class DummyAgent:
         for l in picked:
             mark = "" if l["status"] == "verified" else " (待验证)"
             block_lines.append(f"- [{l['category']}] {l['lesson']}{mark}")
+            # 适用条件:一并展示,让模型自己判断"现在还成立吗"(代码不解析)
+            aw = (l.get("applies_when") or "").strip()
+            if aw:
+                block_lines.append(f"    ↳ 适用条件: {aw}")
         content = self.history[0]["content"]
         idx = content.find("已知教训(规则):")
         if idx >= 0:
@@ -1114,7 +1120,7 @@ class DummyAgent:
             "role": "system",
             "content": content + "\n" + "\n".join(block_lines),
         }
-        self.session_store.increment_lesson_hits([l["id"] for l in picked])
+        self.session_store.increment_lesson_hits(retrieved_ids)
         print(f"\n  {paint('🧠 注入教训', PURPLE)} ({len(picked)} 条):")
         for l in picked:
             print(f"    - [{l['category']}] {l['lesson'][:60]}")
@@ -1132,7 +1138,8 @@ class DummyAgent:
         items = generate_lesson(self.llm, f"用户纠正: {user_input[:200]}")
         for item in items:
             self.session_store.add_lesson(
-                self.current_session_id, item["lesson"], item["category"])
+                self.current_session_id, item["lesson"], item["category"],
+                item.get("applies_when", ""))
             print(f"\n  {paint('🧠 学到教训', PURPLE)}: {item['lesson']}")
 
     def _learn_from_tool_error(self, tool_name: str, result: str) -> None:
@@ -1153,7 +1160,8 @@ class DummyAgent:
             self.llm, f"工具 {tool_name} 执行失败: {result[:200]}")
         for item in items:
             self.session_store.add_lesson(
-                self.current_session_id, item["lesson"], item["category"])
+                self.current_session_id, item["lesson"], item["category"],
+                item.get("applies_when", ""))
             print(f"\n  {paint('🧠 学到教训', PURPLE)}: {item['lesson']}")
 
     # ---------------------------------------------------------------

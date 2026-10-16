@@ -352,7 +352,13 @@ class SessionStore:
             """
         )
         # 教训表(Phase 3 Step 3):错误学习——规则(do/don't),与记忆(事实)分库
-        # status: pending(未验证)/ verified(用户确认或 hits>=2 自动转正)
+        # status: pending(未验证)/ verified(用户确认或检索命中>=2 自动转正)
+        #         / retired(已退役,不再注入 —— Phase 3 Step 5)
+        # applies_when: 这条规则**在什么条件下成立**(模型生成,自由文本)。
+        #   用途:注入时一并展示,让模型自己判断"现在还适用吗"。
+        #   例:"在受 30 秒超时限制的终端中" —— 当默认超时改成 120 秒后,
+        #   模型看到这个条件就知道该规则过时了。**代码不解析它**,
+        #   只负责展示(判断归模型,见 design.html §2)。
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS lessons (
@@ -363,7 +369,8 @@ class SessionStore:
                 status TEXT NOT NULL DEFAULT 'pending',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
-                hits INTEGER NOT NULL DEFAULT 0
+                hits INTEGER NOT NULL DEFAULT 0,
+                applies_when TEXT NOT NULL DEFAULT ''
             )
             """
         )
@@ -373,8 +380,27 @@ class SessionStore:
             ON lessons(status)
             """
         )
+        # ---- 迁移:老库补列(CREATE TABLE IF NOT EXISTS 不会给已有表加列) ----
+        # SQLite 的 ALTER TABLE ADD COLUMN 不幂等(列已存在会报错),
+        # 所以先查 PRAGMA 再决定加不加。
+        self._add_column_if_missing(conn, "lessons", "applies_when",
+                                    "TEXT NOT NULL DEFAULT ''")
         conn.commit()
         conn.close()
+
+    @staticmethod
+    def _add_column_if_missing(conn: sqlite3.Connection, table: str,
+                              column: str, decl: str) -> None:
+        """给已有表补列(幂等)。
+
+        为什么需要它:`CREATE TABLE IF NOT EXISTS` 对**已存在**的表什么都不做,
+        所以新加的列在老的 .db 文件里不存在。而 SQLite 的
+        `ALTER TABLE ... ADD COLUMN` 不幂等 —— 列已存在会抛
+        OperationalError("duplicate column name")。所以先查 PRAGMA 再决定。
+        """
+        cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+        if column not in cols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
 
     @staticmethod
     def _now_iso() -> str:
@@ -943,25 +969,35 @@ class SessionStore:
     # Phase 3 Step 3:教训(lessons)——错误学习
     # ---------------------------------------------------------------
     def add_lesson(self, session_id: str, lesson: str,
-                   category: str = "general") -> int:
-        """新增教训条目(状态 pending);返回 id。"""
+                   category: str = "general",
+                   applies_when: str = "") -> int:
+        """新增教训条目(状态 pending);返回 id。
+
+        applies_when: 这条规则在什么条件下成立(自由文本)。可选 ——
+        老调用方不传就是空串(向后兼容)。
+        """
         now = self._now_iso()
         conn = sqlite3.connect(self.db_path)
         try:
             conn.execute("PRAGMA busy_timeout = 10000")
             cur = conn.execute(
                 """INSERT INTO lessons (session_id, lesson, category, status,
-                   created_at, updated_at, hits)
-                   VALUES (?, ?, ?, 'pending', ?, ?, 0)""",
-                (session_id, lesson, category, now, now),
+                   created_at, updated_at, hits, applies_when)
+                   VALUES (?, ?, ?, 'pending', ?, ?, 0, ?)""",
+                (session_id, lesson, category, now, now, applies_when),
             )
             conn.commit()
             return cur.lastrowid
         finally:
             conn.close()
 
-    def list_lessons(self, status: str | None = None) -> list[dict[str, Any]]:
-        """列出教训(status 过滤可选);按 id 倒序(新教训在前)。"""
+    def list_lessons(self, status: str | None = None,
+                     include_retired: bool = False) -> list[dict[str, Any]]:
+        """列出教训(status 过滤可选);按 id 倒序(新教训在前)。
+
+        **默认排除 retired**(已退役的教训不再参与注入 —— Phase 3 Step 5)。
+        要看全部(含退役)显式传 include_retired=True。
+        """
         conn = sqlite3.connect(self.db_path)
         try:
             if status:
@@ -969,9 +1005,14 @@ class SessionStore:
                     "SELECT * FROM lessons WHERE status = ? ORDER BY id DESC",
                     (status,),
                 ).fetchall()
-            else:
+            elif include_retired:
                 rows = conn.execute(
                     "SELECT * FROM lessons ORDER BY id DESC"
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM lessons WHERE status != 'retired' "
+                    "ORDER BY id DESC"
                 ).fetchall()
             cols = [d[0] for d in conn.execute("SELECT * FROM lessons").description]
             return [dict(zip(cols, r)) for r in rows]
@@ -1004,8 +1045,54 @@ class SessionStore:
         finally:
             conn.close()
 
+    def retire_lesson(self, lesson_id: int) -> bool:
+        """退役教训(→ retired,不再注入);不存在返回 False。
+
+        ============ 为什么需要退役(Phase 3 Step 5) ============
+        教训是【长期资产】,会随环境变化过时 ——
+        实测例:第 4 条教训写的是"在受 30 秒总超时限制的终端中...",
+        而 terminal 默认超时早已改成 120 秒 → 该教训已不适用,
+        却仍被每轮注入(每轮都付 token,且可能误导模型)。
+
+        退役而非删除:**保留记录便于回看**(为什么当时学到这条),
+        只是不再参与注入。可 restore 恢复(可回退 > 防错)。
+        """
+        return self._set_lesson_status(lesson_id, "retired")
+
+    def restore_lesson(self, lesson_id: int) -> bool:
+        """恢复已退役的教训(→ pending,回到正常流程);不存在返回 False。"""
+        return self._set_lesson_status(lesson_id, "pending")
+
+    def _set_lesson_status(self, lesson_id: int, status: str) -> bool:
+        now = self._now_iso()
+        conn = sqlite3.connect(self.db_path)
+        try:
+            conn.execute("PRAGMA busy_timeout = 10000")
+            cur = conn.execute(
+                "UPDATE lessons SET status = ?, updated_at = ? WHERE id = ?",
+                (status, now, lesson_id),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+        finally:
+            conn.close()
+
     def increment_lesson_hits(self, lesson_ids: list[int]) -> None:
-        """注入命中计数;命中 >=2 的 pending 教训自动转 verified。"""
+        """累计教训的**检索命中**次数;命中 >=2 的 pending 自动转 verified。
+
+        ============ 判据变了(Phase 3 Step 5,2026-10-16) ============
+        原来:调用方传"所有被注入的" → hits 含义是【被注入次数】。
+              → 但注入含"保底填充"(检索没命中、纯粹为了不空转而补的),
+                那些与当前输入无关,也照样 +1 → **hits 被污染**。
+
+        现在:调用方只传【FTS 检索真正命中的】。
+              → hits 含义变成"这条教训被当前输入匹配到了多少次",
+                比"碰巧被注入"有意义得多。
+
+        注意:这**仍不等于"被用到了"**(那只模型自己知道)。
+        hits 现在的正确读法是【相对比较】(A 比 B 更常被匹配到),
+        而不是绝对意义。长期 hits 为 0 → 是退役的候选信号。
+        """
         if not lesson_ids:
             return
         conn = sqlite3.connect(self.db_path)

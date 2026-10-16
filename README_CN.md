@@ -71,7 +71,7 @@ python3 -m pip install -r requirements.txt
 | `/search <关键词>` | 全文搜索历史对话与折叠原文(支持中英文) |
 | `/memories` | 查看已记住的事实;`/memories del <id>` 删除 |
 | `/skills` | 列出技能;`/skills show <name>` 看全文;`/skills del <name>` 删除 |
-| `/lessons` | 列出学到的教训;`/lessons confirm <id>` 验证;`/lessons del <id>` 删除 |
+| `/lessons` | 列出学到的教训;`confirm <id>` 验证;`del <id>` 删除;`retire <id>` / `restore <id>` 退役/恢复(Phase 3 Step 5);`-a` 含已退役 |
 | `/improve <工具名>` | 自我改进:分析该工具错误,提案修复(需批准,改坏自动回退) |
 | `/history` / `/history del <序号>` | 查看当前会话记录 / 删除某条 |
 | `/sessions` / `/sessions del <id>` | 列出会话 / 删除会话(级联清理其数据) |
@@ -115,7 +115,12 @@ python3 -m pip install -r requirements.txt
 
 - **生成**:用户纠正(检测强纠正信号)或工具执行错误时,即时反思生成一句话规则教训
 - **注入**:任务开始时按相关性检索注入(≤5 条),pending 教训标注"待验证"
-- **管理**:`/lessons` 查看;`/lessons confirm <id>` 确认有效;hits ≥2 自动转正;`/lessons del <id>` 删除
+- **管理**:`/lessons` 查看(已退役的不显示);`/lessons confirm <id>` 确认有效;hits ≥2 自动转正;`/lessons del <id>` 删除
+- **适用条件与退役**(Phase 3 Step 5):每条教训带一个 `applies_when`(模型生成时写,注入时一并展示)——
+  这样当依赖的环境变了(如"30 秒超时上限"变成 120 秒),**模型自己看得出该规则已不适用**。
+  代码不解析它(判断归模型)。过时的可以用 `/lessons retire <id>` 退役
+  (保留记录、不再注入;`/lessons restore <id>` 恢复)。
+  `hits` 现在只记**检索命中**(不再含保底填充的凑数条目)。
 
 ## 自我改进(/improve)
 

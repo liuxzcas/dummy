@@ -142,7 +142,9 @@ def handle_lessons_command(user_input: str, session_store) -> list[str]:
     """/lessons 命令处理(纯函数,可测试,Phase 3 Step 3)。
 
     支持:/lessons(列出)/ /lessons confirm <id>(验证)/
-    /lessons del <id>(删除)。返回要打印的行列表。
+    /lessons del <id>(删除)/
+    /lessons retire <id>(退役,不再注入 —— Phase 3 Step 5)/
+    /lessons restore <id>(恢复退役的教训)。返回要打印的行列表。
     """
     parts = user_input.split()
     if len(parts) >= 2 and parts[1].lower() == "confirm":
@@ -159,16 +161,37 @@ def handle_lessons_command(user_input: str, session_store) -> list[str]:
             return ["用法: /lessons del <id>", ""]
         ok = session_store.delete_lesson(lid)
         return [f"已删除教训 #{lid}" if ok else f"教训 #{lid} 不存在", ""]
-    lessons = session_store.list_lessons()
+    if len(parts) >= 2 and parts[1].lower() == "retire":
+        try:
+            lid = int(parts[2])
+        except (IndexError, ValueError):
+            return ["用法: /lessons retire <id>", ""]
+        ok = session_store.retire_lesson(lid)
+        return [f"已退役教训 #{lid}(不再注入;可用 /lessons restore {lid} 恢复)"
+                if ok else f"教训 #{lid} 不存在", ""]
+    if len(parts) >= 2 and parts[1].lower() == "restore":
+        try:
+            lid = int(parts[2])
+        except (IndexError, ValueError):
+            return ["用法: /lessons restore <id>", ""]
+        ok = session_store.restore_lesson(lid)
+        return [f"已恢复教训 #{lid}(回到 pending,可重新参与注入)"
+                if ok else f"教训 #{lid} 不存在", ""]
+    # 列表:默认不含退役的;加 -a / --all 看全部
+    show_all = any(a in ("-a", "--all") for a in parts[1:])
+    lessons = session_store.list_lessons(include_retired=show_all)
     if not lessons:
         return ["🧠 (暂无教训)", ""]
-    lines = [f"🧠 教训 ({len(lessons)} 条):"]
+    lines = [f"🧠 教训 ({len(lessons)} 条{'，含已退役' if show_all else ''}):"]
     for l in lessons:
-        mark = "✅" if l["status"] == "verified" else "⏳"
+        mark = {"verified": "✅", "retired": "🚫"}.get(l["status"], "⏳")
         lines.append(
             f"  {mark} #{l['id']} [{l['category']}] {l['lesson'][:70]}"
             f" (命中 {l['hits']})"
         )
+        aw = (l.get("applies_when") or "").strip()
+        if aw:
+            lines.append(f"      ↳ 适用条件: {aw[:70]}")
     lines.append("")
     return lines
 
@@ -203,6 +226,9 @@ def print_help():
       /lessons          列出学到的教训（错误学习）
       /lessons confirm <id>  确认教训为已验证
       /lessons del <id>     删除教训
+      /lessons retire <id>  退役教训（不再注入，可 restore 恢复）
+      /lessons restore <id> 恢复已退役的教训
+      /lessons -a           列出全部（含已退役）
       /improve <工具名>   自我改进：分析该工具错误并提案修复
       /quit     退出 (/exit /q 也可)
 

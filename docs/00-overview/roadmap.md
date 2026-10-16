@@ -67,7 +67,7 @@
 | Step 2 技能创建 | ✅ | create-skill 元技能自举、validate_skill 校验 — 真机验证（创建闭环）[phase3-step2-verification.md](./phase3-step2-verification.md) |
 | Step 3 错误学习 | ✅ | lessons 独立库、纠正/工具错误即时反思、按需注入 ≤5、/lessons（三库边界 §8） |
 | Step 4 自我改进 | ✅ | /improve 闭环（检测→提案→批准→修改→验证→回退）、安全五道防线、改进记录 — [phase3-step4-manual-test.md](./phase3-step4-manual-test.md) |
-| Step 5 Curator + 综合验证 | ⏳ | 技能/教训管理去重、使用统计、全链路回归（待做） |
+| Step 5 Curator | ✅ | 教训**适用条件**(applies_when:模型生成,注入时展示供模型判断) + **退役机制**(`/lessons retire\|restore`,默认不注入) + 计数判据修正(只记检索命中,不含保底填充) —— 2026-10-16 |
 
 > 关键决策沉淀：工程实践 > SOTA 论文（PlugMem 15/30 vs Hermes 93% 实证）、
 > 技能原子化+工作流编排（D5=B）、教训独立库+按需检索（可回退）、
