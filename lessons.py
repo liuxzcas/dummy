@@ -37,15 +37,16 @@ def has_correction_signal(user_input: str) -> bool:
     return bool(CORRECTION_PATTERNS.search(user_input))
 
 
-# 工具**未执行**的标记(用户取消 / 拒绝):既不是成功,也不是执行失败。
-# 单独一类,因为它必须同时满足两个相反的要求:
+# 工具**未执行 / 结果未知**的标记(用户取消、拒绝、打断):
+# 既不是成功,也不是执行失败。单独一类,因为它必须同时满足两个相反的要求:
 #   - 对 is_tool_error 而言:要算"非成功"(否则"取消的命令"会被记成通过证据)
 #   - 对"是否真执行过"而言:要能区分出来(不附退出码,不是真失败)
 NOOP_MARKERS = (
     "[用户取消]",
     "[用户拒绝]",
     "[用户拒绝将内容写到项目目录之外]",
-    "[未执行]",
+    "[未执行]",     # 工具没开始跑(见 session_store.SKIPPED_TEXT)
+    "[结果未知]",   # 跑到一半被打断、结果没取到(见 session_store.CANCELLED_TEXT)
 )
 
 

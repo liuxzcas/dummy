@@ -95,6 +95,8 @@ from session_store import (
     SessionStore,
     close_interrupted_tool_sequence,
     repair_tool_pairing,
+    SKIPPED_TEXT,
+    INTERRUPTED_RESULT_NOTE,
 )
 from tool_guardrails import (
     GuardrailConfig,
@@ -512,11 +514,14 @@ class DummyAgent:
                     try:
                         result = self.tools.dispatch(tool_name, tool_args)
                     except InterruptSignal:
-                        # 用户 /p 打断(发生在 handler 确认输入时)
+                        # 用户 /p 打断(发生在 handler 的确认输入阶段)
+                        #
+                        # 此时工具【尚未开始执行】(卡在"要不要执行"的确认上),
+                        # 所以没有副作用 → 用 SKIPPED_TEXT(可以安全重做)。
                         interrupt_triggered = True
                         self.history.append({
                             "role": "tool", "tool_call_id": tool_call_id,
-                            "content": "[用户打断,工具未执行]"})
+                            "content": SKIPPED_TEXT})
                         break
 
                     # ---------------------------------------------------
@@ -552,13 +557,22 @@ class DummyAgent:
                     # ---------------------------------------------------
                     # 检查点 A:工具执行后,检查监听线程累积的 /p 触发
                     # (工具运行中用户敲 /p,执行完立即消费)
+                    #
+                    # ★ 2026-10-16 修复:这里原来用占位符
+                    #   "[用户打断,工具未执行]" **顶掉了已经拿到的真实结果** ——
+                    #   工具明明跑完了(result 已取得、上面刚打印给用户看过),
+                    #   却告诉模型"未执行",与用户看到的不一致。
+                    #
+                    #   现在保留真实结果,只附一句说明中断的旁注。
+                    #   (不担心落库:break 之后会走检查点 B,那里统一 persist;
+                    #    也不担心被重复补位:_backfill_pending_tool_calls 幂等。)
                     # ---------------------------------------------------
                     if not interrupt_triggered:
                         interrupt_triggered = self._drain_interrupt()
                     if interrupt_triggered:
                         self.history.append({
                             "role": "tool", "tool_call_id": tool_call_id,
-                            "content": "[用户打断,工具未执行]"})
+                            "content": result + INTERRUPTED_RESULT_NOTE})
                         break
 
                     # -------------------------------------------------------
@@ -813,11 +827,14 @@ class DummyAgent:
 
         与 _repair_history 的分工:
         - _repair_history:兜底保险丝,任何来源的历史破损都修,
-          占位文案 "[工具结果缺失:...]"(强调的是"缺");
-        - 本方法:打断场景下的**语义化**补位,文案
-          "[用户打断,工具未执行]"(让 LLM 知道是用户叫停,不是结果丢了)。
+          占位文案 MISSING_TOOL_REPLY(强调的是"缺",且不知道当时发生了什么);
+        - 本方法:打断场景下的**语义化**补位,用 SKIPPED_TEXT
+          (让 LLM 知道是用户叫停、且这次调用【没有产生副作用】)。
 
         返回补入的条数。已回复过的 id 不会重复补(幂等)。
+
+        ★ 幂等性很重要(2026-10-16):检查点 A 在保留真实结果后 break,
+          那条 id 已经被回复过 → 这里会跳过它,不会覆盖成占位符。
         """
         replied = {
             m.get("tool_call_id")
@@ -829,7 +846,7 @@ class DummyAgent:
                 self.history.append({
                     "role": "tool",
                     "tool_call_id": tc.id,
-                    "content": "[用户打断,工具未执行]",
+                    "content": SKIPPED_TEXT,
                 })
                 added += 1
         return added
