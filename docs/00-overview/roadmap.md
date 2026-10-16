@@ -25,7 +25,7 @@
 |------|------|------|
 | `tools/read_file.py` | ✅ 完成 | 支持 offset/limit 翻页，LLM 可自主分页读取大文件 |
 | `tools/write_file.py` | ✅ 完成 | 覆盖/追加模式、原子写入、Diff 预览、路径安全确认 |
-| `tools/search_files.py` | ⬜ 待做 | 搜索文件内容和文件名 |
+| `tools/search_files.py` | ❌ **决定不做** | 搜索文件内容和文件名 —— **terminal 工具已完全覆盖**（`rg` 搜内容、`find` 搜文件名），另做工具属功能重叠（2026-10-16 用户决策） |
 | `tools/web_search.py` | ✅ 完成 | 使用 Tavily Search API 返回结构化网络搜索结果 |
 | `tools/web_extract.py` | ✅ 完成 | 提取网页正文文本，自动补协议、清洗噪音 |
 

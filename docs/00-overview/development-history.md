@@ -307,16 +307,23 @@ Phase 3 起:    每个 Step 有独立验证报告
 ## 当前状态（2026-10-14）
 
 ```
-提交:      149 个
+提交:      150+ 个
 代码:      ~7000 行 Python(不含测试)
-测试:      314 passed / 1 xfailed
+测试:      336 passed / 1 xfailed
 工具:      5 个
 分支:      main + 若干实验分支(arch/*、plugmem-v2 等)
 ```
 
+**已完成**（原"未完成"清单里的）：
+- ✅ 打断语义改进（工具执行完被打断时保留真实结果；区分"未执行"与"结果未知"）
+- ✅ 残留进程报告接线（含已排除方案的实测记录，见 `05-cross-platform/lingering-process-report.md`）
+
 **未完成**：
-- 打断语义改进（`04-hardening/interrupt-semantics-plan.md` 已写方案，含一个真 bug）
-- 残留进程报告接线（`tasks.lingering()` 机制就位，`core.py` 未调用）
-- Ubuntu 真机验证 readline 移植版
+- Ubuntu 真机验证 readline 移植版（`tests/manual/test_readline_effect.py`）
+- Phase 3 Step 5：Curator + 综合验证（技能/教训去重、使用统计、全链路回归）
+
+**已决定不做**：
+- `tools/search_files.py` —— terminal 工具已完全覆盖（`rg` 搜内容、`find` 搜文件名），
+  另做工具属功能重叠（2026-10-16 用户决策）
 
 **文档导航**：见 [docs/README.md](./README.md)
