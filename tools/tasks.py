@@ -258,14 +258,30 @@ class TaskRegistry:
         return rec
 
     def note_descendants(self, rec: TaskRecord) -> None:
-        """探查并记下后代 pid(在命令执行完/超时后调用)。
+        """探查并记下后代 pid(**累加式**,多次调用取并集)。
+
+        ============ 为什么必须累加而不是覆盖(2026-10-16 实测) ============
+        原来的实现是 `rec.descendants = list_descendants(rec.pid)` ——
+        每次都**覆盖**。在"轮询探查"的用法下这会丢掉好结果:
+
+            第 1 次探:bash 活着 → 探到 3 个,写入 ✅
+            第 2 次探:bash 已退出 → 探到 0 个,**覆盖成空** ❌
+
+        实测现象正是如此:第一次调用返回 3 个,最终 descendants 却是 []。
+
+        改成并集后:一旦探到就永久保留 —— 后续探到空也不会抹掉。
+        (pid 复用导致"旧 pid 被新进程占用"的理论风险极小:
+         descendants 只用于"清理残留",真要清理时会再校验存活。)
 
         为什么要在"之后"探查:进程刚启动时子进程可能还没 fork 出来。
         """
         try:
-            rec.descendants = list_descendants(rec.pid)
+            found = list_descendants(rec.pid)
         except Exception:
-            rec.descendants = []
+            found = []
+        if found:
+            merged = set(rec.descendants) | set(found)
+            rec.descendants = sorted(merged)
 
     def finish(self, rec: TaskRecord, timed_out: bool) -> None:
         """标记一条记录的状态。"""
@@ -305,6 +321,46 @@ class TaskRegistry:
 
     def clear(self) -> None:
         self._tasks.clear()
+
+
+# ============================================================
+# 报告给 LLM 的文案
+# ============================================================
+def format_lingering_report(records: list[TaskRecord]) -> str:
+    """把"还有哪些进程活着"整理成一段事实陈述 —— 报告给 LLM。
+
+    ============ 为什么是"事实"而不是"指令" ============
+    遵循项目原则(见 docs/00-overview/design.html §2):
+        「语义判断归模型,代码只提供事实」
+    "要不要杀掉这个残留进程"是**语义判断** ——
+    用户可能故意启动了一个常驻服务(pm2 / dev server),
+    代码不知道意图,不该替模型做决定。
+    所以这里只报:哪条命令、哪些 pid、跑了多久。
+
+    ============ 为什么不是每轮都报 ============
+    没有残留时返回 ""(空串),调用方据此跳过 ——
+    否则每轮都多一段"没有残留进程"的废话,白耗 token。
+
+    空串而非 None:调用方可以 `if text:` 判断,与项目里其他
+    渲染函数(`PlainRenderer.render` 返回 None 表示不输出)的
+    取向一致 —— 这里用空串是因为它要**拼进工具结果**。
+    """
+    if not records:
+        return ""
+
+    lines = ["\n\n[提示] 上面这条命令还留下了仍在运行的进程(不是错误,只是事实):"]
+    for rec in records:
+        alive = rec.still_running()
+        if not alive:
+            continue
+        mins, secs = divmod(int(rec.elapsed()), 60)
+        duration = f"{mins} 分 {secs} 秒" if mins else f"{secs} 秒"
+        lines.append(
+            f"  · 命令 {rec.command!r} 启动的进程仍在运行: "
+            f"pid={', '.join(str(p) for p in alive)},已运行 {duration}")
+    if len(lines) == 1:
+        return ""       # 所有记录其实都已结束(竞态:判断时还活着,报告时已退)
+    return "\n".join(lines)
 
 
 # ============================================================

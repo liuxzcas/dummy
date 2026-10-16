@@ -165,6 +165,31 @@ def _run_shell(command: str, timeout: int = DEFAULT_TIMEOUT, task=None):
     t_out.start()
     t_err.start()
 
+    # ---- 侦察后代(★ 必须抢在 shell 退出前做) ----
+    #
+    # ============ 为什么不能等命令结束再探(2026-10-16 实测) ============
+    # 实测对比(命令 `sleep 30 & echo ok`,后台进程):
+    #     t+ 551ms  bash 活着  → 后代 = 4  ✅
+    #     t+1282ms  bash 已退出 → 后代 = 0  ❌
+    # 原理:Windows 按 ParentProcessId 递归找后代,**父进程一死链就断了**;
+    #      而后台命令(`&`)会让 bash 立刻退出 —— 时间窗口只有几百毫秒。
+    #
+    # 为什么用**循环**而不是 sleep 固定时长:
+    #   list_descendants 内部要拉起 PowerShell,本身耗时几百毫秒;
+    #   等它返回时 bash 可能已经退出(实测 sleep(0.15) 就抢不到)。
+    #   所以改为"趁热连探" —— 一旦探到后代就立刻收工。
+    #
+    # 代价:后台退出的命令最多多花 ~0.4 秒;前台命令第一次就探到,
+    #      几乎无额外开销(而且前台本来也不会提前退出)。
+    if task is not None:
+        for _ in range(4):
+            tasks.note_descendants(task)
+            if task.descendants:
+                break
+            if proc.poll() is not None:
+                break       # shell 已退出,再探也没用(链已断)
+            time.sleep(0.1)
+
     # ---- 主线程计时 ----
     timed_out = False
     try:
@@ -269,10 +294,15 @@ def terminal_handler(command: str, timeout: int | None = None, _confirm=None) ->
                 f"如果这是一条需要长时间运行的命令（例如在大目录树里搜索），"
                 f"可以缩小范围，或改用更快的查找方式。"
             )
+            _append_if_any(output_parts, _lingering_note(task))
             return "\n".join(output_parts)
 
         if rc != 0:
             output_parts.append(f"[EXIT CODE: {rc}]")
+
+        # 命令正常结束,但可能留了后台进程(如 `npm run dev &`)。
+        # 如实报告 —— 是否处理交给模型(见 tasks.format_lingering_report 的分层原则)。
+        _append_if_any(output_parts, _lingering_note(task))
 
         # output_parts 里至少有环境声明那条,所以不需要"无输出"分支。
         # (历史上这里曾写 `if output_parts else "(命令执行成功，无输出)"`,
@@ -283,3 +313,28 @@ def terminal_handler(command: str, timeout: int | None = None, _confirm=None) ->
     except Exception as e:
         tasks.finish(task, timed_out=True)
         return f"[错误] 命令执行失败: {type(e).__name__}: {e}"
+
+
+def _append_if_any(parts: list[str], text: str) -> None:
+    """只在 text 非空时追加。
+
+    不加这层判断的话,append("") 会在 join 时多出一个换行 ——
+    实测:"true" 这种空输出命令的返回值会从 1 行变成 2 行,
+    被 test_no_dead_branch_for_empty_output 抓到。
+    """
+    if text:
+        parts.append(text)
+
+
+def _lingering_note(task) -> str:
+    """命令结束后检查残留进程,有则返回一段事实陈述;没有则返回空串。
+
+    只在**本次命令**的记录上检查(不扫全局表)—— 这样报告的是
+    "你刚跑的那条命令留下了什么",而不是历史累积的一大堆。
+
+    分层原则(2026-09-18 用户定):
+        · 超时后的**清理** = 机制,写进 script 流程,不问 LLM(见 _run_shell)
+        · "留下了什么进程" = **信息**,报告给 LLM 由它判断要不要处理
+    """
+    from tools.tasks import format_lingering_report
+    return format_lingering_report([task] if task.still_running() else [])

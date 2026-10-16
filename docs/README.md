@@ -36,8 +36,9 @@
 | **为什么删掉验证门、护栏为什么退成观察者** | `04-hardening/` + `91-experiences/verification-gate-rollback-star.md` ★ |
 | 历史层为什么选"单点收口" | `04-hardening/arch-history-experiment.md` |
 | terminal 超时/卡死 | `05-cross-platform/terminal-timeout-fix-plan.md`（技术）+ `terminal-timeout-explained-simply.md`（通俗） |
+| **残留进程报告**（含已排除方案的实测） | `05-cross-platform/lingering-process-report.md` |
 | 工具并发 / 打断各家怎么做 | `05-cross-platform/agent-concurrency-interrupt-survey.md` |
-| 打断语义改进方案（**待实施**） | `04-hardening/interrupt-semantics-plan.md` |
+| 打断语义改进（**已实施**） | `04-hardening/interrupt-semantics-plan.md` |
 | 记忆系统外部调研 | `90-research/memory-research.md`、`agent-memory-report.html` |
 | 工具结果该怎么结构化 | `90-research/tool-result-*.md`、`research-structured-tool-results.md` |
 
