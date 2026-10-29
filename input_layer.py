@@ -299,6 +299,39 @@ def _read_via_prompt_toolkit(prompt: str) -> str | None:
 # ============================================================
 # 统一输入入口
 # ============================================================
+def _strip_readline_markers(prompt: str) -> str:
+    """去掉提示符里的 \\001/\\002(readline 的非打印标记)。
+
+    ============ 为什么必须去(2026-10-17 用户实测截图) ============
+    colors.paint_prompt() 在"有 readline"时会用 \\001/\\002 包裹 ANSI 码,
+    那是**给 readline 的约定**(告诉它这段不计入提示符宽度)。
+
+    prompt_toolkit **不认识**这两个字节 —— 它直接当可见字符渲染,于是
+    终端上出现:
+        ^A^[[38;2;152;195;121m^B你 > ^A^[[0m^C
+        ↑↑                          ↑↑
+       \x01(SOH)                   \x02(STX)
+
+    实测(to_formatted_text(ANSI(...))):
+        纯 ANSI 串  → [('#98c379','你'), ('#98c379',' '), ...]  ✅
+        含 \001/\002 → [('[ZeroWidthEscape]','\x1b[...'), ...]   ❌ 控制字符被当文本
+
+    所以:换成 prompt_toolkit 后,**这两个标记必须剥掉**。
+    (prompt_toolkit 自己解析 ANSI,知道转义序列不占宽度 —— 不需要我们标。)
+    """
+    return prompt.replace("\x01", "").replace("\x02", "")
+
+
+def _to_pt_prompt(prompt: str):
+    """把着色提示符转成 prompt_toolkit 的 FormattedText。
+
+    用 ANSI() 包装器解析 —— 它把 "\\x1b[38;2;...m文本\\x1b[0m" 正确拆成
+    (样式, 文本) 片段列表,prompt_toolkit 据此渲染且宽度计算正确。
+    """
+    from prompt_toolkit.formatted_text import ANSI
+    return ANSI(_strip_readline_markers(prompt))
+
+
 def read_input(prompt: str) -> str:
     """读取一行用户输入(含多行粘贴)。
 
@@ -313,18 +346,20 @@ def read_input(prompt: str) -> str:
     (顺序上:粘贴内容在前 —— 因为粘贴发生在输入过程中,而
      `line` 只包含按键敲出来的部分。)
 
-    ============ 提示符 ============
-    调用方传进来的是已经着色的字符串(colors.paint_prompt)。
-    prompt_toolkit 自己解析 ANSI、知道哪些字节不占宽度,
-    所以**不需要** readline 的 \001/\002 包裹 —— paint_prompt 里
-    那套判断在 prompt_toolkit 下会退化成纯色码,无害。
+    ============ 提示符处理(两个后端不一样) ============
+    调用方传进来的是 colors.paint_prompt() 的产物 —— 它可能含
+    \\001/\\002(readline 的非打印标记)。
+      · prompt_toolkit:剥掉标记,用 ANSI() 包装(自己算宽度)
+      · 兜底 input():保留原样(readline 需要这两个标记)
+    详见 _strip_readline_markers 的说明。
     """
     _paste_chunks.clear()
-    line = _read_via_prompt_toolkit(prompt)
+    line = _read_via_prompt_toolkit(_to_pt_prompt(prompt))
     if line is not None:
         return line
     # 兜底:prompt_toolkit 不可用(git-bash/管道/无控制台)→ 退回 input()。
     # 代价:拿不到多行粘贴块(换行被当结束标记),但至少能用。
+    # 提示符保持原样 —— readline 需要 \001/\002 才不会算错宽度。
     return input(prompt)
 
 

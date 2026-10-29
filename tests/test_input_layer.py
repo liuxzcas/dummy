@@ -411,3 +411,71 @@ class TestPasteCollapse:
         o1, _ = IL.maybe_collapse_paste("第一段\nx")
         o2, _ = IL.maybe_collapse_paste("第二段\ny")
         assert o1 != o2, "占位符编号应递增(否则用户分不清是第几段)"
+
+
+# ============================================================
+# ⑩ 提示符在 prompt_toolkit 下不能带 readline 标记
+# ============================================================
+class TestPromptMarkersStripped:
+    """用户实测截图发现的 bug(2026-10-17)。
+
+    ============ 现象 ============
+    用户启动 dummy 后,提示符显示成:
+        ^A^[[38;2;152;195;121m^B你 > ^A^[[0m^C
+        ↑↑                          ↑↑
+       SOH(\x01)                  STX(\x02)
+
+    ============ 根因 ============
+    colors.paint_prompt() 在"有 readline"时用 \001/\002 包裹 ANSI 码
+    —— 那是**给 readline 的约定**(不计入提示符宽度)。
+    但 prompt_toolkit 不认识这两个字节,直接当可见字符渲染。
+
+    ============ 修法 ============
+    input_layer 在交给 prompt_toolkit 前剥掉标记,再用 ANSI() 包装。
+    兜底路径(input)保留原样 —— readline 需要它们。
+    """
+
+    def test_strip_markers(self):
+        from input_layer import _strip_readline_markers
+        SOH, STX = chr(1), chr(2)
+        raw = f"{SOH}\x1b[38;2;152;195;121m{STX}你 > {SOH}\x1b[0m{STX}"
+        cleaned = _strip_readline_markers(raw)
+        assert SOH not in cleaned and STX not in cleaned
+        assert "你 > " in cleaned
+        assert "\x1b[38;2;152;195;121m" in cleaned, "ANSI 色码本身要保留"
+
+    def test_pt_prompt_parses_color_without_leaking_controls(self):
+        """交给 prompt_toolkit 的提示符:颜色被解析成真实样式,而非 ZeroWidthEscape。
+
+        ★ 断言为什么改成"样式是颜色名"(2026-10-17 踩坑):
+          实测:不剥标记时,ANSI() 包装器会**自己**把控制字符连同 ANSI 码
+          一起标成 ZeroWidthEscape:
+              不剥 → ('[ZeroWidthEscape]', '\\x1b[38;2;...m')
+              剥掉 → ('#98c379', '你')                ← 颜色被真正解析
+          所以"有没有 ZeroWidthEscape"两种都能通过,那个断言无效。
+          改成断言**样式被解析成了颜色值** —— 只有剥掉标记才成立。
+        """
+        from prompt_toolkit.formatted_text import to_formatted_text
+        from input_layer import _to_pt_prompt
+
+        SOH, STX = chr(1), chr(2)
+        raw = f"{SOH}\x1b[38;2;152;195;121m{STX}你 > {SOH}\x1b[0m{STX}"
+        frags = to_formatted_text(_to_pt_prompt(raw))
+
+        # 提示符文本要在
+        assert any("你" in f[1] for f in frags), f"提示符文本丢了: {frags}"
+        # 关键:颜色被真正解析(样式名是颜色值),而不是塞进 ZeroWidthEscape
+        colored = [f for f in frags if f[1].strip() and f[0]]
+        assert colored, f"没有任何带样式的文本片段: {frags}"
+        for style, text in colored:
+            assert "ZeroWidthEscape" not in str(style), (
+                f"控制字符没被剥掉 —— 样式仍是 {style!r},"
+                f"终端上会显示成 ^A/^B: {frags}"
+            )
+
+    def test_pt_prompt_without_markers_unchanged(self):
+        """没有标记的提示符(无色模式)不该被破坏。"""
+        from prompt_toolkit.formatted_text import to_formatted_text
+        from input_layer import _to_pt_prompt
+        frags = to_formatted_text(_to_pt_prompt("你 > "))
+        assert "".join(f[1] for f in frags) == "你 > "
