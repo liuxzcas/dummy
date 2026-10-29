@@ -323,15 +323,16 @@ def main():
             if drop:
                 # 拖拽文件 → 给模型**路径**(不自动读内容,由模型自己决定)
                 user_input = format_drop_message(drop)
-                ui.raw(f"  {paint('📎 已拖入', GRAY_DIM)} "
-                       f"{drop['path']}")
+                # 整行灰色 —— 这是【系统提示】不是对话内容,
+                # 用颜色和用户/模型的文字区分开(2026-10-19 用户要求)
+                ui.raw(paint(f"  📎 已拖入 {drop['path']}", GRAY_DIM))
             else:
                 # 长文本(含换行 或 ≥2000 字符)→ 写临时文件,只把路径给模型
                 # (否则一次粘贴几万字符会直接打爆上下文)
                 user_input, paste_path = maybe_collapse_paste(raw.strip())
                 if paste_path:
-                    ui.raw(f"  {paint('📋 已存入', GRAY_DIM)} "
-                           f"{paste_path}")
+                    # 同上:整行灰色
+                    ui.raw(paint(f"  📋 已存入 {paste_path}", GRAY_DIM))
 
             # ---------------------------------------------------
             # 处理内置命令（不经过 Agent 处理）
