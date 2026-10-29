@@ -375,6 +375,29 @@ class DummyAgent:
             return self._chat_impl(user_input)
         finally:
             self._settle_history()
+            self._cleanup_round_temp_files()
+
+    def _cleanup_round_temp_files(self) -> None:
+        """本轮结束 → 回收输入层登记的临时文件(pastes/*.txt)。
+
+        ============ 为什么挂在这里(2026-10-19 用户反馈) ============
+        用户:"粘贴完文本之后,发送完消息可以自动清除临时文件。
+              现在临时文件完全不清。"
+
+        时序上必须等到**本轮结束**才能删 —— 模型的 read_file 可能发生在
+        任何一轮工具调用里,删早了会让它读不到文件(报不存在)。
+        chat() 的 finally 覆盖所有退出方式(正常返回/异常/Ctrl+C),
+        是"单点收口"的自然落点(与 _settle_history 同处)。
+
+        失败静默:清理是**尽力而为**,不该因为删不掉文件而影响对话。
+        """
+        try:
+            from input_layer import take_round_files, cleanup_files
+            files = take_round_files()
+            if files:
+                cleanup_files(files)
+        except Exception:
+            pass
 
     def _chat_impl(self, user_input: str) -> str:
         """chat() 的本体(工具循环)。调用方负责收口,见 chat()。"""

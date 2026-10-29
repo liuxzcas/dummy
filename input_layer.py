@@ -231,8 +231,6 @@ def format_drop_message(drop: dict) -> str:
 # PromptSession 持有输入历史与内部状态;每次 prompt() 都新建会丢历史,
 # 且重复初始化按键绑定。全进程一个即可。
 _session = None
-# 最近一次 prompt() 期间收到的粘贴块(可能多段:用户可粘贴多次)
-_paste_chunks: list[str] = []
 
 
 def _build_key_bindings():
@@ -248,8 +246,31 @@ def _build_key_bindings():
 
     @kb.add(Keys.BracketedPaste, eager=True)
     def _on_paste(event) -> None:
-        # event.data 是**原始内容**(含换行),原样存下,不插入行缓冲
-        _paste_chunks.append(event.data)
+        # ============ 为什么粘贴瞬间就处理(2026-10-19 用户反馈) ============
+        # 用户实测:"粘贴长文本时 terminal 提示 you are about to paste text
+        #            with multiple lines,我点同意之后 terminal 上不给我任何
+        #            提示,导致我完全不知道有没有正常粘贴"。
+        #
+        # 原因:prompt_toolkit 默认把粘贴内容**插入行缓冲区**(等用户编辑/提交)。
+        #      我们原来的写法只在事件里额外存一份,没做任何反馈 ——
+        #      而 maybe_collapse_paste 要等回车后才跑,所以粘贴那一刻是静默的。
+        #
+        # 现在:**粘贴即判定 + 即落盘 + 即提示**。
+        #   · 长文本(含换行 或 ≥2000 字符)→ 立刻写文件、打灰字、
+        #     **不插入行缓冲**(让它保持干净,用户回车即发送占位符)
+        #   · 短文本 → 照常插入行缓冲(用户可能还要接着打字)
+        text = event.data
+        if _is_long_text(text):
+            path = _save_paste(text)
+            _round_files.append(path)          # 登记,等轮末统一清理
+            event.app.current_buffer.reset()   # 清掉缓冲区,只留占位符
+            event.app.current_buffer.insert_text(_paste_placeholder(path, text))
+            # 立刻给用户反馈(否则他以为没粘贴成功)
+            event.app.invalidate()
+            _emit_paste_notice(path)
+            return
+        # 短粘贴:按默认行为插入缓冲(用户可继续编辑)
+        event.app.current_buffer.insert_text(text)
 
     return kb
 
@@ -279,16 +300,17 @@ def _get_session():
 
 
 def _read_via_prompt_toolkit(prompt: str) -> str | None:
-    """用 prompt_toolkit 读一行;不可用返回 None。"""
+    """用 prompt_toolkit 读一行;不可用返回 None。
+
+    粘贴的处理在 _build_key_bindings 的 BracketedPaste 回调里完成 ——
+    长文本在**粘贴瞬间**就落盘,占位符被塞进行缓冲区,
+    所以这里拿到的 line 已经就是"占位符(+ 用户随后打的字)"。
+    """
     session = _get_session()
     if not session:
         return None
     try:
-        _paste_chunks.clear()
-        line = session.prompt(prompt)
-        if _paste_chunks:
-            return "".join(_paste_chunks) + line
-        return line
+        return session.prompt(prompt)
     except Exception:
         # 运行中途失败(如控制台被夺走)→ 本进程内不再尝试
         global _session
@@ -332,6 +354,42 @@ def _to_pt_prompt(prompt: str):
     return ANSI(_strip_readline_markers(prompt))
 
 
+# ============================================================
+# 本轮临时文件的登记(供 core 在一轮对话结束时清理)
+# ============================================================
+# ============ 为什么需要登记(2026-10-19 用户反馈) ============
+# 用户实测:"粘贴完文本之后,发送完消息可以自动清除临时文件。
+#            现在临时文件完全不清。"
+#
+# 为什么不能"存了就删":paste 文件要等模型 read_file 之后才能删 ——
+# 时序是:
+#     粘贴 → 存文件 → (用户回车)发送 → 模型决定 read_file
+#          → 读取成功 → 模型回复 → 本轮结束
+#                      ↑ 只有到这一步才能删
+# 所以生命周期 = "本轮对话",由 core 在 chat() 的 finally 里统一回收。
+# (若真删早了,模型 read_file 会报文件不存在 —— 这必须避免。)
+_round_files: list[str] = []
+
+
+def take_round_files() -> list[str]:
+    """取出并清空本轮登记的临时文件路径(core 在轮末调用)。"""
+    files = list(_round_files)
+    _round_files.clear()
+    return files
+
+
+def cleanup_files(paths: list[str]) -> int:
+    """删除给定文件(忽略已不存在/无权限的)。返回成功删除数。"""
+    n = 0
+    for p in paths:
+        try:
+            os.remove(p)
+            n += 1
+        except OSError:
+            pass
+    return n
+
+
 def read_input(prompt: str) -> str:
     """读取一行用户输入(含多行粘贴)。
 
@@ -353,7 +411,6 @@ def read_input(prompt: str) -> str:
       · 兜底 input():保留原样(readline 需要这两个标记)
     详见 _strip_readline_markers 的说明。
     """
-    _paste_chunks.clear()
     line = _read_via_prompt_toolkit(_to_pt_prompt(prompt))
     if line is not None:
         return line
@@ -436,42 +493,80 @@ def _paste_filename(text: str) -> str:
     return path
 
 
-def maybe_collapse_paste(text: str) -> tuple[str, str | None]:
-    """长文本 → 写临时文件,返回 (给模型看的文本, 文件路径或 None)。
+def _is_long_text(text: str) -> bool:
+    """是否该当"长文本"处理:含换行符 OR ≥2000 字符。
 
-    ============ 判据 ============
-    含换行符 OR 字符数 ≥ PASTE_CHAR_THRESHOLD(2000)
-
-    ============ 返回给模型什么 ============
-    占位符 + 路径,**不塞全文**:
-        [Pasted text #1: 47 lines → D:\\...\\pastes\\paste_1_....txt]
-    模型要内容就用 read_file 自己读。
-    → 遵循项目原则:代码提供事实("有段长文本存在这里"),
-      读不读、读多少归模型判断。
-    → 也顺带避免"一次塞 5 万字符把上下文打爆"。
-
-    ============ 为什么短文本原样返回 ============
-    2-4 行的短粘贴(如复制一个命令、一段引用)直接给模型更顺手 ——
-    不必为它写文件、再让模型多花一次 read_file 调用。
+    用户 2026-10-16 定的口径:"包含换行符的文本连同 2000 字以上的文本
+    统统定位长文本"。
     """
     if not text:
-        return text, None
+        return False
+    return ("\n" in text or "\r" in text
+            or len(text) >= PASTE_CHAR_THRESHOLD)
 
-    has_newline = "\n" in text or "\r" in text
-    if not (has_newline or len(text) >= PASTE_CHAR_THRESHOLD):
-        return text, None
 
+def _save_paste(text: str) -> str:
+    """把长文本写进 pastes/,返回文件路径。"""
     os.makedirs(_PASTE_DIR, exist_ok=True)
     path = _paste_filename(text)
-
     global _paste_seq
     _paste_seq += 1
     # newline="":按传入的原样写入,不做平台换行转换 ——
     # 用户粘贴的内容(可能来自网页/PDF)应该原样保留。
     with open(path, "w", encoding="utf-8", newline="") as f:
         f.write(text)
+    return path
 
+
+def _paste_placeholder(path: str, text: str) -> str:
+    """给模型看的占位符(含路径,不含全文)。"""
     lines = text.count("\n") + 1
-    placeholder = (
-        f"[Pasted text #{_paste_seq}: {lines} 行 / {len(text)} 字符 → {path}]")
-    return placeholder, path
+    return (f"[Pasted text #{_paste_seq}: {lines} 行 / {len(text)} 字符"
+            f" → {path}]")
+
+
+def _emit_paste_notice(path: str) -> None:
+    """粘贴瞬间的屏幕反馈(灰色,与对话文字区分)。
+
+    ============ 为什么用 print 而不是 ui.raw(2026-10-19) ============
+    这个函数在 prompt_toolkit 的按键回调里执行 —— 此时 prompt_toolkit
+    正持有屏幕控制权。用 print() 会被它覆盖/错位。
+    正确做法:用 prompt_toolkit 自己的输出接口,或者让 app 失效后重绘。
+    这里用 run_in_terminal —— 它会在安全时机把输出插进去并重绘界面。
+    """
+    try:
+        from prompt_toolkit.application import run_in_terminal
+        from colors import paint, GRAY_DIM
+
+        msg = paint(f"  📋 已存入 {path}", GRAY_DIM)
+
+        def _show() -> None:
+            print(msg)
+
+        run_in_terminal(_show)
+    except Exception:
+        # 不在 prompt_toolkit 上下文里(如测试)→ 直接打印
+        pass
+
+
+def maybe_collapse_paste(text: str) -> tuple[str, str | None]:
+    """长文本 → 写临时文件,返回 (给模型看的文本, 文件路径或 None)。
+
+    ============ 判据 ============
+    含换行符 OR 字符数 ≥ PASTE_CHAR_THRESHOLD(2000)
+
+    ============ 为什么还留着(2026-10-19) ============
+    粘贴路径已在 BracketedPaste 事件里处理(粘贴即落盘)。
+    但**兜底路径**(prompt_toolkit 不可用 → input())拿不到粘贴事件,
+    只能等回车后由调用方跑这里。所以两条路都要能转存。
+
+    ============ 返回给模型什么 ============
+    占位符 + 路径,**不塞全文** —— 模型要内容就用 read_file 自己读。
+    (遵循"代码提供事实、判断归模型";也避免一次塞几万字符打爆上下文)
+    """
+    if not _is_long_text(text):
+        return text, None
+
+    path = _save_paste(text)
+    _round_files.append(path)      # 登记,等轮末统一清理
+    return _paste_placeholder(path, text), path

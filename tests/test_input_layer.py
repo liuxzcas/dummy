@@ -270,33 +270,48 @@ class TestPromptToolkitIntegration:
     dummy 不该因为跑在这些环境里就完全用不了 → 退回 input()。
     """
 
-    def test_bracketed_paste_yields_multiline(self):
-        """核心能力:多行粘贴作为一整块返回,换行保留。"""
+    def test_bracketed_paste_writes_file_and_placeholder(self, tmp_path, monkeypatch):
+        """核心能力:多行长文本粘贴 → 立刻落盘 + 缓冲区只剩占位符。
+
+        ★ 行为在 2026-10-19 变了(用户反馈后):
+          改前:粘贴内容留在行缓冲区(用户以为没反应),回车后才转存。
+          改后:粘贴瞬间就落盘、打灰字提示、缓冲区只放占位符。
+          所以这里断言的是**文件被创建 + 返回的是占位符**,而不是原文。
+        """
         from prompt_toolkit.input import create_pipe_input
         from prompt_toolkit.output import DummyOutput
         from prompt_toolkit import PromptSession
         import input_layer as IL
 
+        monkeypatch.setattr(IL, "_PASTE_DIR", str(tmp_path))
+        monkeypatch.setattr(IL, "_emit_paste_notice", lambda p: None)  # 无关屏显
+        IL.take_round_files()
+
         with create_pipe_input() as inp:
             sess = PromptSession(
                 input=inp, output=DummyOutput(),
                 key_bindings=IL._build_key_bindings())
-
-            def fake_get():
-                return sess
-
-            IL._paste_chunks.clear()
             real = IL._get_session
-            IL._get_session = fake_get
+            IL._get_session = lambda: sess
             try:
-                inp.send_text("\x1b[200~第一行\n第二行\n第三行\x1b[201~\r")
+                # 模拟终端发来的 bracketed paste:ESC[200~ 内容 ESC[201~ + 回车
+                payload = chr(27) + "[200~" + chr(10).join(
+                    ["第一行", "第二行", "第三行"]) + chr(27) + "[201~" + chr(13)
+                inp.send_text(payload)
                 out = IL.read_input("> ")
             finally:
                 IL._get_session = real
 
-        assert "\n" in out, f"多行粘贴应保留换行;实际 {out!r}"
-        assert out.count("\n") == 2
-        assert out.startswith("第一行")
+        # 返回的是占位符,不是原文
+        assert out.startswith("[Pasted text #"), f"应返回占位符: {out!r}"
+        # 原文不该整段进对话 —— 判据用"行数/字符数标注"而不是查文字,
+        # 因为文件名本身就是内容前 20 字(会包含"第一行"这类字样)。
+        assert "3 行 / " in out, f"占位符应报告行数: {out!r}"
+        # 文件真的写了,内容与原文一致
+        files = IL.take_round_files()
+        assert len(files) == 1 and os.path.isfile(files[0])
+        assert open(files[0], encoding="utf-8", newline="").read() == \
+            "第一行\n第二行\n第三行"
 
     def test_paste_then_typing_concatenates(self):
         """粘贴后接着打字 → 两者拼接。"""
@@ -479,3 +494,73 @@ class TestPromptMarkersStripped:
         from input_layer import _to_pt_prompt
         frags = to_formatted_text(_to_pt_prompt("你 > "))
         assert "".join(f[1] for f in frags) == "你 > "
+
+
+# ============================================================
+# ⑪ 临时文件的生命周期(用户 2026-10-19 反馈)
+# ============================================================
+class TestRoundFileLifecycle:
+    """用户:"粘贴完文本之后,发送完消息可以自动清除临时文件。
+            现在临时文件完全不清。"
+
+    ============ 为什么必须等本轮结束才删 ============
+    时序:
+        粘贴 → 存文件 → 发送 → 模型决定 read_file → 读取 → 回复 → 本轮结束
+                                                              ↑ 只有这里能删
+    删早了模型会读不到文件(报不存在)。
+    """
+
+    def test_paste_registers_file_for_cleanup(self, tmp_path, monkeypatch):
+        """转存时要登记 —— 否则轮末不知道要删谁。"""
+        import input_layer as IL
+        monkeypatch.setattr(IL, "_PASTE_DIR", str(tmp_path))
+        IL.take_round_files()          # 清空
+        _out, path = IL.maybe_collapse_paste("第一行\n第二行")
+        assert path in IL.take_round_files()
+
+    def test_take_round_files_clears_after_reading(self, tmp_path, monkeypatch):
+        """取出后要清空 —— 否则同一批文件会被重复删。"""
+        import input_layer as IL
+        monkeypatch.setattr(IL, "_PASTE_DIR", str(tmp_path))
+        IL.maybe_collapse_paste("a\nb")
+        first = IL.take_round_files()
+        second = IL.take_round_files()
+        assert first and second == [], "第二次取应为空(已消费)"
+
+    def test_cleanup_deletes_files(self, tmp_path, monkeypatch):
+        import input_layer as IL
+        monkeypatch.setattr(IL, "_PASTE_DIR", str(tmp_path))
+        IL.take_round_files()
+        _out, path = IL.maybe_collapse_paste("x\ny")
+        assert os.path.isfile(path)
+        n = IL.cleanup_files(IL.take_round_files())
+        assert n == 1 and not os.path.isfile(path)
+
+    def test_cleanup_tolerates_missing_files(self, tmp_path):
+        """文件已被删/无权限 → 不抛异常,只少删一个。"""
+        import input_layer as IL
+        n = IL.cleanup_files([str(tmp_path / "不存在.txt")])
+        assert n == 0
+
+    def test_core_cleans_up_after_chat(self, tmp_path, monkeypatch):
+        """chat() 结束后,本轮登记的临时文件应被删除。"""
+        import input_layer as IL
+        import core
+        from conftest import ScriptedLLM
+        from tools import create_default_registry
+
+        monkeypatch.setattr(IL, "_PASTE_DIR", str(tmp_path))
+        IL.take_round_files()
+        _out, path = IL.maybe_collapse_paste("临时\n内容")
+        assert os.path.isfile(path)
+
+        agent = core.DummyAgent(ScriptedLLM([]), create_default_registry())
+        agent.chat("测试")
+
+        assert not os.path.isfile(path), "本轮结束后临时文件应被清理"
+
+    def test_short_input_registers_nothing(self):
+        import input_layer as IL
+        IL.take_round_files()
+        IL.maybe_collapse_paste("一句短话")
+        assert IL.take_round_files() == []
