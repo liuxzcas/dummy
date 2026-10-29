@@ -78,6 +78,7 @@ from llm import LLMClient
 from tools import create_default_registry
 from colors import paint, GREEN, GRAY_DIM, WHITE, YELLOW, RED, NEUTRAL, CYAN, PURPLE
 from ui import ui, KIND_SPINNER, KIND_AGENT, KIND_DIVIDER
+from input_layer import read_input_with_drop, format_drop_message
 from core import DummyAgent
 
 
@@ -314,7 +315,16 @@ def main():
     while True:
         try:
             # 读取(提示符由 UI 层给,样式可插拔)
-            user_input = input(ui.prompt()).strip()
+            # 走输入层统一入口:它负责拖拽路径识别,将来换 prompt_toolkit
+            # 也只改 input_layer.py(见该模块头部的说明)。
+            raw, drop = read_input_with_drop(ui.prompt())
+            if drop:
+                # 拖拽文件 → 给模型**路径**(不自动读内容,由模型自己决定)
+                user_input = format_drop_message(drop)
+                ui.raw(f"  {paint('📎 已拖入', GRAY_DIM)} "
+                       f"{drop['path']}")
+            else:
+                user_input = raw.strip()
 
             # ---------------------------------------------------
             # 处理内置命令（不经过 Agent 处理）
