@@ -250,3 +250,164 @@ class TestWhitelistActuallyMatters:
         drop = IL.detect_file_drop("/c/Users/me/a.txt")
         assert drop is not None, "未列入白名单的路径应能识别"
         assert drop["path"] == "/c/Users/me/a.txt"
+
+
+# ============================================================
+# ⑧ prompt_toolkit 接入 + 兜底
+# ============================================================
+class TestPromptToolkitIntegration:
+    """输入实现从 input() 换成 prompt_toolkit(2026-10-17)。
+
+    ============ 为什么换(实测依据) ============
+    python 的 input() 以换行符为结束标记 → 粘贴多行只返回第一行。
+    prompt_toolkit 的 Keys.BracketedPaste 把整个粘贴块作为一个事件交付,
+    换行不触发提交。
+
+    ============ 为什么必须有兜底 ============
+    实测:prompt_toolkit 在 git-bash/mintty 下抛
+    NoConsoleScreenBufferError(TERM=xterm-256color 但拿不到 Win32 控制台)。
+    在无控制台的场合(管道/重定向)也一样。
+    dummy 不该因为跑在这些环境里就完全用不了 → 退回 input()。
+    """
+
+    def test_bracketed_paste_yields_multiline(self):
+        """核心能力:多行粘贴作为一整块返回,换行保留。"""
+        from prompt_toolkit.input import create_pipe_input
+        from prompt_toolkit.output import DummyOutput
+        from prompt_toolkit import PromptSession
+        import input_layer as IL
+
+        with create_pipe_input() as inp:
+            sess = PromptSession(
+                input=inp, output=DummyOutput(),
+                key_bindings=IL._build_key_bindings())
+
+            def fake_get():
+                return sess
+
+            IL._paste_chunks.clear()
+            real = IL._get_session
+            IL._get_session = fake_get
+            try:
+                inp.send_text("\x1b[200~第一行\n第二行\n第三行\x1b[201~\r")
+                out = IL.read_input("> ")
+            finally:
+                IL._get_session = real
+
+        assert "\n" in out, f"多行粘贴应保留换行;实际 {out!r}"
+        assert out.count("\n") == 2
+        assert out.startswith("第一行")
+
+    def test_paste_then_typing_concatenates(self):
+        """粘贴后接着打字 → 两者拼接。"""
+        from prompt_toolkit.input import create_pipe_input
+        from prompt_toolkit.output import DummyOutput
+        from prompt_toolkit import PromptSession
+        import input_layer as IL
+
+        with create_pipe_input() as inp:
+            sess = PromptSession(
+                input=inp, output=DummyOutput(),
+                key_bindings=IL._build_key_bindings())
+            real = IL._get_session
+            IL._get_session = lambda: sess
+            try:
+                inp.send_text("\x1b[200~粘贴的\n内容\x1b[201~后续打字\r")
+                out = IL.read_input("> ")
+            finally:
+                IL._get_session = real
+
+        assert "粘贴的" in out and "后续打字" in out
+
+    def test_unavailable_session_falls_back_to_input(self, monkeypatch):
+        """prompt_toolkit 不可用 → 退回 input(),不能崩。"""
+        import input_layer as IL
+        monkeypatch.setattr(IL, "_get_session", lambda: None)
+        monkeypatch.setattr("builtins.input", lambda prompt="": "兜底输入")
+        assert IL.read_input("> ") == "兜底输入"
+
+    def test_session_failure_falls_back(self, monkeypatch):
+        """prompt() 中途抛异常 → 退回 input(),且本进程内不再尝试。"""
+        import input_layer as IL
+        import input_layer
+
+        class Boom:
+            def prompt(self, p):
+                raise RuntimeError("控制台被夺走")
+
+        input_layer._session = None
+        monkeypatch.setattr(IL, "_get_session", lambda: Boom())
+        monkeypatch.setattr("builtins.input", lambda prompt="": "兜底")
+        assert IL.read_input("> ") == "兜底"
+
+
+# ============================================================
+# ⑨ 长文本 → 临时文件
+# ============================================================
+class TestPasteCollapse:
+    """用户 2026-10-16 的需求:大段文本存成临时 txt,避免填满窗口。
+
+    ★ 关键:"含换行符"这个判据**之前不可达**(input() 把换行当结束标记
+      吃掉),换 prompt_toolkit 后才第一次成立。
+    """
+
+    def test_short_single_line_untouched(self):
+        from input_layer import maybe_collapse_paste
+        assert maybe_collapse_paste("帮我看下这个报错") == ("帮我看下这个报错", None)
+
+    def test_multiline_collapsed(self, tmp_path, monkeypatch):
+        import input_layer as IL
+        monkeypatch.setattr(IL, "_PASTE_DIR", str(tmp_path))
+        payload = "第一段\n第二段\n第三段"
+        out, path = IL.maybe_collapse_paste(payload)
+        assert path and os.path.isfile(path)
+        assert out.startswith("[Pasted text #")
+        assert payload not in out, "占位符不该塞全文"
+        assert open(path, encoding="utf-8", newline="").read() == payload
+
+    def test_char_threshold_boundary(self, tmp_path, monkeypatch):
+        import input_layer as IL
+        monkeypatch.setattr(IL, "_PASTE_DIR", str(tmp_path))
+        assert IL.maybe_collapse_paste("字" * 1999)[1] is None
+        assert IL.maybe_collapse_paste("字" * 2000)[1] is not None
+
+    def test_filename_is_first_20_chars(self, tmp_path, monkeypatch):
+        """用户描述 Hermes 的体验:文件名就是内容前 20 字,要一眼认得出。"""
+        import input_layer as IL
+        monkeypatch.setattr(IL, "_PASTE_DIR", str(tmp_path))
+        text = "这是一段从网页复制来的文字\n第二行"
+        _out, path = IL.maybe_collapse_paste(text)
+        name = os.path.basename(path)
+        assert name.endswith(".txt")
+        assert name[:-4].startswith("这是一段从网页复制来的文"), name
+        assert len(name[:-4]) <= 20
+
+    def test_filename_strips_illegal_chars(self, tmp_path, monkeypatch):
+        import input_layer as IL
+        monkeypatch.setattr(IL, "_PASTE_DIR", str(tmp_path))
+        _out, path = IL.maybe_collapse_paste('a<b>c:d"e|f?g*h\ni')
+        assert os.path.isfile(path), f"含非法字符的文件名必须能创建: {path}"
+
+    def test_duplicate_names_get_suffix(self, tmp_path, monkeypatch):
+        import input_layer as IL
+        monkeypatch.setattr(IL, "_PASTE_DIR", str(tmp_path))
+        t = "重复\n内容"
+        _o1, p1 = IL.maybe_collapse_paste(t)
+        _o2, p2 = IL.maybe_collapse_paste(t)
+        assert p1 != p2, "同名不能互相覆盖"
+        assert os.path.basename(p2).endswith("_2.txt")
+
+    def test_crlf_preserved(self, tmp_path, monkeypatch):
+        """粘贴内容可能来自 Windows 网页/PDF,换行要原样保留。"""
+        import input_layer as IL
+        monkeypatch.setattr(IL, "_PASTE_DIR", str(tmp_path))
+        payload = "第一行\r\n第二行\r\n"
+        _out, path = IL.maybe_collapse_paste(payload)
+        assert open(path, "rb").read() == payload.encode("utf-8")
+
+    def test_placeholder_has_increasing_seq(self, tmp_path, monkeypatch):
+        import input_layer as IL
+        monkeypatch.setattr(IL, "_PASTE_DIR", str(tmp_path))
+        o1, _ = IL.maybe_collapse_paste("第一段\nx")
+        o2, _ = IL.maybe_collapse_paste("第二段\ny")
+        assert o1 != o2, "占位符编号应递增(否则用户分不清是第几段)"

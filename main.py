@@ -78,7 +78,9 @@ from llm import LLMClient
 from tools import create_default_registry
 from colors import paint, GREEN, GRAY_DIM, WHITE, YELLOW, RED, NEUTRAL, CYAN, PURPLE
 from ui import ui, KIND_SPINNER, KIND_AGENT, KIND_DIVIDER
-from input_layer import read_input_with_drop, format_drop_message
+from input_layer import (
+    read_input_with_drop, format_drop_message, maybe_collapse_paste,
+)
 from core import DummyAgent
 
 
@@ -315,8 +317,8 @@ def main():
     while True:
         try:
             # 读取(提示符由 UI 层给,样式可插拔)
-            # 走输入层统一入口:它负责拖拽路径识别,将来换 prompt_toolkit
-            # 也只改 input_layer.py(见该模块头部的说明)。
+            # 走输入层统一入口:它负责拖拽路径识别 + 长文本转文件,
+            # 将来换输入库也只改 input_layer.py(见该模块头部的说明)。
             raw, drop = read_input_with_drop(ui.prompt())
             if drop:
                 # 拖拽文件 → 给模型**路径**(不自动读内容,由模型自己决定)
@@ -324,7 +326,12 @@ def main():
                 ui.raw(f"  {paint('📎 已拖入', GRAY_DIM)} "
                        f"{drop['path']}")
             else:
-                user_input = raw.strip()
+                # 长文本(含换行 或 ≥2000 字符)→ 写临时文件,只把路径给模型
+                # (否则一次粘贴几万字符会直接打爆上下文)
+                user_input, paste_path = maybe_collapse_paste(raw.strip())
+                if paste_path:
+                    ui.raw(f"  {paint('📋 已存入', GRAY_DIM)} "
+                           f"{paste_path}")
 
             # ---------------------------------------------------
             # 处理内置命令（不经过 Agent 处理）

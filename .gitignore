@@ -36,3 +36,6 @@ logs/
 
 # 冒烟测试临时目录(smoke_compress.py)
 .smoke-tmp-*/
+
+# 粘贴的长文本临时文件(输入层自动生成,不该进仓库)
+pastes/
