@@ -420,19 +420,33 @@ def read_input(prompt: str) -> str:
     return input(prompt)
 
 
-def read_input_with_drop(prompt: str) -> tuple[str, dict | None]:
+def read_input_with_drop(prompt: str, agent=None) -> tuple[str, dict | None]:
     """读一行输入,并检测是否拖入了文件。
 
     返回 (原始输入, drop 信息或 None)。
 
-    调用方(main.py)的用法:
-        raw, drop = read_input_with_drop(ui.prompt())
-        if drop:
-            user_input = format_drop_message(drop)
-        else:
-            user_input = raw.strip()
+    ============ agent 参数是干嘛的(2026-10-19 修丢字 bug) ============
+    用户实测:粘贴单行短文本会被截断成 "https://io1#"、"ht:c1n" 之类 ——
+    **字符被吞掉**。同一现象的另一个表现是他早先报的"中文输入吞字"。
+
+    根因:core.DummyAgent 里有个 _InterruptListener 后台线程,持续用
+    msvcrt.kbhit()/getwch() **抢控制台输入**(为了支持工具运行中按 /p 打断)。
+    而 prompt_toolkit 的 Win32Input 也在读同一个控制台 →
+    **两边分吃同一个字符流** → 丢字。
+
+    修法:读输入期间让监听器 pause(),读完 resume()。
+    (原来只有 _confirm_provider 里 pause —— 主循环漏了。)
+
+    传 agent=None 时不做 pause(测试/无 agent 场景)。
     """
-    raw = read_input(prompt)
+    listener = getattr(agent, "_interrupt_listener", None) if agent else None
+    if listener:
+        listener.pause()
+    try:
+        raw = read_input(prompt)
+    finally:
+        if listener:
+            listener.resume()
     drop = detect_file_drop(raw)
     return raw, drop
 

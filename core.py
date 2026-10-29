@@ -160,6 +160,7 @@ class _InterruptListener:
     def __init__(self):
         self._buffer = ""
         self._paused = False
+        self._paused_seen = threading.Event()   # 后台线程已进入暂停状态
         self._stop = False
         self._lock = threading.Lock()  # 保护 buffer(线程写/检查点读)
         self._msvcrt = None
@@ -175,7 +176,11 @@ class _InterruptListener:
     def _poll_loop(self) -> None:
         """后台轮询:字符进 buffer(无回显),完整行累积。"""
         while not self._stop:
-            if not self._paused:
+            if self._paused:
+                # ★ 通知 pause() 的调用方:我已经停下来了(不再碰控制台)
+                self._paused_seen.set()
+            else:
+                self._paused_seen.clear()
                 try:
                     while self._msvcrt.kbhit():
                         ch = self._msvcrt.getwch()
@@ -196,12 +201,27 @@ class _InterruptListener:
                     pass
             time.sleep(0.02)
 
-    def pause(self) -> None:
-        """暂停轮询(确认 input() 期间调用,避免抢占 stdin)。"""
+    def pause(self, timeout: float = 0.5) -> None:
+        """暂停轮询,**并等它真的停下来**才返回。
+
+        ============ 为什么要等(2026-10-19 修丢字 bug) ============
+        原来只设 _paused=True 就返回 —— 但后台线程可能正卡在内层
+        `while kbhit(): getwch()` 里,或者在 time.sleep(0.02) 中,
+        要等下一轮才看到标志位。这个窗口里它仍然在和 prompt_toolkit
+        抢同一个控制台 → 丢字符。
+
+        实测现象:粘贴 "https://item.jd.com/100019213412.html#none"
+        变成 "https://io1#"、"ht:c1n" 之类 —— 字符被两边分吃。
+
+        修法:设标志后**等 _paused_seen 事件**,确保后台线程已经退出
+        内层循环。超时兜底(0.5s),不阻塞太久。
+        """
         self._paused = True
+        self._paused_seen.wait(timeout)
 
     def resume(self) -> None:
         """恢复轮询。"""
+        self._paused_seen.clear()
         self._paused = False
 
     def take_line(self) -> str | None:

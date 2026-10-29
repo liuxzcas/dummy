@@ -564,3 +564,88 @@ class TestRoundFileLifecycle:
         IL.take_round_files()
         IL.maybe_collapse_paste("一句短话")
         assert IL.take_round_files() == []
+
+
+# ============================================================
+# ⑫ 读输入期间必须暂停 /p 打断监听（丢字 bug）
+# ============================================================
+class TestInterruptListenerPausedDuringInput:
+    """用户实测:粘贴单行短文本被截断成 "https://io1#"、"ht:c1n"。
+
+    ============ 根因 ============
+    core.DummyAgent 有个 _InterruptListener 后台线程,持续用
+    msvcrt.kbhit()/getwch() 抢控制台输入(为了工具运行中能按 /p 打断)。
+    而 prompt_toolkit 的 Win32Input 也在读同一个控制台 →
+    两边分吃同一个字符流 → 丢字。
+
+    **原来只有 _confirm_provider 里调了 pause(),主输入循环漏了。**
+
+    ============ 为什么 pause() 必须"等真的停下来" ============
+    原来只设 _paused=True 就返回。但后台线程可能正卡在
+    `while kbhit(): getwch()` 里,或 time.sleep(0.02) 中,
+    要等下一轮才看到标志 —— 这个窗口里它仍在抢字符。
+    现在 pause() 会等 _paused_seen 事件(实测约 27ms)。
+    """
+
+    def test_read_pauses_and_resumes_listener(self, monkeypatch):
+        import input_layer as IL
+
+        calls = []
+
+        class FakeListener:
+            def pause(self, timeout=0.5):
+                calls.append("pause")
+
+            def resume(self):
+                calls.append("resume")
+
+        class FakeAgent:
+            _interrupt_listener = FakeListener()
+
+        monkeypatch.setattr(IL, "read_input", lambda p: "测试输入")
+        raw, drop = IL.read_input_with_drop("> ", FakeAgent())
+
+        assert calls == ["pause", "resume"], f"应成对暂停/恢复: {calls}"
+        assert raw == "测试输入"
+
+    def test_resume_called_even_if_input_raises(self, monkeypatch):
+        """读输入抛异常(Ctrl+C 等)→ 也必须 resume,否则 /p 永久失效。"""
+        import input_layer as IL
+        calls = []
+
+        class FakeListener:
+            def pause(self, timeout=0.5):
+                calls.append("pause")
+
+            def resume(self):
+                calls.append("resume")
+
+        class FakeAgent:
+            _interrupt_listener = FakeListener()
+
+        def boom(p):
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(IL, "read_input", boom)
+        with pytest.raises(KeyboardInterrupt):
+            IL.read_input_with_drop("> ", FakeAgent())
+        assert calls == ["pause", "resume"], f"异常路径也要 resume: {calls}"
+
+    def test_no_agent_still_works(self, monkeypatch):
+        """不传 agent(测试/无监听器场景)→ 正常读,不崩。"""
+        import input_layer as IL
+        monkeypatch.setattr(IL, "read_input", lambda p: "x")
+        raw, _ = IL.read_input_with_drop("> ")
+        assert raw == "x"
+
+    def test_pause_waits_for_listener_to_stop(self):
+        """pause() 必须等后台线程真的停下(而不是设个标志就返回)。"""
+        from core import _InterruptListener
+        l = _InterruptListener()
+        try:
+            l.pause()
+            assert l._paused_seen.is_set(), \
+                "pause() 返回时应已确认后台线程停下"
+        finally:
+            l.resume()
+            l._stop = True

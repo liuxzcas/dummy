@@ -319,7 +319,9 @@ def main():
             # 读取(提示符由 UI 层给,样式可插拔)
             # 走输入层统一入口:它负责拖拽路径识别 + 长文本转文件,
             # 将来换输入库也只改 input_layer.py(见该模块头部的说明)。
-            raw, drop = read_input_with_drop(ui.prompt())
+            # 传 agent 是为了读输入期间暂停 /p 打断监听 ——
+            # 否则它和 prompt_toolkit 抢同一个控制台,会丢字符(2026-10-19 修)。
+            raw, drop = read_input_with_drop(ui.prompt(), agent)
             if drop:
                 # 拖拽文件 → 给模型**路径**(不自动读内容,由模型自己决定)
                 user_input = format_drop_message(drop)
