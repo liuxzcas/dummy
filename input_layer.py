@@ -232,6 +232,30 @@ def format_drop_message(drop: dict) -> str:
 # 且重复初始化按键绑定。全进程一个即可。
 _session = None
 
+# 本进程的模型名(用于"窗口 × 15%"分档);main.py 启动时 set_model_name 设置
+_model_name: str | None = None
+
+# 一档(内联)的待发送内容 —— 用户按回车时由 read_input 合并进返回值
+_pending_inline: list[str] = []
+
+# 二档(存文件)的待发送路径 —— 同样在 read_input 结束时合并
+_pending_files: list[str] = []
+
+
+def set_model_name(model: str | None) -> None:
+    """登记当前模型名(供 token 分档用)。
+
+    为什么不在 input_layer 里直接读环境变量:main.py 启动时可能让用户
+    交互式输入模型名,环境变量未必反映最终值。由调用方显式告知最准。
+    """
+    global _model_name
+    _model_name = model
+
+
+def _current_model() -> str | None:
+    """当前模型名;未设置时回退到环境变量。"""
+    return _model_name or os.environ.get("DUMMY_AGENT_MODEL")
+
 
 def _build_key_bindings():
     """构造按键绑定。
@@ -246,31 +270,41 @@ def _build_key_bindings():
 
     @kb.add(Keys.BracketedPaste, eager=True)
     def _on_paste(event) -> None:
-        # ============ 为什么粘贴瞬间就处理(2026-10-19 用户反馈) ============
-        # 用户实测:"粘贴长文本时 terminal 提示 you are about to paste text
-        #            with multiple lines,我点同意之后 terminal 上不给我任何
-        #            提示,导致我完全不知道有没有正常粘贴"。
+        # ============ 粘贴的处理(2026-10-19 用户定的两档方案) ============
+        # 一档(token 估算 < 模型窗口 × 15%):**直接内联**进 user 消息。
+        #   用户的话:"如果临时文件内容是文本,就可以直接 call 一下
+        #   read_file 或者更无痕的做法,它本身就是用户打算粘贴给 agent 的内容"。
+        #   → 不落盘、没有"请读取文件"指令 —— 对模型来说等同于用户自己打的字。
+        #   实测:内联的换行只是字符串里的 chr(10),不会被当成回车提交
+        #   (终端输入阶段早已结束);dummy 也从不在屏幕上重放 user 消息
+        #   (KIND_USER 全项目零调用),所以不会刷屏。
         #
-        # 原因:prompt_toolkit 默认把粘贴内容**插入行缓冲区**(等用户编辑/提交)。
-        #      我们原来的写法只在事件里额外存一份,没做任何反馈 ——
-        #      而 maybe_collapse_paste 要等回车后才跑,所以粘贴那一刻是静默的。
+        # 二档(≥ 15%):存文件 + 只给路径。
+        #   → 避免一次塞几十万 token 打爆上下文。
         #
-        # 现在:**粘贴即判定 + 即落盘 + 即提示**。
-        #   · 长文本(含换行 或 ≥2000 字符)→ 立刻写文件、打灰字、
-        #     **不插入行缓冲**(让它保持干净,用户回车即发送占位符)
-        #   · 短文本 → 照常插入行缓冲(用户可能还要接着打字)
+        # 两档都:清空行缓冲(不留冗杂占位符)、打一行灰字提示。
         text = event.data
-        if _is_long_text(text):
-            path = _save_paste(text)
-            _round_files.append(path)          # 登记,等轮末统一清理
-            event.app.current_buffer.reset()   # 清掉缓冲区,只留占位符
-            event.app.current_buffer.insert_text(_paste_placeholder(path, text))
-            # 立刻给用户反馈(否则他以为没粘贴成功)
-            event.app.invalidate()
-            _emit_paste_notice(path)
+        if not _is_long_text(text):
+            # 短粘贴(单行且 <2000 字符):按正常输入插进缓冲区,用户可继续编辑
+            event.app.current_buffer.insert_text(text)
             return
-        # 短粘贴:按默认行为插入缓冲(用户可继续编辑)
-        event.app.current_buffer.insert_text(text)
+
+        event.app.current_buffer.reset()
+        tokens = estimate_tokens(text)
+        if tokens < _inline_threshold(_current_model()):
+            # --- 一档:内联,不落盘 ---
+            _pending_inline.append(text)
+            notice = (f"  📋 已粘贴 {text.count(chr(10)) + 1} 行:"
+                      f"「{_head_tail_excerpt(text)}」(直接发送)")
+        else:
+            # --- 二档:存文件,只给路径 ---
+            path = _save_paste(text)
+            _round_files.append(path)       # 轮末清理
+            _pending_files.append(path)     # 回车时拼进 user 消息
+            notice = (f"  📋 已存入 {os.path.basename(path)}"
+                      f" ({text.count(chr(10)) + 1} 行, {len(text)} 字符)")
+        event.app.invalidate()
+        _emit_notice(notice)
 
     return kb
 
@@ -411,13 +445,50 @@ def read_input(prompt: str) -> str:
       · 兜底 input():保留原样(readline 需要这两个标记)
     详见 _strip_readline_markers 的说明。
     """
+    _pending_inline.clear()
+    _pending_files.clear()
     line = _read_via_prompt_toolkit(_to_pt_prompt(prompt))
     if line is not None:
-        return line
+        return _compose_with_pending(line)
     # 兜底:prompt_toolkit 不可用(git-bash/管道/无控制台)→ 退回 input()。
     # 代价:拿不到多行粘贴块(换行被当结束标记),但至少能用。
     # 提示符保持原样 —— readline 需要 \001/\002 才不会算错宽度。
-    return input(prompt)
+    return _compose_with_pending(input(prompt))
+
+
+def _compose_with_pending(typed: str) -> str:
+    """把粘贴内容合并进用户输入,返回最终要发给模型的文本。
+
+    ============ 两档的合并方式不同(2026-10-19 用户定) ============
+    一档(内联):直接把原文拼上 —— 对模型来说等同于用户自己打的字,
+                没有任何"这是文件"的痕迹。
+    二档(存文件):拼上**一句事实陈述 + 路径**,不塞正文。
+                措辞刻意不含指令("请读取"之类)—— 按项目原则,
+                代码只摆事实,读不读归模型判断。
+
+    用户打的字可能为空(粘贴完直接回车):这时也要能发出消息,
+    所以 main.py 的"空输入就 continue"要配合 has_pending 判断。
+    """
+    parts = []
+    if typed.strip():
+        parts.append(typed)
+    parts.extend(_pending_inline)
+    for path in _pending_files:
+        try:
+            lines = sum(1 for _ in open(path, encoding="utf-8",
+                                        errors="replace"))
+            size = os.path.getsize(path)
+            size_txt = (f"{size} 字节" if size < 1024
+                        else f"{size / 1024:.1f} KB" if size < 1024 * 1024
+                        else f"{size / (1024 * 1024):.1f} MB")
+        except OSError:
+            lines, size_txt = 0, "大小未知"
+        parts.append(
+            f"[用户粘贴了一段长文本] 原文已保存到 {path}"
+            f"(共 {lines} 行, {size_txt}, 未直接放入对话)")
+    _pending_inline.clear()
+    _pending_files.clear()
+    return "\n".join(parts)
 
 
 def read_plain(prompt: str, agent=None) -> str:
@@ -506,35 +577,23 @@ _paste_seq = 0       # 本次进程内的序号(用于文件名)
 
 
 def _paste_filename(text: str) -> str:
-    """生成 <前20字>.txt(重名时加 _2 / _3 后缀)。
+    """生成 paste_<时间戳>_<序号>.txt。
 
-    ============ 为什么文件名就是"内容前 20 字"(用户 2026-10-16 要求) ============
-    用户描述 Hermes 的体验:"你能看到一个灰色的 'xxx.txt' 文件名,
-    'xxx' 是你复制的内容的第一行里截断出的前 20 个字"。
-    → 文件名本身就要让用户**一眼认出**这是刚才粘的那段。
+    ============ 为什么改成时间戳+序号(2026-10-19 用户定) ============
+    用户:"文件名可以靠系统来分配,更加安全,不必是剪贴板内容的头几个字。"
+          "时间戳+序号。反正对完话就清了,不需要可读性。"
 
-    ============ 为什么去掉了序号和时间戳(2026-10-17 改) ============
-    初版是 `paste_1_20261029_201715_<前20字>.txt` —— 实测太长了,
-    20 个字被序号和时间戳淹没,反而认不出来。
-    现在:直接用内容前 20 字当文件名,重名才加 _2/_3。
-    (同一段文字粘两次会得到 xxx.txt 和 xxx_2.txt,仍是可认的。)
+    好处:
+      · 文件名完全由系统控制 —— 内容里的任何字符都不会影响路径
+        (旧做法要剃掉 \\ / : * ? " < > |,还可能撞上保留名 CON/NUL)
+      · 不含用户内容 → 不会因为文件名泄露内容
+    提示信息里仍然给首尾摘要,辨认靠提示不靠文件名。
     """
-    import re
-
-    # 文件名:去掉换行/回车/制表,以及 Windows 不允许的 \ / : * ? " < > |
-    head = re.sub(r"[\r\n\t]", " ", text).strip()
-    head = re.sub(r'[\\/:*?"<>|]', "", head)
-    # 压缩连续空格,再截前 20 字
-    head = re.sub(r"\s+", " ", head)[:20].strip()
-    if not head:
-        head = "pasted"
-
-    path = os.path.join(_PASTE_DIR, f"{head}.txt")
-    n = 2
-    while os.path.exists(path):       # 重名 → 加 _2 / _3
-        path = os.path.join(_PASTE_DIR, f"{head}_{n}.txt")
-        n += 1
-    return path
+    global _paste_seq
+    _paste_seq += 1
+    import datetime
+    stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    return os.path.join(_PASTE_DIR, f"paste_{stamp}_{_paste_seq:03d}.txt")
 
 
 def _is_long_text(text: str) -> bool:
@@ -549,12 +608,58 @@ def _is_long_text(text: str) -> bool:
             or len(text) >= PASTE_CHAR_THRESHOLD)
 
 
+# ============================================================
+# token 粗估 + 分档判定(2026-10-19 用户定)
+# ============================================================
+# ============ 为什么按 token 而不是字符数分档 ============
+# 用户在 ② 里定的口径:"无痕读取的体积阈值按模型上下文能力来定,
+# 比如以官方给定或用户设定的上下文窗口长度的 15% 来定"。
+#
+# 为什么用粗估系数而不是 tiktoken:
+#   · 这是【分档】决定,不是精确计费 —— 误差几倍都不改变结论
+#   · 零依赖(不引入 tiktoken/transformers)
+#   · dummy 现有的 compressor 也是按字符数估的,口径一致
+#
+# 系数来源(业界常用经验值):
+#   · CJK(中日韩)字符 ≈ 1.5 token / 字
+#   · ASCII 等其他字符 ≈ 0.25 token / 字
+# 混合内容按 CJK 占比加权。
+INLINE_RATIO = 0.15          # 窗口的 15% 以内 → 直接内联
+
+
+def estimate_tokens(text: str) -> int:
+    """粗估 token 数(不依赖分词库)。"""
+    if not text:
+        return 0
+    cjk = sum(1 for ch in text if "\u4e00" <= ch <= "\u9fff"
+              or "\u3040" <= ch <= "\u30ff"       # 日文假名
+              or "\uac00" <= ch <= "\ud7af")      # 韩文
+    other = len(text) - cjk
+    return int(cjk * 1.5 + other * 0.25)
+
+
+def _inline_threshold(model: str | None) -> int:
+    """一档/二档的分界(单位:token)= 模型窗口 × 15%。"""
+    from llm import resolve_window_tokens
+    return int(resolve_window_tokens(model) * INLINE_RATIO)
+
+
+def _head_tail_excerpt(text: str, n: int = 12) -> str:
+    """取首尾各 n 个字做摘要,中间用 … 连起来。
+
+    用户 2026-10-19:"一档添加开头和结尾各几个字,好比说
+    '已粘贴47行:"致尊敬的...此致敬礼"(直接发送)'"。
+    """
+    flat = " ".join(text.split())        # 压掉换行/连续空白
+    if len(flat) <= n * 2:
+        return flat
+    return f"{flat[:n]}…{flat[-n:]}"
+
+
 def _save_paste(text: str) -> str:
     """把长文本写进 pastes/,返回文件路径。"""
     os.makedirs(_PASTE_DIR, exist_ok=True)
-    path = _paste_filename(text)
-    global _paste_seq
-    _paste_seq += 1
+    path = _paste_filename(text)     # 内部已自增序号
     # newline="":按传入的原样写入,不做平台换行转换 ——
     # 用户粘贴的内容(可能来自网页/PDF)应该原样保留。
     with open(path, "w", encoding="utf-8", newline="") as f:
@@ -562,27 +667,20 @@ def _save_paste(text: str) -> str:
     return path
 
 
-def _paste_placeholder(path: str, text: str) -> str:
-    """给模型看的占位符(含路径,不含全文)。"""
-    lines = text.count("\n") + 1
-    return (f"[Pasted text #{_paste_seq}: {lines} 行 / {len(text)} 字符"
-            f" → {path}]")
 
+def _emit_notice(notice: str) -> None:
+    """粘贴后的屏幕反馈(灰色,与对话文字区分)。
 
-def _emit_paste_notice(path: str) -> None:
-    """粘贴瞬间的屏幕反馈(灰色,与对话文字区分)。
-
-    ============ 为什么用 print 而不是 ui.raw(2026-10-19) ============
+    ============ 为什么不用 ui.raw(2026-10-19) ============
     这个函数在 prompt_toolkit 的按键回调里执行 —— 此时 prompt_toolkit
-    正持有屏幕控制权。用 print() 会被它覆盖/错位。
-    正确做法:用 prompt_toolkit 自己的输出接口,或者让 app 失效后重绘。
-    这里用 run_in_terminal —— 它会在安全时机把输出插进去并重绘界面。
+    正持有屏幕控制权。直接 print 会被它覆盖/错位。
+    run_in_terminal 会在安全时机把输出插进去并重绘界面。
     """
     try:
         from prompt_toolkit.application import run_in_terminal
         from colors import paint, GRAY_DIM
 
-        msg = paint(f"  📋 已存入 {path}", GRAY_DIM)
+        msg = paint(notice, GRAY_DIM)
 
         def _show() -> None:
             print(msg)
@@ -590,27 +688,10 @@ def _emit_paste_notice(path: str) -> None:
         run_in_terminal(_show)
     except Exception:
         # 不在 prompt_toolkit 上下文里(如测试)→ 直接打印
-        pass
+        try:
+            from colors import paint, GRAY_DIM
+            print(paint(notice, GRAY_DIM))
+        except Exception:
+            pass
 
 
-def maybe_collapse_paste(text: str) -> tuple[str, str | None]:
-    """长文本 → 写临时文件,返回 (给模型看的文本, 文件路径或 None)。
-
-    ============ 判据 ============
-    含换行符 OR 字符数 ≥ PASTE_CHAR_THRESHOLD(2000)
-
-    ============ 为什么还留着(2026-10-19) ============
-    粘贴路径已在 BracketedPaste 事件里处理(粘贴即落盘)。
-    但**兜底路径**(prompt_toolkit 不可用 → input())拿不到粘贴事件,
-    只能等回车后由调用方跑这里。所以两条路都要能转存。
-
-    ============ 返回给模型什么 ============
-    占位符 + 路径,**不塞全文** —— 模型要内容就用 read_file 自己读。
-    (遵循"代码提供事实、判断归模型";也避免一次塞几万字符打爆上下文)
-    """
-    if not _is_long_text(text):
-        return text, None
-
-    path = _save_paste(text)
-    _round_files.append(path)      # 登记,等轮末统一清理
-    return _paste_placeholder(path, text), path

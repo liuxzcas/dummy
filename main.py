@@ -79,7 +79,7 @@ from tools import create_default_registry
 from colors import paint, GREEN, GRAY_DIM, WHITE, YELLOW, RED, NEUTRAL, CYAN, PURPLE
 from ui import ui, KIND_SPINNER, KIND_AGENT, KIND_DIVIDER
 from input_layer import (
-    read_input_with_drop, format_drop_message, maybe_collapse_paste,
+    read_input_with_drop, format_drop_message, set_model_name,
 )
 from core import DummyAgent
 
@@ -303,6 +303,8 @@ def main():
     #         最后 Agent（依赖前两者）
     # ===========================================================
     llm = LLMClient(api_key=api_key, base_url=base_url, model=model)
+    # 告诉输入层当前模型 —— 它用"窗口 × 15%"决定粘贴走内联还是存文件
+    set_model_name(model)
     registry = create_default_registry()
     agent = DummyAgent(llm_client=llm, tool_registry=registry)
 
@@ -329,12 +331,11 @@ def main():
                 # 用颜色和用户/模型的文字区分开(2026-10-19 用户要求)
                 ui.raw(paint(f"  📎 已拖入 {drop['path']}", GRAY_DIM))
             else:
-                # 长文本(含换行 或 ≥2000 字符)→ 写临时文件,只把路径给模型
-                # (否则一次粘贴几万字符会直接打爆上下文)
-                user_input, paste_path = maybe_collapse_paste(raw.strip())
-                if paste_path:
-                    # 同上:整行灰色
-                    ui.raw(paint(f"  📋 已存入 {paste_path}", GRAY_DIM))
+                # 长文本转存、内联合并、灰字提示**都已在输入层做完** ——
+                # read_input 的返回值就是最终要发的文本(可能含内联的粘贴内容)。
+                # 这里只去掉两侧空白;不能用 strip() 把内联内容也切掉,
+                # 所以只 rstip 行尾(用户误敲的空格)。
+                user_input = raw.rstrip()
 
             # ---------------------------------------------------
             # 处理内置命令（不经过 Agent 处理）

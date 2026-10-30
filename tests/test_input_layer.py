@@ -21,9 +21,13 @@ dummy 的做法:**先查命令白名单**,是命令就绝不走路径分支。
 本文件锁住这一点。
 """
 import os
+import re
 import sys
 
 import pytest
+
+# 文件名形如 paste_20261019_143022_001.txt
+date_re = re.compile(r"paste_\d{8}_\d{6}_\d{3}\.txt$")
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -270,13 +274,12 @@ class TestPromptToolkitIntegration:
     dummy 不该因为跑在这些环境里就完全用不了 → 退回 input()。
     """
 
-    def test_bracketed_paste_writes_file_and_placeholder(self, tmp_path, monkeypatch):
-        """核心能力:多行长文本粘贴 → 立刻落盘 + 缓冲区只剩占位符。
+    def test_bracketed_paste_end_to_end(self, tmp_path, monkeypatch):
+        """端到端:粘贴多行短文本 → 一档内联,不落盘、不留占位符。
 
-        ★ 行为在 2026-10-19 变了(用户反馈后):
-          改前:粘贴内容留在行缓冲区(用户以为没反应),回车后才转存。
-          改后:粘贴瞬间就落盘、打灰字提示、缓冲区只放占位符。
-          所以这里断言的是**文件被创建 + 返回的是占位符**,而不是原文。
+        ★ 行为在 2026-10-19 变了(用户定的两档方案):
+          改前:一律存文件 + 缓冲区放占位符
+          改后:小内容直接内联(对模型来说等同用户打的字),不落盘
         """
         from prompt_toolkit.input import create_pipe_input
         from prompt_toolkit.output import DummyOutput
@@ -284,7 +287,8 @@ class TestPromptToolkitIntegration:
         import input_layer as IL
 
         monkeypatch.setattr(IL, "_PASTE_DIR", str(tmp_path))
-        monkeypatch.setattr(IL, "_emit_paste_notice", lambda p: None)  # 无关屏显
+        monkeypatch.setattr(IL, "_emit_notice", lambda n: None)
+        monkeypatch.setattr(IL, "_current_model", lambda: "deepseek-v4-flash")
         IL.take_round_files()
 
         with create_pipe_input() as inp:
@@ -294,24 +298,18 @@ class TestPromptToolkitIntegration:
             real = IL._get_session
             IL._get_session = lambda: sess
             try:
-                # 模拟终端发来的 bracketed paste:ESC[200~ 内容 ESC[201~ + 回车
-                payload = chr(27) + "[200~" + chr(10).join(
-                    ["第一行", "第二行", "第三行"]) + chr(27) + "[201~" + chr(13)
+                payload = (chr(27) + "[200~" + chr(10).join(
+                    ["第一行", "第二行", "第三行"]) + chr(27) + "[201~" + chr(13))
                 inp.send_text(payload)
                 out = IL.read_input("> ")
             finally:
                 IL._get_session = real
 
-        # 返回的是占位符,不是原文
-        assert out.startswith("[Pasted text #"), f"应返回占位符: {out!r}"
-        # 原文不该整段进对话 —— 判据用"行数/字符数标注"而不是查文字,
-        # 因为文件名本身就是内容前 20 字(会包含"第一行"这类字样)。
-        assert "3 行 / " in out, f"占位符应报告行数: {out!r}"
-        # 文件真的写了,内容与原文一致
-        files = IL.take_round_files()
-        assert len(files) == 1 and os.path.isfile(files[0])
-        assert open(files[0], encoding="utf-8", newline="").read() == \
-            "第一行\n第二行\n第三行"
+        # 一档:原文内联进返回值,没有文件、没有占位符
+        assert "第一行" in out and "第三行" in out, f"应内联原文: {out!r}"
+        assert "[Pasted text" not in out, "不该再有占位符"
+        assert IL.take_round_files() == [], "一档不落盘,不该登记文件"
+        assert not list(tmp_path.glob("*.txt")), "一档不该写文件"
 
     def test_paste_then_typing_concatenates(self):
         """粘贴后接着打字 → 两者拼接。"""
@@ -357,75 +355,65 @@ class TestPromptToolkitIntegration:
 
 
 # ============================================================
-# ⑨ 长文本 → 临时文件
+# ⑨ 粘贴分档:一档内联 / 二档存文件(2026-10-19 用户定的方案)
 # ============================================================
-class TestPasteCollapse:
-    """用户 2026-10-16 的需求:大段文本存成临时 txt,避免填满窗口。
+class TestPasteTiers:
+    """用户定的两档方案:
 
-    ★ 关键:"含换行符"这个判据**之前不可达**(input() 把换行当结束标记
-      吃掉),换 prompt_toolkit 后才第一次成立。
+    · 一档(token 估算 < 模型窗口 × 15%):**直接内联**进 user 消息,
+      不落盘、无"请读文件"指令 —— 对模型来说等同于用户自己打的字。
+    · 二档(≥ 15%):存 pastes/paste_<时间戳>_<序号>.txt,只给路径,
+      避免一次塞几十万 token 打爆上下文。
+
+    为什么按 token 而不是字符数:用户说"按模型上下文能力来定,
+    比如以窗口长度的 15% 来定"。粗估系数(CJK 1.5/字、ASCII 0.25/字)
+    足够用于分档 —— 这不是精确计费。
     """
 
-    def test_short_single_line_untouched(self):
-        from input_layer import maybe_collapse_paste
-        assert maybe_collapse_paste("帮我看下这个报错") == ("帮我看下这个报错", None)
+    def test_estimate_tokens_cjk_vs_ascii(self):
+        import input_layer as IL
+        # 100 个汉字 ≈ 150 token;100 个 ASCII ≈ 25 token
+        assert 140 <= IL.estimate_tokens("字" * 100) <= 160
+        assert 20 <= IL.estimate_tokens("a" * 100) <= 30
+        assert IL.estimate_tokens("") == 0
 
-    def test_multiline_collapsed(self, tmp_path, monkeypatch):
+    def test_inline_threshold_is_15pct_of_window(self):
+        import input_layer as IL
+        from llm import resolve_window_tokens
+        win = resolve_window_tokens("deepseek-v4-flash")
+        assert IL._inline_threshold("deepseek-v4-flash") == int(win * 0.15)
+
+    def test_head_tail_excerpt(self):
+        """用户要的格式:'已粘贴47行:"致尊敬的...此致敬礼"(直接发送)'。"""
+        import input_layer as IL
+        text = "致尊敬的各位领导" + "正文" * 50 + "此致敬礼"
+        ex = IL._head_tail_excerpt(text, n=5)
+        assert ex.startswith("致尊敬的") and ex.endswith("此致敬礼")
+        assert "…" in ex
+
+    def test_head_tail_excerpt_short_text(self):
+        """短文本不做省略。"""
+        import input_layer as IL
+        assert IL._head_tail_excerpt("很短", n=12) == "很短"
+
+    def test_filename_uses_timestamp_and_seq(self, tmp_path, monkeypatch):
+        """用户 2026-10-19:"时间戳+序号。反正对完话就清了,不需要可读性。"。"""
         import input_layer as IL
         monkeypatch.setattr(IL, "_PASTE_DIR", str(tmp_path))
-        payload = "第一段\n第二段\n第三段"
-        out, path = IL.maybe_collapse_paste(payload)
-        assert path and os.path.isfile(path)
-        assert out.startswith("[Pasted text #")
-        assert payload not in out, "占位符不该塞全文"
-        assert open(path, encoding="utf-8", newline="").read() == payload
-
-    def test_char_threshold_boundary(self, tmp_path, monkeypatch):
-        import input_layer as IL
-        monkeypatch.setattr(IL, "_PASTE_DIR", str(tmp_path))
-        assert IL.maybe_collapse_paste("字" * 1999)[1] is None
-        assert IL.maybe_collapse_paste("字" * 2000)[1] is not None
-
-    def test_filename_is_first_20_chars(self, tmp_path, monkeypatch):
-        """用户描述 Hermes 的体验:文件名就是内容前 20 字,要一眼认得出。"""
-        import input_layer as IL
-        monkeypatch.setattr(IL, "_PASTE_DIR", str(tmp_path))
-        text = "这是一段从网页复制来的文字\n第二行"
-        _out, path = IL.maybe_collapse_paste(text)
+        path = IL._save_paste("x\ny")
         name = os.path.basename(path)
-        assert name.endswith(".txt")
-        assert name[:-4].startswith("这是一段从网页复制来的文"), name
-        assert len(name[:-4]) <= 20
-
-    def test_filename_strips_illegal_chars(self, tmp_path, monkeypatch):
-        import input_layer as IL
-        monkeypatch.setattr(IL, "_PASTE_DIR", str(tmp_path))
-        _out, path = IL.maybe_collapse_paste('a<b>c:d"e|f?g*h\ni')
-        assert os.path.isfile(path), f"含非法字符的文件名必须能创建: {path}"
-
-    def test_duplicate_names_get_suffix(self, tmp_path, monkeypatch):
-        import input_layer as IL
-        monkeypatch.setattr(IL, "_PASTE_DIR", str(tmp_path))
-        t = "重复\n内容"
-        _o1, p1 = IL.maybe_collapse_paste(t)
-        _o2, p2 = IL.maybe_collapse_paste(t)
-        assert p1 != p2, "同名不能互相覆盖"
-        assert os.path.basename(p2).endswith("_2.txt")
+        assert name.startswith("paste_"), name
+        assert name.endswith(".txt"), name
+        # 形如 paste_20261019_143022_001.txt
+        assert date_re.search(name), f"应含时间戳+序号: {name}"
 
     def test_crlf_preserved(self, tmp_path, monkeypatch):
         """粘贴内容可能来自 Windows 网页/PDF,换行要原样保留。"""
         import input_layer as IL
         monkeypatch.setattr(IL, "_PASTE_DIR", str(tmp_path))
         payload = "第一行\r\n第二行\r\n"
-        _out, path = IL.maybe_collapse_paste(payload)
+        path = IL._save_paste(payload)
         assert open(path, "rb").read() == payload.encode("utf-8")
-
-    def test_placeholder_has_increasing_seq(self, tmp_path, monkeypatch):
-        import input_layer as IL
-        monkeypatch.setattr(IL, "_PASTE_DIR", str(tmp_path))
-        o1, _ = IL.maybe_collapse_paste("第一段\nx")
-        o2, _ = IL.maybe_collapse_paste("第二段\ny")
-        assert o1 != o2, "占位符编号应递增(否则用户分不清是第几段)"
 
 
 # ============================================================
@@ -494,53 +482,47 @@ class TestPromptMarkersStripped:
         from input_layer import _to_pt_prompt
         frags = to_formatted_text(_to_pt_prompt("你 > "))
         assert "".join(f[1] for f in frags) == "你 > "
-
-
 # ============================================================
-# ⑪ 临时文件的生命周期(用户 2026-10-19 反馈)
+# ⑪ 临时文件的生命周期
 # ============================================================
 class TestRoundFileLifecycle:
-    """用户:"粘贴完文本之后,发送完消息可以自动清除临时文件。
-            现在临时文件完全不清。"
+    """用户 2026-10-19:"发送完消息可以自动清除临时文件。现在完全不清。"
 
     ============ 为什么必须等本轮结束才删 ============
-    时序:
-        粘贴 → 存文件 → 发送 → 模型决定 read_file → 读取 → 回复 → 本轮结束
-                                                              ↑ 只有这里能删
+    时序:粘贴 → 存文件 → 发送 → 模型 read_file → 读取 → 回复 → 本轮结束
+                                                          ↑ 只有这里能删
     删早了模型会读不到文件(报不存在)。
     """
 
-    def test_paste_registers_file_for_cleanup(self, tmp_path, monkeypatch):
-        """转存时要登记 —— 否则轮末不知道要删谁。"""
+    def test_save_registers_for_cleanup(self, tmp_path, monkeypatch):
+        """二档存盘时要登记 —— 否则轮末不知道要删谁。"""
         import input_layer as IL
         monkeypatch.setattr(IL, "_PASTE_DIR", str(tmp_path))
-        IL.take_round_files()          # 清空
-        _out, path = IL.maybe_collapse_paste("第一行\n第二行")
+        IL.take_round_files()
+        path = IL._save_paste("第一行\n第二行")
+        IL._round_files.append(path)        # 粘贴事件里会这么做
         assert path in IL.take_round_files()
 
     def test_take_round_files_clears_after_reading(self, tmp_path, monkeypatch):
-        """取出后要清空 —— 否则同一批文件会被重复删。"""
         import input_layer as IL
         monkeypatch.setattr(IL, "_PASTE_DIR", str(tmp_path))
-        IL.maybe_collapse_paste("a\nb")
-        first = IL.take_round_files()
-        second = IL.take_round_files()
-        assert first and second == [], "第二次取应为空(已消费)"
+        IL.take_round_files()
+        path = IL._save_paste("a\nb")
+        IL._round_files.append(path)
+        assert IL.take_round_files() != []
+        assert IL.take_round_files() == [], "第二次取应为空(已消费)"
 
     def test_cleanup_deletes_files(self, tmp_path, monkeypatch):
         import input_layer as IL
         monkeypatch.setattr(IL, "_PASTE_DIR", str(tmp_path))
-        IL.take_round_files()
-        _out, path = IL.maybe_collapse_paste("x\ny")
+        path = IL._save_paste("x\ny")
         assert os.path.isfile(path)
-        n = IL.cleanup_files(IL.take_round_files())
-        assert n == 1 and not os.path.isfile(path)
+        assert IL.cleanup_files([path]) == 1
+        assert not os.path.isfile(path)
 
     def test_cleanup_tolerates_missing_files(self, tmp_path):
-        """文件已被删/无权限 → 不抛异常,只少删一个。"""
         import input_layer as IL
-        n = IL.cleanup_files([str(tmp_path / "不存在.txt")])
-        assert n == 0
+        assert IL.cleanup_files([str(tmp_path / "不存在.txt")]) == 0
 
     def test_core_cleans_up_after_chat(self, tmp_path, monkeypatch):
         """chat() 结束后,本轮登记的临时文件应被删除。"""
@@ -551,7 +533,8 @@ class TestRoundFileLifecycle:
 
         monkeypatch.setattr(IL, "_PASTE_DIR", str(tmp_path))
         IL.take_round_files()
-        _out, path = IL.maybe_collapse_paste("临时\n内容")
+        path = IL._save_paste("临时\n内容")
+        IL._round_files.append(path)
         assert os.path.isfile(path)
 
         agent = core.DummyAgent(ScriptedLLM([]), create_default_registry())
@@ -559,96 +542,8 @@ class TestRoundFileLifecycle:
 
         assert not os.path.isfile(path), "本轮结束后临时文件应被清理"
 
-    def test_short_input_registers_nothing(self):
-        import input_layer as IL
-        IL.take_round_files()
-        IL.maybe_collapse_paste("一句短话")
-        assert IL.take_round_files() == []
 
 
-# ============================================================
-# ⑫ 读输入期间必须暂停 /p 打断监听（丢字 bug）
-# ============================================================
-class TestInterruptListenerPausedDuringInput:
-    """用户实测:粘贴单行短文本被截断成 "https://io1#"、"ht:c1n"。
-
-    ============ 根因 ============
-    core.DummyAgent 有个 _InterruptListener 后台线程,持续用
-    msvcrt.kbhit()/getwch() 抢控制台输入(为了工具运行中能按 /p 打断)。
-    而 prompt_toolkit 的 Win32Input 也在读同一个控制台 →
-    两边分吃同一个字符流 → 丢字。
-
-    **原来只有 _confirm_provider 里调了 pause(),主输入循环漏了。**
-
-    ============ 为什么 pause() 必须"等真的停下来" ============
-    原来只设 _paused=True 就返回。但后台线程可能正卡在
-    `while kbhit(): getwch()` 里,或 time.sleep(0.02) 中,
-    要等下一轮才看到标志 —— 这个窗口里它仍在抢字符。
-    现在 pause() 会等 _paused_seen 事件(实测约 27ms)。
-    """
-
-    def test_read_pauses_and_resumes_listener(self, monkeypatch):
-        import input_layer as IL
-
-        calls = []
-
-        class FakeListener:
-            def pause(self, timeout=0.5):
-                calls.append("pause")
-
-            def resume(self):
-                calls.append("resume")
-
-        class FakeAgent:
-            _interrupt_listener = FakeListener()
-
-        monkeypatch.setattr(IL, "read_input", lambda p: "测试输入")
-        raw, drop = IL.read_input_with_drop("> ", FakeAgent())
-
-        assert calls == ["pause", "resume"], f"应成对暂停/恢复: {calls}"
-        assert raw == "测试输入"
-
-    def test_resume_called_even_if_input_raises(self, monkeypatch):
-        """读输入抛异常(Ctrl+C 等)→ 也必须 resume,否则 /p 永久失效。"""
-        import input_layer as IL
-        calls = []
-
-        class FakeListener:
-            def pause(self, timeout=0.5):
-                calls.append("pause")
-
-            def resume(self):
-                calls.append("resume")
-
-        class FakeAgent:
-            _interrupt_listener = FakeListener()
-
-        def boom(p):
-            raise KeyboardInterrupt
-
-        monkeypatch.setattr(IL, "read_input", boom)
-        with pytest.raises(KeyboardInterrupt):
-            IL.read_input_with_drop("> ", FakeAgent())
-        assert calls == ["pause", "resume"], f"异常路径也要 resume: {calls}"
-
-    def test_no_agent_still_works(self, monkeypatch):
-        """不传 agent(测试/无监听器场景)→ 正常读,不崩。"""
-        import input_layer as IL
-        monkeypatch.setattr(IL, "read_input", lambda p: "x")
-        raw, _ = IL.read_input_with_drop("> ")
-        assert raw == "x"
-
-    def test_pause_waits_for_listener_to_stop(self):
-        """pause() 必须等后台线程真的停下(而不是设个标志就返回)。"""
-        from core import _InterruptListener
-        l = _InterruptListener()
-        try:
-            l.pause()
-            assert l._paused_seen.is_set(), \
-                "pause() 返回时应已确认后台线程停下"
-        finally:
-            l.resume()
-            l._stop = True
 
 
 # ============================================================
@@ -750,3 +645,68 @@ class TestNoBareInput:
         assert not has_input, "web_search 不该调 input()"
         assert "TAVILY_API_KEY" in src and "environ" in src, \
             "应从环境变量 TAVILY_API_KEY 读取"
+
+
+# ============================================================
+# ⑭ 读输入期间必须暂停 /p 打断监听（丢字 bug，2026-10-19）
+# ============================================================
+class TestInterruptListenerPausedDuringInput:
+    """用户实测:粘贴单行短文本被截断成 "https://io1#"、"ht:c1n"。
+
+    根因:core 的 _InterruptListener 后台线程持续用 msvcrt 抢控制台,
+    与 prompt_toolkit 的 Win32Input 分吃同一个字符流 → 丢字。
+    而且 pause() 原来只在 _confirm_provider 里调,主循环漏了。
+    """
+
+    def test_read_pauses_and_resumes_listener(self, monkeypatch):
+        import input_layer as IL
+        calls = []
+
+        class FakeListener:
+            def pause(self, timeout=0.5):
+                calls.append("pause")
+
+            def resume(self):
+                calls.append("resume")
+
+        class FakeAgent:
+            _interrupt_listener = FakeListener()
+
+        monkeypatch.setattr(IL, "read_input", lambda p: "测试输入")
+        raw, _drop = IL.read_input_with_drop("> ", FakeAgent())
+        assert calls == ["pause", "resume"], f"应成对暂停/恢复: {calls}"
+        assert raw == "测试输入"
+
+    def test_resume_called_even_if_input_raises(self, monkeypatch):
+        """抛异常(Ctrl+C)→ 也必须 resume,否则 /p 永久失效。"""
+        import input_layer as IL
+        calls = []
+
+        class FakeListener:
+            def pause(self, timeout=0.5):
+                calls.append("pause")
+
+            def resume(self):
+                calls.append("resume")
+
+        class FakeAgent:
+            _interrupt_listener = FakeListener()
+
+        def boom(p):
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(IL, "read_input", boom)
+        with pytest.raises(KeyboardInterrupt):
+            IL.read_input_with_drop("> ", FakeAgent())
+        assert calls == ["pause", "resume"]
+
+    def test_pause_waits_for_listener_to_stop(self):
+        """pause() 必须等后台线程真停下,而不是设个标志就返回。"""
+        from core import _InterruptListener
+        l = _InterruptListener()
+        try:
+            l.pause()
+            assert l._paused_seen.is_set()
+        finally:
+            l.resume()
+            l._stop = True
