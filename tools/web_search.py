@@ -50,11 +50,22 @@ def web_search_handler(query: str, limit: int = 5) -> str:
     if not query.strip():
         return "[错误] 搜索查询不能为空"
 
-    api_key = input("请输入你的 Tavily API Key: ").strip()
+    # ============ 为什么从环境变量读,不 input() 问(2026-10-19 修) ============
+    # 原实现每次搜索都 `input("请输入你的 Tavily API Key: ")` ——
+    # 两个问题:
+    #   ① **每次调用都问一遍**(同一会话里搜三次要输三次 key)
+    #   ② 它在【工具执行期间】读控制台,而 /p 打断监听线程此时是活的,
+    #      两边抢同一个控制台 → 用户粘贴/输入丢字(用户实测)
+    # 本模块的文档字符串本来就写着"通过环境变量 TAVILY_API_KEY 设置" ——
+    # 代码没照做。现在改成照做:key 放 .env,一次配好,永久生效。
+    api_key = os.environ.get("TAVILY_API_KEY", "").strip()
     if not api_key:
         return (
-            "[错误] 未设置 TAVILY_API_KEY 。\n"
-            "请在 https://tavily.com 注册获取免费 API Key，然后运行：\n"
+            "[错误] 未设置 TAVILY_API_KEY。\n"
+            "请在 https://tavily.com 注册获取免费 API Key,"
+            "然后写入项目根的 .env:\n"
+            "    TAVILY_API_KEY=tvly-xxxxxxxxxxxx\n"
+            "(.env 已在 .gitignore 里,不会进仓库)"
         )
 
     try:

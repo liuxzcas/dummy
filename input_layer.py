@@ -420,6 +420,36 @@ def read_input(prompt: str) -> str:
     return input(prompt)
 
 
+def read_plain(prompt: str, agent=None) -> str:
+    """读一行**普通**输入(确认/问答/工具内部提问),不走拖拽/长文本逻辑。
+
+    ============ 为什么还需要这个函数(2026-10-19 用户实测) ============
+    用户:粘贴 URL 时仍偶发丢字,"问题出在 web_search 工具询问用户输入
+          api key 时"。
+
+    根因同主循环那次:项目里还有几处**裸调 input()** 的地方 ——
+        · tools/web_search.py   问 API key
+        · core.py               执行确认 y/n、会话锁冲突、/p 打断后收集提示词
+    它们都在【工具执行期间或之后】发生,此时 /p 监听线程是**活的**,
+    照样和输入抢同一个控制台。
+
+    所以在输入层统一收口:凡是要读用户输入,都走这里 ——
+    它会 pause/resume 监听器,消除竞争。
+
+    与 read_input 的区别:
+      · read_input:主对话输入,要识别拖拽路径 + 长文本转文件
+      · read_plain:确认/提问,原样返回(去首尾空白由调用方决定)
+    """
+    listener = getattr(agent, "_interrupt_listener", None) if agent else None
+    if listener:
+        listener.pause()
+    try:
+        return read_input(prompt)
+    finally:
+        if listener:
+            listener.resume()
+
+
 def read_input_with_drop(prompt: str, agent=None) -> tuple[str, dict | None]:
     """读一行输入,并检测是否拖入了文件。
 

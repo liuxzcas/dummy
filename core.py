@@ -106,6 +106,7 @@ from tool_guardrails import (
 from turn_context import TurnContext
 from colors import paint, GRAY, BLUE, SLATE, PURPLE, YELLOW, NEUTRAL, RED, GREEN
 from ui import ui, KIND_THINKING, KIND_TOOL_CALL, KIND_TOOL_RESULT
+from input_layer import read_plain
 from skills_manager import build_skills_index
 from lessons import (
     has_correction_signal, is_tool_error, generate_lesson,
@@ -639,8 +640,10 @@ class DummyAgent:
 
                 if interrupt_triggered:
                     # 统一收集提示词(所有打断路径:确认处 /p 与检查点 /p 汇合)
-                    prompt = input(
-                        "  🧭 检测到 /p 打断,请输入提示词(Enter 取消): "
+                    # 走输入层:它会 pause/resume 监听器,避免和它抢控制台
+                    prompt = read_plain(
+                        "  🧭 检测到 /p 打断,请输入提示词(Enter 取消): ",
+                        self,
                     ).strip()
 
                     # 无论后续是否注入提示词,都必须先把本轮"声明了但没执行"
@@ -1378,10 +1381,10 @@ class DummyAgent:
             session_id, self._session_owner)
         if not ok and "持有" in msg:
             try:
-                answer = input(
+                answer = read_plain(
                     f"\n  ⚠️ 会话 {session_id[:8]}… {msg}。\n"
                     "  同时使用同一会话会导致历史交错!\n"
-                    "  输入 y 强制接管 / n 放弃: ").strip().lower()
+                    "  输入 y 强制接管 / n 放弃: ", self).strip().lower()
             except EOFError:
                 answer = "n"
             if answer != "y":
@@ -1527,14 +1530,10 @@ class DummyAgent:
         循环打断处理点统一收集(阻塞式 input)。
         """
         def confirm(prompt: str) -> str:
-            self._interrupt_listener.pause()  # 暂停轮询,避免与 input 竞争
-            try:
-                print(prompt)
-                raw = input(
-                    "     或输入 /p 打断(随后输入提示词): "
-                ).strip()
-            finally:
-                self._interrupt_listener.resume()
+            # 走输入层:已含 pause/resume(避免与监听器抢控制台)
+            print(prompt)
+            raw = read_plain(
+                "     或输入 /p 打断(随后输入提示词): ", self).strip()
             if raw.startswith("/p"):
                 raise InterruptSignal()  # 纯触发,提示词在打断处理点统一收集
             return raw

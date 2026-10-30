@@ -649,3 +649,104 @@ class TestInterruptListenerPausedDuringInput:
         finally:
             l.resume()
             l._stop = True
+
+
+# ============================================================
+# ⑬ 全项目不许裸调 input()（丢字的根本防线）
+# ============================================================
+class TestNoBareInput:
+    """用户实测:"有时还是不行。问题出在 web_search 工具询问用户输入
+    api key 时。"
+
+    ============ 为什么这条测试比修某一个点更重要 ============
+    丢字的根因是【两处同时读控制台】:
+        /p 打断监听线程(msvcrt 轮询) ←→ 谁在 input() 就抢谁
+    所以只要项目里还有一处裸 input(),那条路径就会丢字。
+
+    修一个补一个是不行的 —— 必须**从结构上保证**:
+    所有读用户输入的地方都走 input_layer(它负责 pause/resume 监听器)。
+
+    ============ 为什么用 AST 而不是正则(2026-10-19 踩坑) ============
+    初版用正则扫 "input(" —— 误报一堆:
+      · 注释/docstring 里的说明文字 ("input() 不会走 readline")
+      · **函数名后缀**(`web_search_handler(` 里含 "input(" ?不,是
+        子串匹配把 `def web_search_handler(` 也算进去了)
+    AST 只看真实的 Call 节点,不会误伤。
+    """
+
+    # 允许裸 input() 的位置及理由
+    ALLOWED = {
+        # 启动期的 API Key / Base URL 询问 —— 此时 _InterruptListener
+        # 还没创建(core 是在 DummyAgent.__init__ 里才起线程的),
+        # 不存在抢控制台的竞争。
+        ("main.py", "input"),
+    }
+
+    def _scan(self):
+        """用 AST 扫裸 input() 调用(自动跳过注释/docstring)。"""
+        import ast
+        import pathlib as pl
+
+        root = pl.Path(__file__).resolve().parent.parent
+        offenders = []
+        for py in root.rglob("*.py"):
+            rel = py.relative_to(root).as_posix()
+            if rel.startswith(("tests/", ".git", "__pycache__")):
+                continue
+            if rel == "input_layer.py":
+                continue            # 唯一允许真正调用 input 的地方
+            try:
+                tree = ast.parse(py.read_text(encoding="utf-8", errors="replace"))
+            except SyntaxError:
+                continue
+            for node in ast.walk(tree):
+                if (isinstance(node, ast.Call)
+                        and isinstance(node.func, ast.Name)
+                        and node.func.id == "input"):
+                    offenders.append(f"{rel}:{node.lineno}")
+        return offenders
+
+    def test_no_bare_input_outside_allowlist(self):
+        """除启动期询问外,项目里不该有裸 input()。"""
+        offenders = self._scan()
+        # main.py 的两处是启动期,放行
+        offenders = [o for o in offenders
+                     if not (o.startswith("main.py:") and o in {
+                         f"main.py:{self._startup_line()}",
+                     })]
+        unexpected = [o for o in offenders
+                      if not o.startswith("main.py:")]
+        msg = ("发现裸调 input() —— 它会和 /p 监听线程抢控制台导致丢字;"
+               "请改用 input_layer.read_plain(prompt, agent)。违规处: "
+               + ", ".join(unexpected))
+        assert not unexpected, msg
+
+    @staticmethod
+    def _startup_line():
+        """main.py 里第一个 input() 的行号(API Key),用于放行判断。"""
+        import ast
+        import pathlib as pl
+        src = (pl.Path(__file__).resolve().parent.parent / "main.py").read_text(
+            encoding="utf-8")
+        for node in ast.walk(ast.parse(src)):
+            if (isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Name)
+                    and node.func.id == "input"):
+                return node.lineno
+        return -1
+
+    def test_web_search_reads_env_not_prompt(self):
+        """web_search 不该再问用户要 key(每次问一遍 + 抢控制台)。"""
+        import ast
+        import inspect
+        import tools.web_search as ws
+
+        src = inspect.getsource(ws.web_search_handler)
+        # 用 AST 判断有没有真实调用 input(),而不是查子串
+        has_input = any(
+            isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+            and n.func.id == "input"
+            for n in ast.walk(ast.parse(src)))
+        assert not has_input, "web_search 不该调 input()"
+        assert "TAVILY_API_KEY" in src and "environ" in src, \
+            "应从环境变量 TAVILY_API_KEY 读取"
