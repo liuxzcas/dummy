@@ -769,3 +769,78 @@ class TestPastePreservesTypedText:
         """内联内容必须保留换行(用户实测:'粘贴的内容会丢失换行号')。"""
         out = self._run("", "第一行\n第二行\n第三行", "", tmp_path, monkeypatch)
         assert out.count("\n") == 2, f"换行丢了: {out!r}"
+
+
+# ============================================================
+# ⑯ 换行符归一化（2026-10-30 用户实测）
+# ============================================================
+class TestNewlineNormalization:
+    """用户实测:粘贴 3 行文本,提示显示"已粘贴 1 行"。
+
+    ============ 根因 ============
+    不同终端/剪贴板给的换行符不同:
+        LF(\n)      Unix / 大多数复制来源
+        CRLF(\r\n)  Windows 文件
+        **CR(\r)**   **Windows Terminal 的粘贴序列用 CR**
+    而数行用 `text.count("\n") + 1` —— 内容是 CR 分隔时永远算 1 行。
+
+    更麻烦的是 CR 直接进 user 消息,模型可能把整段读成一行
+    (它的训练数据里换行几乎都是 \n)。
+
+    实测三种形式的行数统计:
+        LF   -> 3 行 ✅
+        CRLF -> 3 行 ✅
+        CR   -> **1 行** ❌  ← 与用户看到的现象一致
+    """
+
+    def test_lf_unchanged(self):
+        import input_layer as IL
+        assert IL._normalize_newlines("a\nb") == "a\nb"
+
+    def test_crlf_to_lf(self):
+        import input_layer as IL
+        assert IL._normalize_newlines("a\r\nb") == "a\nb"
+
+    def test_cr_to_lf(self):
+        """Windows Terminal 的粘贴序列用 CR —— 这是用户遇到的场景。"""
+        import input_layer as IL
+        assert IL._normalize_newlines("a\rb") == "a\nb"
+
+    def test_mixed(self):
+        import input_layer as IL
+        assert IL._normalize_newlines("a\r\nb\rc\nd") == "a\nb\nc\nd"
+
+    def test_line_count_after_normalization(self):
+        """归一化后行数统计才对(用户看到的'已粘贴 1 行'是 bug)。"""
+        import input_layer as IL
+        for sep in ("\n", "\r\n", "\r"):
+            text = IL._normalize_newlines(sep.join(["第一行", "第二行", "第三行"]))
+            assert text.count("\n") + 1 == 3, f"{sep!r} 归一化后应算 3 行"
+
+    def test_cr_paste_end_to_end(self, tmp_path, monkeypatch):
+        """端到端:终端用 CR 分隔的粘贴 → 内联内容里应是 \n。"""
+        from prompt_toolkit import PromptSession
+        from prompt_toolkit.input import create_pipe_input
+        from prompt_toolkit.output import DummyOutput
+        import input_layer as IL
+
+        monkeypatch.setattr(IL, "_PASTE_DIR", str(tmp_path))
+        monkeypatch.setattr(IL, "_emit_notice", lambda n: None)
+        monkeypatch.setattr(IL, "_current_model", lambda: "deepseek-v4-flash")
+
+        cr_content = "\r".join(["第一行", "第二行", "第三行"])
+        with create_pipe_input() as inp:
+            sess = PromptSession(
+                input=inp, output=DummyOutput(),
+                key_bindings=IL._build_key_bindings())
+            real = IL._get_session
+            IL._get_session = lambda: sess
+            try:
+                inp.send_text(chr(27) + "[200~" + cr_content
+                              + chr(27) + "[201~" + chr(13))
+                out = IL.read_input("> ")
+            finally:
+                IL._get_session = real
+
+        assert out.count("\n") == 2, f"CR 应被归一化成 LF: {out!r}"
+        assert "\r" not in out, "不该残留 CR"

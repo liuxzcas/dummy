@@ -283,7 +283,11 @@ def _build_key_bindings():
         #   → 避免一次塞几十万 token 打爆上下文。
         #
         # 两档都:清空行缓冲(不留冗杂占位符)、打一行灰字提示。
-        text = event.data
+        # ============ 先统一换行符(2026-10-30 用户实测) ============
+        # Windows Terminal 的粘贴序列用 CR 作行分隔 ——
+        # 不归一化的话:行数统计恒为 1、模型也可能把整段读成一行。
+        # 详见 _normalize_newlines 的说明。
+        text = _normalize_newlines(event.data)
         if not _is_long_text(text):
             # 短粘贴(单行且 <2000 字符):按正常输入插进缓冲区,用户可继续编辑
             event.app.current_buffer.insert_text(text)
@@ -647,6 +651,27 @@ def _inline_threshold(model: str | None) -> int:
     """一档/二档的分界(单位:token)= 模型窗口 × 15%。"""
     from llm import resolve_window_tokens
     return int(resolve_window_tokens(model) * INLINE_RATIO)
+
+
+def _normalize_newlines(text: str) -> str:
+    """把各种换行形式统一成 \\n。
+
+    ============ 为什么必须做(2026-10-30 用户实测) ============
+    用户粘贴 3 行文本,提示却显示"已粘贴 **1 行**"。
+
+    根因:不同终端/剪贴板给的换行符不一样 ——
+        LF(\\n)      : Unix / 大多数复制来源
+        CRLF(\\r\\n)  : Windows 文件
+        **CR(\\r)**   : Windows Terminal 的粘贴序列里用的是 CR
+    而代码里数行用的是 `text.count("\\n") + 1` ——
+    若内容是 CR 分隔,永远算成 1 行。
+
+    更麻烦的是:CR 直接进到 user 消息里,模型可能把整段读成一行
+    (模型的训练数据里换行几乎都是 \\n)。
+
+    所以入口处统一成 \\n:行数对、摘要对、模型看到的也对。
+    """
+    return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
 def _head_tail_excerpt(text: str, n: int = 12) -> str:
