@@ -289,7 +289,12 @@ def _build_key_bindings():
             event.app.current_buffer.insert_text(text)
             return
 
-        event.app.current_buffer.reset()
+        # ============ 为什么不能 reset()(2026-10-30 用户实测) ============
+        # 原来这里无脑 `current_buffer.reset()` 清空行缓冲 ——
+        # 用户实测:"粘贴动作会直接抹掉用户原先打好的字"。
+        # 正确做法:缓冲区保持不动(用户打的字还在,光标位置也不变),
+        # 粘贴内容走 _pending_inline / _pending_files,
+        # 回车时由 _compose_with_pending 合并进去。
         tokens = estimate_tokens(text)
         if tokens < _inline_threshold(_current_model()):
             # --- 一档:内联,不落盘 ---

@@ -710,3 +710,62 @@ class TestInterruptListenerPausedDuringInput:
         finally:
             l.resume()
             l._stop = True
+
+
+# ============================================================
+# ⑮ 粘贴不能抹掉用户已打的字（2026-10-30 用户实测）
+# ============================================================
+class TestPastePreservesTypedText:
+    """用户实测:"粘贴动作会直接抹掉用户原先打好的字"。
+
+    根因:_on_paste 里无条件 `current_buffer.reset()` 清空行缓冲。
+    正确做法:缓冲区保持不动(用户打的字、光标位置都不变),
+    粘贴内容走 _pending_inline / _pending_files,回车时合并。
+    """
+
+    def _run(self, prefix, pasted, suffix, tmp_path, monkeypatch):
+        """模拟:打 prefix → 粘贴 pasted → 打 suffix → 回车。"""
+        from prompt_toolkit import PromptSession
+        from prompt_toolkit.input import create_pipe_input
+        from prompt_toolkit.output import DummyOutput
+        import input_layer as IL
+
+        monkeypatch.setattr(IL, "_PASTE_DIR", str(tmp_path))
+        monkeypatch.setattr(IL, "_emit_notice", lambda n: None)
+        monkeypatch.setattr(IL, "_current_model", lambda: "deepseek-v4-flash")
+
+        with create_pipe_input() as inp:
+            sess = PromptSession(
+                input=inp, output=DummyOutput(),
+                key_bindings=IL._build_key_bindings())
+            real = IL._get_session
+            IL._get_session = lambda: sess
+            try:
+                payload = (prefix + chr(27) + "[200~" + pasted
+                           + chr(27) + "[201~" + suffix + chr(13))
+                inp.send_text(payload)
+                return IL.read_input("> ")
+            finally:
+                IL._get_session = real
+
+    def test_typed_before_paste_survives(self, tmp_path, monkeypatch):
+        """先打字再粘贴 → 打的字必须还在。"""
+        out = self._run("我打的字", "第一行\n第二行", "", tmp_path, monkeypatch)
+        assert "我打的字" in out, f"用户打的字被抹掉了: {out!r}"
+        assert "第一行" in out and "第二行" in out
+
+    def test_typed_after_paste_also_kept(self, tmp_path, monkeypatch):
+        """粘贴后再打字 → 两者都在。"""
+        out = self._run("", "粘贴内容\n第二行", "后面打的", tmp_path, monkeypatch)
+        assert "粘贴内容" in out and "后面打的" in out
+
+    def test_typed_both_sides(self, tmp_path, monkeypatch):
+        """前后都打字 → 三部分都在,且顺序为 前 / 粘贴 / 后。"""
+        out = self._run("前面", "中间内容", "后面", tmp_path, monkeypatch)
+        assert "前面" in out and "中间内容" in out and "后面" in out
+        assert out.index("前面") < out.index("中间内容") < out.index("后面")
+
+    def test_newlines_preserved_in_inline(self, tmp_path, monkeypatch):
+        """内联内容必须保留换行(用户实测:'粘贴的内容会丢失换行号')。"""
+        out = self._run("", "第一行\n第二行\n第三行", "", tmp_path, monkeypatch)
+        assert out.count("\n") == 2, f"换行丢了: {out!r}"
