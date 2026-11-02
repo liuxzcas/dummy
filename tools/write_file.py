@@ -246,16 +246,30 @@ def write_file_handler(path: str, content: str, mode: str = "overwrite", verify:
         # ---- 行替换模式：替换指定行或行范围 ----
         if mode == "line":
             if line is None:
-                return "[错误] mode='line' 时必须指定 line 参数"
+                return ("[参数错误] mode='line' 时必须指定 line(从 1 开始的行号)。\n"
+                        "  若要覆盖整个文件,用 mode='overwrite'(或不传 mode)。")
             if not os.path.exists(full_path):
                 return f"[错误] 文件不存在，无法修改行: {path}"
             with open(full_path, "r", encoding="utf-8") as f:
                 old_lines = f.readlines()
-            if line < 1 or line > len(old_lines):
-                return f"[错误] 行号越界: 文件共 {len(old_lines)} 行，起始行 {line}"
+            # ============ 为什么单独提示 line<1(2026-10-30 实测) ============
+            # 742 次调用统计里,"行号越界: 起始行 0" 出现 16 次 ——
+            # 模型传了 0,说明它按 0-based 思维填的。
+            # 单纯报"越界"没告诉它原因,实测同一会话里会连犯两次
+            # (第 86/92 条)。
+            if line < 1:
+                return (f"[参数错误] line 从 1 开始计数,收到 {line}。\n"
+                        f"  该文件共 {len(old_lines)} 行,"
+                        f"第 1 行 = 文件第一行。\n"
+                        f"  若要覆盖整个文件,用 mode='overwrite';"
+                        f"若要追加,跳过 line 参数即可。")
+            if line > len(old_lines):
+                return (f"[参数错误] line={line} 超出范围 —— 该文件共 "
+                        f"{len(old_lines)} 行(行号 1~{len(old_lines)})。")
             end = line_end if line_end is not None else line
             if end < line or end > len(old_lines):
-                return f"[错误] 行号越界: 文件共 {len(old_lines)} 行，结束行 {end}"
+                return (f"[参数错误] line_end={end} 超出范围 —— 该文件共 "
+                        f"{len(old_lines)} 行,且必须 >= line({line})。")
             old_content = "".join(old_lines)
             # 将新内容按行分割
             new_lines = content.splitlines(keepends=True)

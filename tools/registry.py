@@ -112,6 +112,7 @@ class ToolRegistry:
         handler: Callable[..., str],
         timeout: Optional[int] = None,
         confirm: bool = False,
+        required: list[str] | None = None,
     ):
         """注册一个新工具。
 
@@ -121,7 +122,21 @@ class ToolRegistry:
         - confirm: 可选，是否需要用户确认。确认交互写在 handler 内
                    （通过可选的 _confirm 参数），输入收集与 /p 拦截由
                    core 注入的确认函数统一处理。
+        - required: **必填参数名列表**。不传时默认全部必填（保持旧行为）。
+
+        ============ 为什么需要 required(2026-10-30 用户实测) ============
+        原来一律 `"required": list(parameters.keys())` —— 把**所有**参数
+        都标成必填,**连有默认值的可选参数也算**。
+
+        write_file 有 6 个参数(path/content/mode/line/line_end/verify),
+        schema 却说 6 个都必须给 —— 实测后果(742 次调用统计):
+          · `line=0` 报"行号越界"16 次:模型以为 line 必填,只好瞎填一个值;
+            而 line 只在 mode='line' 时才有意义。
+          · 缺 path 14 次:6 个"必填"参数里最容易漏的就是第一个。
+
+        改成显式声明后,write_file 的 required 只剩 ["path", "content"]。
         """
+        req = list(required) if required is not None else list(parameters.keys())
         schema = {
             "type": "function",
             "function": {
@@ -130,7 +145,7 @@ class ToolRegistry:
                 "parameters": {
                     "type": "object",
                     "properties": parameters,
-                    "required": list(parameters.keys()),
+                    "required": req,
                 },
             },
         }
@@ -216,6 +231,26 @@ class ToolRegistry:
             self._record_error(stat, msg)
             return msg
 
+        # ---- 2b. 必填参数缺失检查(2026-10-30 新增) ----
+        #
+        # ============ 为什么要在调用前查,而不是靠 Python 的 TypeError ============
+        # 用户实测:742 次 write_file 调用里 14 次缺 path 参数,报的是:
+        #     [ToolDispatch] write_file 执行异常:
+        #     TypeError: write_file_handler() missing 1 required
+        #     positional argument: 'path'
+        #
+        # 这条消息的问题:
+        #   · 它是 Python 内部错误,措辞对模型很不友好
+        #   · 它**没有说明该怎么改**(没给参数名清单、没给示例)
+        #   · 实测第 86/92 条同样的错误连犯两次 —— 说明模型没从错误文本学到东西
+        #
+        # 所以改成:调用前显式检查,给出**可直接照着改**的提示。
+        missing = self._missing_required(tool_name, arguments)
+        if missing:
+            msg = self._format_missing_params(tool_name, missing, arguments)
+            self._record_error(stat, msg)
+            return msg
+
         # ---- 3. 执行 handler ----
         # 确认类工具：注入 _confirm 函数（输入收集 + /p 拦截在 core）
         #
@@ -253,6 +288,65 @@ class ToolRegistry:
         if is_tool_error(result_str):
             self._record_error(stat, result_str)
         return result_str
+
+    def _missing_required(self, tool_name: str, arguments: dict) -> list[str]:
+        """返回缺失的必填参数名列表。"""
+        tool = self._tools.get(tool_name)
+        if tool is None:
+            return []
+        req = (tool.schema.get("function", {})
+               .get("parameters", {}).get("required", []))
+        # 内部注入的参数(如 _confirm)不算模型该给的
+        return [p for p in req
+                if p not in arguments or arguments[p] in (None, "")]
+
+    def _format_missing_params(self, tool_name: str, missing: list[str],
+                               arguments: dict) -> str:
+        """把"缺参数"写成模型一看就知道怎么改的提示。
+
+        ============ 为什么要写成这样(2026-10-30) ============
+        对比两条消息:
+
+        旧(Python 原样抛出的):
+            [ToolDispatch] write_file 执行异常:
+            TypeError: write_file_handler() missing 1 required
+            positional argument: 'path'
+          → 模型要自己推断"哦,少给了 path";实测同类错误会连犯两次。
+
+        新:
+            [参数错误] write_file 缺少必填参数: path
+              已收到: content(2956 字符)
+              该工具需要: path, content
+              正确示例: write_file(path="D:/proj/a.py", content="...")
+              本次未执行 —— 补齐缺失参数后重新调用即可。
+          → 缺什么、该给什么、怎么给,一次说清。
+        """
+        tool = self._tools.get(tool_name)
+        props = (tool.schema.get("function", {})
+                 .get("parameters", {}).get("properties", {})) if tool else {}
+        req = (tool.schema.get("function", {})
+               .get("parameters", {}).get("required", [])) if tool else []
+
+        got = []
+        for k, v in arguments.items():
+            if k.startswith("_"):
+                continue           # 内部注入的(_confirm 等)不报给模型
+            desc = props.get(k, {}).get("description", "")
+            size = (f"{len(v)} 字符" if isinstance(v, str) else repr(v)[:40])
+            got.append(f"{k}({size})")
+        got_txt = ", ".join(got) if got else "(无)"
+
+        example = ", ".join(
+            f'{p}="{"D:/proj/example.txt" if p == "path" else "..."}"'
+            for p in req)
+
+        return (
+            f"[参数错误] {tool_name} 缺少必填参数: {', '.join(missing)}\n"
+            f"  已收到: {got_txt}\n"
+            f"  该工具需要: {', '.join(req)}\n"
+            f"  正确示例: {tool_name}({example})\n"
+            f"  本次未执行 —— 补齐缺失参数后重新调用即可。"
+        )
 
     def _record_error(self, stat: dict, msg: str) -> None:
         """记录一次工具错误(计数 + 保留最近 3 条样本供根因分析)。"""

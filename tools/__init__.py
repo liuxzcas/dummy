@@ -39,7 +39,8 @@ def create_default_registry() -> ToolRegistry:
                 "description": "可选，单位秒。默认 120，最大 600。只影响长任务的等待上限；命令提前结束会立刻返回。",
             },
         },
-        handler=terminal_handler,
+                required=["command"],
+handler=terminal_handler,
         confirm=True,  # 执行本地命令,需用户确认(确认交互在 handler 内)
     )
 
@@ -65,7 +66,8 @@ def create_default_registry() -> ToolRegistry:
                 "description": "最多读取的行数（默认全部）。",
             },
         },
-        handler=read_file_handler,
+                required=["path"],
+handler=read_file_handler,
         confirm=True,  # 读取本地文件,需用户确认(含隐私提示)
     )
 
@@ -106,7 +108,8 @@ def create_default_registry() -> ToolRegistry:
                 "description": "仅 mode='line' 时有效。要替换的结束行号（含两端，默认等于 line，即只替换一行）。",
             },
         },
-        handler=write_file_handler,
+                required=["path", "content"],
+handler=write_file_handler,
         confirm=True,  # 写入本地文件,需用户确认(diff/行级预览)
     )
 
@@ -130,7 +133,8 @@ def create_default_registry() -> ToolRegistry:
                 "description": "返回的结果数量，默认 5，最大 10。",
             },
         },
-        handler=web_search_handler,
+                required=["query"],
+handler=web_search_handler,
     )
 
     # ---- web_extract ----
@@ -152,7 +156,8 @@ def create_default_registry() -> ToolRegistry:
                 "description": "最大提取字符数，默认 10000。",
             },
         },
-        handler=web_extract_handler,
+                required=["url"],
+handler=web_extract_handler,
     )
 
     return registry
