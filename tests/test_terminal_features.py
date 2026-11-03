@@ -208,3 +208,53 @@ def test_no_dead_branch_for_empty_output():
     assert out.startswith("[SHELL:"), f"应以环境声明开头: {out!r}"
     assert "\n" not in out, f"空输出命令应只有一行(环境声明),实际多行: {out!r}"
     assert "命令执行成功" not in out, "不该出现'命令执行成功'字样(那是已删的死分支)"
+
+
+# ============================================================
+# 子进程不能继承控制台 stdin（/p 打断，场景 A）
+# ============================================================
+def test_subprocess_stdin_is_devnull():
+    """工具执行期间 /p 无反应 —— 根因是子进程继承了控制台。
+
+    用户实测(2026-11-02):
+        场景 A(工具执行中):敲 /p 完全无反应,只在本轮结束后才作为
+                            下一轮输入出现
+        场景 B(确认提示时):/p 正常
+    → 差别是"有没有子进程在跑"。
+
+    修法:Popen 显式给 stdin=DEVNULL,断开与控制台的继承关系,
+         让 _InterruptListener 的 msvcrt 轮询能读到键。
+
+    这条测试用 AST 检查源码 —— 直接跑命令测不到 stdin 继承关系。
+    """
+    import ast
+    import pathlib
+
+    src = (pathlib.Path(__file__).resolve().parent.parent
+           / "tools" / "terminal.py").read_text(encoding="utf-8")
+    tree = ast.parse(src)
+
+    found = False
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        # 找 kwargs = {"stdin": ..., ...}
+        if not (isinstance(node.value, ast.Dict) and node.value.keys):
+            continue
+        keys = [k.value for k in node.value.keys if isinstance(k, ast.Constant)]
+        if "stdout" in keys and "stderr" in keys:
+            found = True
+            assert "stdin" in keys, (
+                "terminal 的 Popen kwargs 必须显式给 stdin —— "
+                "否则子进程继承控制台，/p 打断在工具执行期间失效"
+            )
+            # 值必须是 DEVNULL
+            idx = keys.index("stdin")
+            val = node.value.values[idx]
+            assert isinstance(val, ast.Attribute) and val.attr == "DEVNULL", (
+                f"stdin 应为 subprocess.DEVNULL，实际是 "
+                f"{ast.unparse(val)}"
+            )
+            break
+
+    assert found, "没找到 Popen 的 kwargs 定义（代码结构变了？）"

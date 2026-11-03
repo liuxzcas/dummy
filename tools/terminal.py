@@ -131,7 +131,22 @@ def _run_shell(command: str, timeout: int = DEFAULT_TIMEOUT, task=None):
         argv = command
         shell_name = "cmd" if os.name == "nt" else "sh"
 
-    kwargs = {"stdout": subprocess.PIPE, "stderr": subprocess.PIPE}
+    # ============ 为什么要 stdin=DEVNULL(2026-11-02 用户实测) ============
+    # 用户报告:工具执行期间(/p 打断的场景 A)敲键盘完全无反应,
+    #          /p 只在【本轮结束后】才作为下一轮输入出现。
+    #
+    # 根因:原来只给了 stdout/stderr 的 PIPE,没给 stdin ——
+    #      子进程**继承父进程的控制台**,和 _InterruptListener 的
+    #      msvcrt.kbhit() 轮询抢同一个输入源,导致父进程根本读不到键。
+    #      (对比:确认提示时 /p 正常 —— 那时没有子进程争抢。)
+    #
+    # 给 DEVNULL 的理由:
+    #   · terminal 工具的命令本来就是**非交互**的 —— 模型没有办法给
+    #     子进程喂 stdin,真遇到需要输入的命令只会卡到超时
+    #   · 断开继承后,控制台输入归还父进程,msvcrt 轮询才能看到 /p
+    #   · 万一以后真要支持交互式命令,再单独加 stdin=PIPE + 转发
+    kwargs = {"stdin": subprocess.DEVNULL,
+              "stdout": subprocess.PIPE, "stderr": subprocess.PIPE}
     if os.name == "nt":
         # 独立进程组(便于整组终止;但 Windows 上没有 killpg,实际靠 taskkill /T)
         kwargs["creationflags"] = 0x00000200   # CREATE_NEW_PROCESS_GROUP

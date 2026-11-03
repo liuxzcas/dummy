@@ -14,6 +14,7 @@
 | [`03-phase3-learning/`](#03-phase3-learning) | Phase 3 | 08-13 ~ 08-25 | 技能系统 / 错误学习 / 自我改进闭环 | 4 |
 | [`04-hardening/`](#04-hardening) | **架构反转期** ★ | 09-03 ~ 09-16 | 判断权还给模型、历史层选型、冲突审计 | 5 |
 | [`05-cross-platform/`](#05-cross-platform) | 跨平台期 | 09-17 ~ 10-14 | 输出层 / 环境探测 / terminal 超时 / 并发打断调研 | 3 |
+| [`06-multimodal/`](#06-multimodal) | **多模态期** | 11-02 ~ | 读图 / 截图（调研完成，未实施） | 1 |
 | [`90-research/`](#90-research) | 调研 | 跨阶段 | 记忆系统调研、工具结果调研 | 7 |
 | [`91-experiences/`](#91-experiences) | 复盘 | 跨阶段 | STAR 复盘、验证记录 | 3 |
 | [`99-scratch/`](#99-scratch) | 草稿 | 跨阶段 | 讨论记录、架构评估 | 4 |
@@ -40,6 +41,7 @@
 | **输入层换 prompt_toolkit（方案）** | `05-cross-platform/prompt-toolkit-migration-plan.md` |
 | **临时产物登记与清理（设计占位）** | `05-cross-platform/temp-artifact-registry-design.md` |
 | 工具并发 / 打断各家怎么做 | `05-cross-platform/agent-concurrency-interrupt-survey.md` |
+| **读图 / 截图（设计调研）** | `06-multimodal/vision-and-screenshot-design.md` |
 | 打断语义改进（**已实施**） | `04-hardening/interrupt-semantics-plan.md` |
 | 记忆系统外部调研 | `90-research/memory-research.md`、`agent-memory-report.html` |
 | 工具结果该怎么结构化 | `90-research/tool-result-*.md`、`research-structured-tool-results.md` |
@@ -89,6 +91,11 @@
 - `terminal-timeout-fix-plan.md` —— terminal 超时失效的诊断与修复（**含 10 个实测实验**）
 - `terminal-timeout-explained-simply.md` —— 同上的通俗版（工人/水管/小工）
 - `agent-concurrency-interrupt-survey.md` —— 8 个系统的并发/打断机制横向调研
+
+### 06-multimodal
+**看什么**：让模型"看"图片的能力（读图 / 截屏）。
+
+- `vision-and-screenshot-design.md` —— **设计调研**：多模态实测、四家同类工具的做法对比（Hermes / Claude Code / OpenCode / DeepSeek Harness）、dummy 的改造方案与待决问题
 
 ### 90-research
 **看什么**：外部调研（不是 dummy 自己的设计，而是"别人怎么做的"）。
@@ -142,6 +149,7 @@ development-history.md (演进史)
     ├─→ 04-hardening/                   (转折期的原始材料)
     │      └─→ 91-experiences/verification-gate-rollback-star.md  (为什么推翻)
     └─→ 05-cross-platform/              (跨平台期的实测记录)
+    └─→ 06-multimodal/                  (多模态期：读图/截屏)
 
 roadmap.md (路线图)
     │  记录 Phase 划分 + 已定/待定决策
