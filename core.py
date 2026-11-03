@@ -209,11 +209,9 @@ class _InterruptListener:
                         if ch in (chr(13), chr(10)):  # CR/LF:行结束标记
                             with self._lock:
                                 self._buffer += chr(10)
-                                # 取刚结束的这一行,用于回显
-                                done = self._buffer.split(chr(10))[-2]
                             if typing:
-                                # 回车确认:让用户看到自己敲了什么
-                                self._notice(f"[已收到] {done}")
+                                # 换行收尾:让后续输出另起一行
+                                self._echo_raw(chr(10))
                                 typing = False
                             continue
                         if ch == chr(3):  # Ctrl+C
@@ -222,29 +220,36 @@ class _InterruptListener:
                         if ch in (chr(8), chr(127)):  # 退格/删除
                             with self._lock:
                                 self._buffer = self._buffer[:-1]
-                        else:  # 字符进 buffer
+                            if typing:
+                                # 擦掉屏幕上一个字符:"\b \b"
+                                self._echo_raw("\b \b")
+                        else:  # 普通字符
                             with self._lock:
                                 self._buffer += ch
                             if not typing:
-                                # 首个字符:给一行提示,告诉用户"系统在听"
-                                self._notice(
-                                    "[正在输入打断指令(回车生效,"
-                                    "建议输入 /p)]")
+                                # 首个字符:另起一行并说明在做什么
+                                self._echo_raw(
+                                    "\n[正在输入打断指令"
+                                    "(回车生效,建议输入 /p)] ")
                                 typing = True
+                            self._echo_raw(ch)
                 except Exception:
                     pass
             time.sleep(0.02)
 
     @staticmethod
-    def _notice(text: str) -> None:
-        """在工具执行期间往屏幕上打一行提示(尽量不影响正在刷的命令输出)。
+    def _echo_raw(text: str) -> None:
+        """原样写出(用于逐字符回显,不加任何前后缀)。
 
-        为什么直接 print:此刻 prompt_toolkit 不在读输入(工具在跑),
-        终端归我们控制。用 ANSI 的"保存/恢复光标"把提示和命令输出
-        分开,避免提示插进命令输出的中间把画面搅乱。
+        为什么直接写 stdout:此刻 prompt_toolkit 不在读输入(工具在跑),
+        终端归我们控制;而且 terminal 工具执行期间不发实时输出
+        (输出是在 buf 里攒着,命令结束后一次性打印),
+        所以回显不会和命令输出混行。
+
+        写失败(如 stdout 已关闭)静默忽略 —— 不能影响打断线程。
         """
         try:
-            sys.stdout.write("\n" + text + "\n")
+            sys.stdout.write(text)
             sys.stdout.flush()
         except Exception:
             pass

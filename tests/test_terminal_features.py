@@ -262,30 +262,38 @@ def test_subprocess_stdin_is_devnull():
 
 
 
-# ============================================================
-# /p 输入提示（用户 2026-11-02 实测反馈）
-# ============================================================
-class TestInterruptEchoNotice:
-    """用户:"检测到了 /p,并且做了正确处理。但是我们屏幕上看不到输入了 /p,
-    这是不足。"
 
-    ============ 为什么是"首字符提示 + 回车确认" ============
-    三档方案:
-      A. 逐字符回显    —— 最直观,但命令正在输出时字符会和输出混在一起
-      C. 首字符提示 + 回车确认  ← **用户选这个**
-      A+C
 
-    ============ 为什么用假 msvcrt 驱动(2026-11-02 踩坑) ============
-    初版测试只调 _notice() 本身,断言"它打了字" —— **无效**:
-    把 _poll_loop 里的提示调用整段删掉,测试仍然全绿。
+# ============================================================
+# /p 输入回显（用户 2026-11-02 两次实测反馈）
+# ============================================================
+class TestInterruptEcho:
+    """用户两次反馈:
+
+    第一次:"检测到了 /p,并且做了正确处理。但是我们屏幕上看不到输入了 /p"
+    第二次:"可以看到正在输入打断指令,但'已收到'的处理不太好,
+            在打断指令开始后打字依然静默。"
+
+    ============ 最终方案:逐字符回显 ============
+    演进:
+      ① 完全静默(原始设计,"像密码输入")      → 用户盲打,不知道敲了什么
+      ② 首字符提示 + 回车确认(/p 打错看不见)  → 输入过程仍盲打
+      ③ **逐字符回显 + 退格处理**             ← 现在
+
+    为什么终于敢用逐字符回显:
+      原来担心"命令正在输出时字符会和输出混在一起",查了 terminal 工具
+      的实现才确认**不成立** —— 它用读线程把输出攒在 buf 里,
+      命令结束后才一次性打印,执行期间终端是空的。
+
+    ============ 为什么用假 msvcrt 驱动(踩坑记录) ============
+    初版测试只调提示函数本身、断言"它打了字" —— **无效**:
+    把 _poll_loop 里的调用整段删掉,测试仍然全绿。
     这类"测函数、不测接线"的断言等于没测。
-    正确做法:用假的 kbhit/getwch 喂字符,驱动 _poll_loop,
-              断言它**确实**在首字符和回车时调用了提示。
+    正确做法:用假 kbhit/getwch 喂字符驱动真实 _poll_loop,
+              断言它**确实**按预期回显。
     """
 
     class FakeMsvcrt:
-        """假 msvcrt:按预置队列吐字符,吐完 kbhit 返回 False。"""
-
         def __init__(self, chars):
             self._q = list(chars)
 
@@ -296,25 +304,25 @@ class TestInterruptEchoNotice:
             return self._q.pop(0)
 
     def _run(self, chars, monkeypatch):
-        """驱动真实 _poll_loop,返回 (收到的字符, 产生的提示列表)。"""
+        """驱动真实 _poll_loop,返回 (buffer, 屏幕输出)。"""
+        import threading
+        import time as _time
         import core
 
-        notices = []
+        out = []
         monkeypatch.setattr(
-            core._InterruptListener, "_notice",
-            staticmethod(lambda t: notices.append(t)))
+            core._InterruptListener, "_echo_raw",
+            staticmethod(lambda t: out.append(t)))
 
         l = core._InterruptListener.__new__(core._InterruptListener)
         l._buffer = ""
         l._paused = False
-        l._paused_seen = __import__("threading").Event()
+        l._paused_seen = threading.Event()
         l._stop = False
-        l._lock = __import__("threading").Lock()
+        l._lock = threading.Lock()
         l._msvcrt = self.FakeMsvcrt(chars)
 
-        # 吐完字符就让循环退出(最多 200 次迭代,防止死循环)
-        orig_sleep = __import__("time").sleep
-        import time as _t
+        orig_sleep = _time.sleep
         calls = {"n": 0}
 
         def fake_sleep(_):
@@ -323,49 +331,107 @@ class TestInterruptEchoNotice:
                 l._stop = True
             orig_sleep(0.001)
 
-        monkeypatch.setattr(_t, "sleep", fake_sleep)
+        monkeypatch.setattr(_time, "sleep", fake_sleep)
         l._poll_loop()
-        return l._buffer, notices
+        return l._buffer, "".join(out)
 
-    def test_first_char_triggers_notice(self, monkeypatch):
-        """敲第一个字符时,必须打一行"正在输入"提示。"""
-        _buf, notices = self._run(list("/p") + [chr(13)], monkeypatch)
-        assert notices, "首字符没有产生任何提示 —— 用户会以为系统没在听"
-        assert "正在输入打断指令" in notices[0], notices
+    # ---- 核心需求:打字要看得见 ----
 
-    def test_enter_triggers_receipt_notice(self, monkeypatch):
-        """回车时必须回显实际收到的内容。"""
-        _buf, notices = self._run(list("/p") + [chr(13)], monkeypatch)
-        receipts = [n for n in notices if "已收到" in n]
-        assert receipts, f"回车没有回显内容: {notices}"
-        assert "/p" in receipts[0], receipts
+    def test_each_char_echoed(self, monkeypatch):
+        """敲每个字符都要立刻出现在屏幕上(用户核心诉求)。
 
-    def test_receipt_shows_what_was_typed(self, monkeypatch):
-        """回显要显示用户实际敲的字(打错能看出来)。"""
-        _buf, notices = self._run(list("/q") + [chr(13)], monkeypatch)
-        receipts = [n for n in notices if "已收到" in n]
-        assert receipts and "/q" in receipts[0], (
-            f"回显应显示用户敲的 /q,实际: {notices}")
+        ★ 断言写法(2026-11-02 踩坑):提示语里本身含 "/p" 字样,
+          写 `"/p" in out` 会**永远通过** —— 即使回显整段被删掉。
+          实测:去掉逐字符回显后,这条仍然绿。
+          改成断言"输入字符出现在提示之后"(提示是首字符时打的,
+          真回显必须排在它后面)。
+        """
+        _buf, out = self._run(list("/p") + [chr(13)], monkeypatch)
+        after_prompt = out.split("建议输入 /p)] ", 1)[-1]
+        assert after_prompt.startswith("/p"), (
+            f"提示之后应紧跟回显的 /p,实际: {after_prompt!r}")
 
-    def test_no_notice_without_input(self, monkeypatch):
-        """没有输入时不该乱打提示。"""
-        _buf, notices = self._run([], monkeypatch)
-        assert notices == [], f"不该有提示: {notices}"
+    def test_chars_echoed_as_typed(self, monkeypatch):
+        """逐字符:敲 / 就有 /,敲 p 就有 p(不是等回车才一起出现)。"""
+        _buf, out = self._run(["/", "p", "x"] + [chr(13)], monkeypatch)
+        # 回显部分应包含连续的用户输入
+        assert "/px" in out.replace(" ", ""), f"应逐字符回显: {out!r}"
 
-    def test_only_one_prompt_per_line(self, monkeypatch):
-        """一行只提示一次(敲 p 和 / 两个字符不该提示两次)。"""
-        _buf, notices = self._run(list("/p") + [chr(13)], monkeypatch)
-        prompts = [n for n in notices if "正在输入" in n]
-        assert len(prompts) == 1, f"应只提示一次: {prompts}"
+    def test_prompt_shown_once_at_start(self, monkeypatch):
+        """开头的说明只打一次,不每敲一个字符打一次。"""
+        _buf, out = self._run(list("/p") + [chr(13)], monkeypatch)
+        assert out.count("正在输入打断指令") == 1, out
 
-    def test_two_lines_two_prompts(self, monkeypatch):
-        """敲两行 → 两次提示 + 两次回显。"""
-        _buf, notices = self._run(
+    def test_prompt_precedes_input(self, monkeypatch):
+        """说明要在输入之前(用户先知道自己在干什么)。"""
+        _buf, out = self._run(list("/p") + [chr(13)], monkeypatch)
+        assert out.index("正在输入打断指令") < out.index("/p")
+
+    # ---- 退格 ----
+
+    def test_backspace_erases_on_screen(self, monkeypatch):
+        """退格要擦掉屏幕上一个字符(\b 空格 \b)。"""
+        _buf, out = self._run(["/", "q", chr(8), "p"] + [chr(13)], monkeypatch)
+        assert "\b \b" in out, f"退格没有擦屏: {out!r}"
+        assert _buf == "/p" + chr(10), f"buffer 应被退格修正: {_buf!r}"
+
+    def test_delete_key_also_erases(self, monkeypatch):
+        """DEL(127) 和退格(8) 一样处理。"""
+        _buf, out = self._run(["/", "q", chr(127), "p"] + [chr(13)], monkeypatch)
+        assert "\b \b" in out
+        assert _buf == "/p" + chr(10)
+
+    # ---- 边界 ----
+
+    def test_no_output_without_input(self, monkeypatch):
+        """没有输入时不该有任何回显。"""
+        _buf, out = self._run([], monkeypatch)
+        assert out == "", f"不该有输出: {out!r}"
+
+    def test_enter_adds_newline(self, monkeypatch):
+        """回车要补一个换行(否则后续输出接在同一行)。"""
+        _buf, out = self._run(list("/p") + [chr(13)], monkeypatch)
+        assert out.endswith("\n"), f"回车后应换行: {out!r}"
+
+    def test_second_line_gets_fresh_prompt(self, monkeypatch):
+        """连打两行:每行开头都要有自己的说明。"""
+        _buf, out = self._run(
             list("/p") + [chr(13)] + list("/p x") + [chr(13)], monkeypatch)
-        assert len([n for n in notices if "正在输入" in n]) == 2
-        assert len([n for n in notices if "已收到" in n]) == 2
+        assert out.count("正在输入打断指令") == 2, out
 
-    def test_buffer_still_correct(self, monkeypatch):
-        """提示逻辑不能影响 buffer 内容(take_line 的输入源)。"""
+    def test_buffer_unchanged_by_echo(self, monkeypatch):
+        """回显不能影响 buffer(take_line 的数据源)。"""
         buf, _ = self._run(list("/p") + [chr(13)], monkeypatch)
-        assert buf == "/p" + chr(10), f"buffer 被改坏了: {buf!r}"
+        assert buf == "/p" + chr(10)
+
+    def test_echo_failure_does_not_break_polling(self, monkeypatch):
+        """回显写失败(stdout 关闭)不能中断打断线程。"""
+        import threading
+        import time as _time
+        import core
+
+        def boom(_t):
+            raise OSError("closed")
+
+        monkeypatch.setattr(core._InterruptListener, "_echo_raw", staticmethod(boom))
+
+        l = core._InterruptListener.__new__(core._InterruptListener)
+        l._buffer = ""
+        l._paused = False
+        l._paused_seen = threading.Event()
+        l._stop = False
+        l._lock = threading.Lock()
+        l._msvcrt = self.FakeMsvcrt(list("/p") + [chr(13)])
+
+        orig_sleep = _time.sleep
+        calls = {"n": 0}
+
+        def fake_sleep(_):
+            calls["n"] += 1
+            if calls["n"] > 200 or not l._msvcrt._q:
+                l._stop = True
+            orig_sleep(0.001)
+
+        monkeypatch.setattr(_time, "sleep", fake_sleep)
+        l._poll_loop()          # 不该抛
+        assert l._buffer == "/p" + chr(10)
