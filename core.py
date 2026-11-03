@@ -81,6 +81,7 @@ Agent：terminal("pip install flask") → LLM 看到成功
 import json
 import os
 import re
+import sys
 import datetime
 import threading
 import time
@@ -175,7 +176,27 @@ class _InterruptListener:
             pass
 
     def _poll_loop(self) -> None:
-        """后台轮询:字符进 buffer(无回显),完整行累积。"""
+        """后台轮询:字符进 buffer(不回显),完整行累积。
+
+        ============ 回显策略(2026-11-02 用户实测后确定) ============
+        用户反馈:"检测到了 /p,但是屏幕上看不到输入的 /p,这是不足。"
+
+        原来完全不回显(像密码输入),用户是盲打 —— 不知道敲了什么,
+        敲错了也看不见。
+
+        试过的三档方案:
+          A. 逐字符回显  —— 最直观,但命令正在输出时字符会混进输出流
+          C. 首字符提示 + 回车确认  ← **用户选这个**
+          A+C 结合
+
+        选 C 的理由:工具执行期间终端可能正在被命令输出刷屏,
+        逐字符回显会乱。但完全没有反馈也不行。
+        折中:敲第一个键时打一行提示(让用户知道"系统收到了"),
+        回车时再打一行确认(让用户知道打了什么)。
+        中间的字符仍静默 —— 那部分本来就是盲区,
+        而且 /p 只有两个字符,打错直接敲回车重来成本很低。
+        """
+        typing = False      # 当前是否正在输入打断指令
         while not self._stop:
             if self._paused:
                 # ★ 通知 pause() 的调用方:我已经停下来了(不再碰控制台)
@@ -188,19 +209,45 @@ class _InterruptListener:
                         if ch in (chr(13), chr(10)):  # CR/LF:行结束标记
                             with self._lock:
                                 self._buffer += chr(10)
+                                # 取刚结束的这一行,用于回显
+                                done = self._buffer.split(chr(10))[-2]
+                            if typing:
+                                # 回车确认:让用户看到自己敲了什么
+                                self._notice(f"[已收到] {done}")
+                                typing = False
                             continue
                         if ch == chr(3):  # Ctrl+C
                             self._stop = True
                             return
-                        if ch in (chr(8), chr(127)):  # 退格/删除(不回显)
+                        if ch in (chr(8), chr(127)):  # 退格/删除
                             with self._lock:
                                 self._buffer = self._buffer[:-1]
-                        else:  # 字符进 buffer,不回显
+                        else:  # 字符进 buffer
                             with self._lock:
                                 self._buffer += ch
+                            if not typing:
+                                # 首个字符:给一行提示,告诉用户"系统在听"
+                                self._notice(
+                                    "[正在输入打断指令(回车生效,"
+                                    "建议输入 /p)]")
+                                typing = True
                 except Exception:
                     pass
             time.sleep(0.02)
+
+    @staticmethod
+    def _notice(text: str) -> None:
+        """在工具执行期间往屏幕上打一行提示(尽量不影响正在刷的命令输出)。
+
+        为什么直接 print:此刻 prompt_toolkit 不在读输入(工具在跑),
+        终端归我们控制。用 ANSI 的"保存/恢复光标"把提示和命令输出
+        分开,避免提示插进命令输出的中间把画面搅乱。
+        """
+        try:
+            sys.stdout.write("\n" + text + "\n")
+            sys.stdout.flush()
+        except Exception:
+            pass
 
     def pause(self, timeout: float = 0.5) -> None:
         """暂停轮询,**并等它真的停下来**才返回。
