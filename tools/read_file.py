@@ -34,6 +34,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from colors import paint, CYAN, YELLOW   # noqa: E402
 from ui import ui                        # noqa: E402
+import workspace                         # noqa: E402
 
 
 def read_file_handler(path: str, offset: int = 1, limit: int | None = None, _confirm=None) -> str:
@@ -56,7 +57,13 @@ def read_file_handler(path: str, offset: int = 1, limit: int | None = None, _con
             return "[用户取消] 文件未读取"
 
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        # ============ 相对路径基准统一到 garage(2026-11-03) ============
+        # write_file 和 terminal 都是 garage 基准了,read_file 如果还按
+        # cwd 解析,就会出现这种返工:
+        #     write_file("probe.py") → garage/probe.py
+        #     read_file("probe.py")  → 找不到(去 cwd 找了)
+        # 三个工具必须同一基准,否则模型读到"不存在"会误以为写失败了。
+        with open(workspace.resolve(path), "r", encoding="utf-8") as f:
             lines = f.readlines()
     except FileNotFoundError:
         return f"[错误] 文件不存在: {path}"

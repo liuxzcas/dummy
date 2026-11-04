@@ -315,7 +315,9 @@ def test_inject_cwd(tmp_path):
     content = agent.history[0]["content"]
     cwd = os.getcwd()
     assert f"当前工作目录: {cwd}" in content
-    assert "相对路径均以此为基准" in content
+    # 2026-11-03:相对路径基准从 cwd 改成 garage（三个工具统一）
+    assert "都以 garage 为基准" in content
+    assert "绝对路径原样使用" in content
     assert content.startswith("P")  # 原内容保留
     # 幂等:重复注入只一个段
     agent._inject_cwd()

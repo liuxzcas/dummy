@@ -108,6 +108,7 @@ from turn_context import TurnContext
 from colors import paint, GRAY, BLUE, SLATE, PURPLE, YELLOW, NEUTRAL, RED, GREEN
 from ui import ui, KIND_THINKING, KIND_TOOL_CALL, KIND_TOOL_RESULT
 from input_layer import read_plain
+import workspace
 from skills_manager import build_skills_index
 from lessons import (
     has_correction_signal, is_tool_error, generate_lesson,
@@ -547,6 +548,7 @@ class DummyAgent:
         # 否则它之后的 cwd/技能索引/教训全部会被连累。
         # 有测试锁这条:test_volatile_field_is_last_in_system。
         self._inject_cwd()
+        self._inject_workspace()
         self._inject_memories(user_input)
         self._inject_skills()
         self._inject_lessons(user_input)
@@ -1200,8 +1202,62 @@ class DummyAgent:
         """
         cwd = os.getcwd()
         marker = "当前工作目录:"
-        block = (f"{marker} {cwd}\n"
-                 "(read_file / write_file / terminal 的相对路径均以此为基准)")
+        block = (
+            f"{marker} {cwd}\n"
+            "路径规则:read_file / write_file / terminal 的相对路径"
+            "**都以 garage 为基准**;绝对路径原样使用。"
+        )
+        content = self.history[0]["content"]
+        idx = content.find(marker)
+        if idx >= 0:
+            end = content.find("\n\n", idx)
+            if end < 0:
+                end = len(content)
+            content = content[:idx] + block + content[end:]
+        else:
+            content = content + f"\n\n{block}"
+        self.history[0] = {"role": "system", "content": content}
+
+    def _inject_workspace(self) -> None:
+        """注入 garage 工作区的用法约定 + 清理引导(2026-11-03 用户定)。
+
+        ============ 为什么放 system 的可变段,不放工具描述 ============
+        用户的问题:"这个提示词在 autopilot 模式下加在哪?"
+
+        关键约束:autopilot 下**没有"轮末"这个动作** ——
+        模型给出最终回答后就结束了,不会再看任何东西,所以
+        "轮末再提醒它清理"不可行(那会多一轮 LLM 调用,
+        而 autopilot 下没人喊停 → 死循环风险)。
+
+        只能在**规划期**就告诉它。而规划期看得到的只有 system prompt。
+        工具描述要等它调 write_file 才进上下文 —— 那时已经在写了。
+
+        放可变段而非常驻段:与 _inject_cwd / _inject_memories /
+        _inject_lessons 同一类(每轮注入的运行时上下文)。
+
+        ============ 为什么清理引导用"可以"而不是"必须"(用户先试这个) ============
+        强硬的"必须清理"可能让模型过度删除(连该留的也删)。
+        先用宽松措辞观察实际行为,发现 garage 堆垃圾再收紧。
+
+        ============ 为什么路径规则和清理引导写在同一段 ============
+        同一件事的两面:先知道"临时东西放 garage",
+        才谈得上"任务完成后清理 garage 里的临时东西"。
+        分开写会让 system 变长而不多出信息。
+        """
+        marker = "## 工作区约定"
+        garage = workspace.ensure()
+        block = (
+            f"{marker}\n"
+            f"- 临时工作区 garage: {garage}\n"
+            "- 写文件的路径选择:\n"
+            "  · 要改用户指定的文件、或把交付物放到用户给的位置 "
+            "→ **用绝对路径**\n"
+            "  · 自己干活产生的脚本、探针、中间数据 → **用相对路径**"
+            "(落到 garage)\n"
+            "- 任务完成后,如果 garage 里有你判断为一次性中间产物的文件"
+            "(调试脚本、探针、临时数据),可以用 terminal 删掉;"
+            "认为可能对用户有用的,不用动。"
+        )
         content = self.history[0]["content"]
         idx = content.find(marker)
         if idx >= 0:

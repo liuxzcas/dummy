@@ -355,3 +355,99 @@ class TestGarageReport:
         a, d = self._agent(tmp_path, monkeypatch, autopilot=True)
         a._garage_snapshot = None
         a._report_garage_changes()      # 不该抛
+
+
+# ============================================================
+# ⑧ read_file 的相对路径基准也要统一到 garage
+# ============================================================
+def test_read_file_relative_uses_garage(tmp_path, monkeypatch):
+    """三个工具必须同一基准,否则会出现这种返工:
+
+        write_file("probe.py") → garage/probe.py
+        read_file("probe.py")  → 找不到(去 cwd 找了)
+        → 模型误以为写失败了
+
+    用户 2026-11-03 实测 bug 的直接后果。
+    """
+    from tools.read_file import read_file_handler
+
+    d = tmp_path / "garage"
+    d.mkdir()
+    (d / "probe.py").write_text("hello\nworld\n", encoding="utf-8")
+    monkeypatch.setattr(workspace, "GARAGE_DIR", str(d))
+    monkeypatch.setattr(workspace, "ensure", lambda: str(d))
+
+    out = read_file_handler("probe.py")     # 相对路径
+    assert "hello" in out and "world" in out, out
+
+
+# ============================================================
+# ⑨ _inject_workspace:路径约定 + 清理引导写进 system
+# ============================================================
+class TestInjectWorkspace:
+    """用户 2026-11-03:"路径规则 + 清理引导合并成 _inject_workspace 一个
+    注入段,放 system 的可变段?"
+
+    ============ 为什么必须放 system 而不是工具描述 ============
+    autopilot 下没有"轮末"—— 模型给出最终回答就结束了,
+    不会再看任何东西。所以"轮末提醒它清理"不可行
+    (会多一轮 LLM 调用,autopilot 下没人喊停 → 死循环风险)。
+
+    只能在规划期就告诉它,而规划期看得到的只有 system prompt。
+    """
+
+    def _agent(self):
+        import core
+        from tools import create_default_registry
+        a = core.DummyAgent(None, create_default_registry(), system_prompt="P")
+        a.history = [{"role": "system", "content": "P"}]
+        return a
+
+    def test_injects_path_rules(self):
+        a = self._agent()
+        a._inject_workspace()
+        c = a.history[0]["content"]
+        assert "## 工作区约定" in c
+        assert "garage" in c
+        assert "绝对路径" in c and "相对路径" in c
+
+    def test_injects_cleanup_guidance(self):
+        a = self._agent()
+        a._inject_workspace()
+        c = a.history[0]["content"]
+        assert "任务完成后" in c, "必须含清理引导"
+        assert "一次性中间产物" in c
+
+    def test_cleanup_wording_is_soft(self):
+        """用户选的措辞:"可以"而不是"必须"(先试这个,怕过度删除)。"""
+        a = self._agent()
+        a._inject_workspace()
+        c = a.history[0]["content"]
+        assert "可以用 terminal 删掉" in c
+        assert "必须清理" not in c, "用户选的是宽松措辞,不是硬性要求"
+
+    def test_idempotent(self):
+        """重复注入只有一个段(和 _inject_cwd 一致)。"""
+        a = self._agent()
+        a._inject_workspace()
+        a._inject_workspace()
+        assert a.history[0]["content"].count("## 工作区约定") == 1
+
+    def test_preserves_original_prompt(self):
+        a = self._agent()
+        a._inject_workspace()
+        assert a.history[0]["content"].startswith("P")
+
+    def test_called_in_chat_impl(self):
+        """必须在 _chat_impl 里真的被调用(不是定义了没人用)。"""
+        import ast
+        import pathlib
+
+        src = (pathlib.Path(__file__).resolve().parent.parent
+               / "core.py").read_text(encoding="utf-8")
+        tree = ast.parse(src)
+        calls = [n for n in ast.walk(tree)
+                 if isinstance(n, ast.Call)
+                 and isinstance(n.func, ast.Attribute)
+                 and n.func.attr == "_inject_workspace"]
+        assert calls, "_inject_workspace 定义了但没被调用 —— 注入不会生效"
