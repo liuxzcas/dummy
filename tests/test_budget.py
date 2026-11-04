@@ -45,9 +45,14 @@ def test_env_override(monkeypatch, run_script):
 
 
 def test_default_is_max_tool_turns(monkeypatch, run_script):
+    """默认轮次上限 = 类常量(2026-11-04 从 40 提到 100)。
+
+    依据:一次真实任务(PPT 模板解析 + 7 份 .doc 抽取 + 写工具库
+    + 生成 + 验证)正好用满 40 轮,任务只做了一半。
+    """
     monkeypatch.delenv("DUMMY_MAX_TOOL_TURNS", raising=False)
     agent, _ = run_script(())
-    assert agent.max_tool_turns == core.DummyAgent.MAX_TOOL_TURNS == 40
+    assert agent.max_tool_turns == core.DummyAgent.MAX_TOOL_TURNS == 100
 
 
 # ============================================================
@@ -124,3 +129,31 @@ def test_pairing_valid_after_budget_exhausted(tmp_path, monkeypatch):
 
     ok, why = pairing_ok(agent.history)
     assert ok, why
+
+
+def test_guardrails_still_cover_runaway(monkeypatch, run_script):
+    """轮次上限调大后,防死循环仍由 tool_guardrails 承担(不新增循环检测)。
+
+    用户 2026-11-04:"3.不加，我们有类似报警机制的，你查一查。"
+    查证结果:tool_guardrails 已经在做,两道检测:
+      · 完全相同的失败(工具+参数+报错内容三者一致)连续 6 次 → 报告
+      · 只读工具无进展(结果指纹一致)连续 6 次 → 报告
+    它是**纯观察者**:只追加事实描述,不拦截调用 —— 判断权仍归模型。
+
+    所以把 MAX_TOOL_TURNS 从 40 提到 100 是安全的:
+    真陷入循环时,模型会被护栏报告提示,轮次上限只是最后保险。
+    """
+    from tool_guardrails import GuardrailConfig, ToolCallGuardrailController
+
+    cfg = GuardrailConfig()
+    assert cfg.exact_failure_report_after == 6
+    assert cfg.no_progress_report_after == 6
+
+    # 同一失败重复到阈值 → 触发 report
+    c = ToolCallGuardrailController(cfg)
+    decision = None
+    for _ in range(6):
+        decision = c.after_call("terminal", {"command": "false"}, "错误: x",
+                                failed=True)
+    assert decision.action == "report", "同失败 6 次应触发报告"
+    assert decision.code == "repeated_same_failure"
