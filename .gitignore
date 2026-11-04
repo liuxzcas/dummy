@@ -43,3 +43,9 @@ pastes/
 # 个人工作区(用户自己用 dummy 时产生的私人文件,绝不进仓库)
 # 2026-10-30 用户明确要求:base_ws 里的东西千万不要提交到 repo
 base_ws/
+
+# dummy 的临时工作区(garage):模型干活产生的脚本/中间文件都放这里。
+# 内容不进仓库,但目录本身保留(靠 .gitkeep),否则 clone 后 tools 找不到它。
+# 清理命令:/workspace clean(手动触发,不自动删)
+garage/*
+!garage/.gitkeep

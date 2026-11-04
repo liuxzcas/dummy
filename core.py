@@ -395,6 +395,21 @@ class DummyAgent:
         # 工具轮次上限(可在运行时用环境变量覆盖,便于长任务调高/调试调低)
         self.max_tool_turns = _env_int("DUMMY_MAX_TOOL_TURNS", self.MAX_TOOL_TURNS)
 
+        # ============ 全托管模式(2026-11-02 用户提出) ============
+        # 用户:"如果我想要让 dummy 全托管自动运行 tool calling loop,
+        #      不需要人去打 y、敲回车等等确认东西,仅保持 /p 打断的能力,
+        #      需要修改哪些地方?"
+        #
+        # 打开方式:main.py 收到 --autopilot 参数后置位(不用环境变量 ——
+        # 用户明确"开关只用命令行参数,有需要大不了写两个版本的 bat")。
+        #
+        # 打开后:
+        #   · 工具确认(y/n、按 Enter)→ 自动批准,不阻塞
+        #   · /p 打断 → **仍然有效**(监听线程一直在跑,检查点照常消费)
+        #   · 危险操作黑名单 → 命中即拒绝(不等人,直接报错给模型)
+        #   · 会话锁冲突 → 放弃恢复(保守:不抢别人的会话)
+        self.autopilot = False
+
         # 注入确认函数提供者:handler 的 _confirm 参数从这里来
         # (输入收集 + /p 拦截在 core,确认语义判断留在 handler)
         self.tools.set_confirm_provider(self._make_confirm())
@@ -692,11 +707,20 @@ class DummyAgent:
 
                 if interrupt_triggered:
                     # 统一收集提示词(所有打断路径:确认处 /p 与检查点 /p 汇合)
-                    # 走输入层:它会 pause/resume 监听器,避免和它抢控制台
-                    prompt = read_plain(
-                        "  🧭 检测到 /p 打断,请输入提示词(Enter 取消): ",
-                        self,
-                    ).strip()
+                    #
+                    # ============ autopilot 下不等人(2026-11-02) ============
+                    # 全托管时没人会在这里敲提示词 —— read_plain 会一直阻塞,
+                    # 整个 loop 就卡死了。所以直接取空提示词:
+                    # 打断本身仍然生效(本轮剩余工具不再执行),但不会
+                    # 追加额外的用户指示,由模型自己决定下一步。
+                    if self.autopilot:
+                        prompt = ""
+                        print("  🧭 检测到 /p 打断(autopilot:不等待提示词)")
+                    else:
+                        prompt = read_plain(
+                            "  🧭 检测到 /p 打断,请输入提示词(Enter 取消): ",
+                            self,
+                        ).strip()
 
                     # 无论后续是否注入提示词,都必须先把本轮"声明了但没执行"
                     # 的 tool_calls 补齐占位消息:
@@ -1432,6 +1456,13 @@ class DummyAgent:
         ok, msg = self.session_store.acquire_session_lock(
             session_id, self._session_owner)
         if not ok and "持有" in msg:
+            # ============ autopilot 下不等人(2026-11-02) ============
+            # 全托管时没人会回答"强制接管吗" —— 直接放弃恢复(保守):
+            # 抢别人的会话会让两边的历史交错,而沙箱里本来就不该
+            # 同时开两个 dummy 用同一个会话。
+            if self.autopilot:
+                print(f"  会话被其他进程持有,autopilot 下不接管: {msg}")
+                return False
             try:
                 answer = read_plain(
                     f"\n  ⚠️ 会话 {session_id[:8]}… {msg}。\n"
@@ -1582,6 +1613,26 @@ class DummyAgent:
         循环打断处理点统一收集(阻塞式 input)。
         """
         def confirm(prompt: str) -> str:
+            # ============ 全托管:不等人,直接批准(2026-11-02) ============
+            # 用户要的场景:沙箱里全自动跑完 tool-calling loop,
+            # 不打断、不等人敲 y / 回车,但保留 /p 打断能力。
+            #
+            # 为什么这里不做 /p 检查:
+            #   /p 在工具执行期间由监听线程收进 buffer,
+            #   chat() 的工具间隙检查点(_drain_interrupt)会消费它。
+            #   这里再查一遍是多余的 —— 而且会贪掉本属于检查点的那一行。
+            #
+            # 为什么返回 "y":
+            #   各工具对"批准"的判定不同:
+            #     read_file / terminal → 只要不是 "n" 就继续("y" 可以)
+            #     write_file           → 必须是 "y" 才写
+            #   "y" 是唯一对所有工具都成立的值。
+            #
+            # 仍然打印 prompt:用户要看得到"系统问了什么、系统答了什么",
+            # 否则自动跑完一头雾水,不知道中间批准了什么。
+            if self.autopilot:
+                print(prompt.rstrip() + " [autopilot] 自动批准")
+                return "y"
             # 走输入层:已含 pause/resume(避免与监听器抢控制台)
             print(prompt)
             raw = read_plain(

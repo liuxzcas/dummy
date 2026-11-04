@@ -81,6 +81,7 @@ from ui import ui, KIND_SPINNER, KIND_AGENT, KIND_DIVIDER
 from input_layer import (
     read_input_with_drop, format_drop_message, set_model_name,
 )
+import workspace
 from core import DummyAgent
 
 
@@ -218,6 +219,8 @@ def print_help():
       /sessions 列出所有持久化会话
       /sessions del <id>  删除指定会话（消息/归档/记忆级联清除）
       /tools    列出可用工具
+      /workspace        查看 garage 工作区（临时产物都在这）
+      /workspace clean  清空 garage
       /history  显示对话历史（调试用）
       /history del <序号>  删除当前会话中指定记录（含关联消息）
       /search <关键词>  全文搜索历史对话与折叠原文（Phase 2.3b）
@@ -250,7 +253,12 @@ def main():
     4. 创建工具注册表
     5. 创建 Agent 实例
     6. 进入交互循环
+
+    命令行参数：
+        --autopilot   全托管：工具确认自动批准，不等人敲 y/回车。
+                      /p 打断仍然有效；危险命令黑名单仍然硬拦截。
     """
+    autopilot = "--autopilot" in sys.argv
     print_banner()
 
     # ===========================================================
@@ -307,6 +315,13 @@ def main():
     set_model_name(model)
     registry = create_default_registry()
     agent = DummyAgent(llm_client=llm, tool_registry=registry)
+    # 全托管模式:自动批准工具确认,不等人敲 y / 回车。
+    # /p 打断仍然有效(监听线程一直在跑),危险黑名单仍然硬拦截。
+    agent.autopilot = autopilot
+    if autopilot:
+        ui.raw(f"{paint('🤖 autopilot 模式', YELLOW)}:"
+               "工具确认自动批准(危险命令仍会被拒绝)")
+        ui.raw("   /p 打断仍然有效\n")
 
     # ===========================================================
     # Step 3: 交互循环
@@ -412,6 +427,25 @@ def main():
                             f"| updated={updated_at}"
                         )
                 ui.raw()
+                continue
+
+            if user_input.lower().startswith("/workspace"):
+                # garage 工作区管理(用户 2026-11-02 定:清理手动触发)
+                parts = user_input.split()
+                sub = parts[1].lower() if len(parts) > 1 else ""
+                if sub == "clean":
+                    n, size = workspace.clean()
+                    ui.raw(f"🧹 已清空 garage: {n} 个文件, "
+                           f"{size / 1024:.1f} KB\n")
+                else:
+                    items = workspace.listing()
+                    if not items:
+                        ui.raw(f"🧰 garage 是空的: {workspace.GARAGE_DIR}\n")
+                    else:
+                        ui.raw(f"🧰 garage ({len(items)} 项): {workspace.GARAGE_DIR}")
+                        for name, size in items:
+                            ui.raw(f"   {name}  {size / 1024:.1f} KB")
+                        ui.raw("   (清空: /workspace clean)\n")
                 continue
 
             if user_input.lower() == "/tools":

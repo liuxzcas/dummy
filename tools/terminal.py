@@ -43,6 +43,7 @@ from colors import paint, YELLOW, CYAN
 # env_probe 在项目根(terminal.py 位于 tools/ 下)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from env_probe import describe_environment   # noqa: E402
+import workspace                            # noqa: E402
 from ui import ui                            # noqa: E402
 from tools.tasks import tasks, kill_process_tree   # noqa: E402
 
@@ -146,7 +147,14 @@ def _run_shell(command: str, timeout: int = DEFAULT_TIMEOUT, task=None):
     #   · 断开继承后,控制台输入归还父进程,msvcrt 轮询才能看到 /p
     #   · 万一以后真要支持交互式命令,再单独加 stdin=PIPE + 转发
     kwargs = {"stdin": subprocess.DEVNULL,
-              "stdout": subprocess.PIPE, "stderr": subprocess.PIPE}
+              "stdout": subprocess.PIPE, "stderr": subprocess.PIPE,
+              # ============ cwd 固定到 garage(2026-11-02 用户定) ============
+              # 用户:"所有为了干活而生成的临时程序、临时脚本、临时文件
+              #      都放在一个固定的路径下运行"。
+              # 有了这个约定,模型 `python foo.py` / `> out.txt` 产生的
+              # 文件都自动落在 garage 里,好找好清。
+              # 想操作别处?命令里写绝对路径即可。
+              "cwd": workspace.ensure()}
     if os.name == "nt":
         # 独立进程组(便于整组终止;但 Windows 上没有 killpg,实际靠 taskkill /T)
         kwargs["creationflags"] = 0x00000200   # CREATE_NEW_PROCESS_GROUP
@@ -252,6 +260,52 @@ def _command_hint(command: str) -> str | None:
     return None
 
 
+# ============================================================
+# 危险命令黑名单(2026-11-02 用户定)
+# ============================================================
+# ============ 为什么需要它 ============
+# 用户要"全托管自动跑"(autopilot) —— 但全自动意味着没人拦着。
+# 黑名单是最后一道保险:命中就**拒绝执行**(不等人),直接把
+# 拒绝原因告诉模型,让它换别的做法。
+#
+# ============ 为什么只有这几条(用户原话) ============
+# "危险操作定个黑名单吧" + "也可以将黑名单范围中的①的范围缩小"
+# 原方案第 ① 条是"写到项目外",现在有了 garage 工作区,
+# 临时产物都落在 garage 里,写别处才需要确认 —— 所以黑名单只留
+# **真正不可逆 / 影响宿主**的:
+#   ① 推远程且强推(git push --force / -f)
+#   ② 关机/重启/改启动项(影响宿主 OS)
+#   ③ 删根目录 / 删家目录
+# 沙箱本来就是为了"搞坏了无所谓",列太长会妨碍它干活。
+DANGEROUS_PATTERNS: list[tuple[str, str]] = [
+    # (正则, 原因)
+    (r"\bgit\s+push\b.*(--force\b|(?<!\w)-f(?:\s|$))",
+     "强制推送会不可逆地覆盖远程历史"),
+    (r"\bgit\s+(reset\s+--hard|clean\s+-[a-zA-Z]*[fd]x?[a-zA-Z]*)",
+     "会不可逆地丢弃本地改动"),
+    (r"\b(shutdown|reboot|halt|poweroff)\b",
+     "会关闭/重启宿主系统"),
+    (r"\bbcdedit\b",
+     "会修改宿主启动配置"),
+    (r"(^|\s)rm\s+(-[a-zA-Z]*[rf][a-zA-Z]*\s+)+(/|~|/\*|~/\*)\s*$",
+     "会删除根目录或家目录"),
+    (r"\bmkfs(\.\w+)?\b",
+     "会格式化磁盘"),
+    (r"\bformat\s+[a-zA-Z]:",
+     "会格式化磁盘"),
+]
+
+
+def _blocked_reason(command: str) -> str | None:
+    """命中黑名单则返回拒绝原因,否则 None。"""
+    import re
+
+    for pattern, reason in DANGEROUS_PATTERNS:
+        if re.search(pattern, command, re.IGNORECASE):
+            return reason
+    return None
+
+
 def terminal_handler(command: str, timeout: int | None = None, _confirm=None) -> str:
     """在本地 shell 中执行命令，返回输出。
 
@@ -261,6 +315,16 @@ def terminal_handler(command: str, timeout: int | None = None, _confirm=None) ->
 
     timeout: 可选,单位秒。默认 120,最大 600。
     """
+    # ---- 危险命令黑名单(先于确认,不等人) ----
+    # 命中直接拒绝:这不是"问用户要不要",而是硬拦截。
+    # 全托管(autopilot)时没人能回答确认,不拦的话就是全自动执行破坏性命令。
+    blocked = _blocked_reason(command)
+    if blocked:
+        return (f"[拒绝执行] 该命令命中危险操作黑名单: {blocked}\n"
+                f"  命令: {command[:200]}\n"
+                f"  这属于不可逆或影响宿主系统的操作,不允许自动执行。\n"
+                f"  如需合法操作,请拆解成更小、可回退的步骤。")
+
     # ---- 执行前确认 ----
     if _confirm is not None:
         # 走 ui.raw:这是"问用户话"的交互面板,不是对话流

@@ -32,6 +32,7 @@ import difflib
 import py_compile
 
 from colors import paint, YELLOW, NEUTRAL, RED, GREEN
+import workspace
 
 
 # ---- 文件类型验证器注册表 ----
@@ -185,10 +186,22 @@ def write_file_handler(path: str, content: str, mode: str = "overwrite", verify:
     - _confirm: core 注入的确认函数(diff/行级/路径外确认用);None 时跳过确认
     """
     project_root = os.path.abspath(os.getcwd())
-    full_path = os.path.abspath(path)
+    # ============ 相对路径落点改成 garage(2026-11-02 用户定) ============
+    # 原来 `os.path.abspath(path)` 让相对路径跟着进程 cwd 走 ——
+    # 但 dummy 可能从任意目录启动,模型写的 "foo.py" 会落到意想不到的地方。
+    # 现在:相对路径 → garage/,绝对路径 → 原样(尊重模型的显式指定)。
+    full_path = workspace.resolve(path)
 
     # ---- 路径安全检测（确认由注入的 _confirm 收集输入） ----
-    if not full_path.startswith(project_root):
+    #
+    # ============ 三级判定(2026-11-02 用户定) ============
+    #   ① garage 内          → 直接放行(这是临时工作区,本来就可随时清)
+    #   ② 项目内其他位置      → 确认(可能是交付物,也可能是误写)
+    #   ③ 项目外             → 确认(影响宿主)
+    # 用户原话:"也可以将黑名单范围中的①的范围缩小。"
+    in_garage = workspace.is_inside_garage(full_path)
+    in_project = full_path.startswith(project_root)
+    if not in_garage and not in_project:
         print(f"   项目: {project_root}")
         print(f"{paint('⚠️ write_file 试图写到项目目录之外', YELLOW)}:")
         print(f"   目标: {full_path}")

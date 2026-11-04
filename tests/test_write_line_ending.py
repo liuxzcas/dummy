@@ -65,19 +65,33 @@ def test_missing_file_returns_placeholder():
 # 端到端:返回值里必须带换行符
 # ============================================================
 def test_write_result_reports_line_ending(tmp_path, monkeypatch):
-    """写入成功的返回值里必须有换行符信息 —— 这是让模型不再多跑 sed 的关键。"""
+    """写入成功的返回值里必须有换行符信息 —— 这是让模型不再多跑 sed 的关键。
+
+    ★ 2026-11-02:同 test_reported_ending_matches_disk,改用绝对路径
+      (相对路径现在落到 garage/,不再跟 cwd 走)。
+    """
     monkeypatch.chdir(tmp_path)
-    result = write_file_handler(path="x.bat", content="@echo off\necho hi\n",
+    result = write_file_handler(path=str(tmp_path / "x.bat"),
+                                content="@echo off\necho hi\n",
                                 verify=False)
     assert "写入成功" in result
     assert "[换行" in result, f"返回值应报告换行符,实际: {result!r}"
 
 
 def test_reported_ending_matches_disk(tmp_path, monkeypatch):
-    """报告的换行符必须与磁盘实际内容一致(读出来判断,不是假设)。"""
+    """报告的换行符必须与磁盘实际内容一致(读出来判断,不是假设)。
+
+    ★ 2026-11-02:改成传**绝对路径**。
+      原来用 monkeypatch.chdir + 相对路径 "x.txt" ——
+      但 garage 工作区上线后,相对路径一律落到 garage/,
+      不再跟着 cwd 走,这条测试就读不到文件了。
+      行为变更本身是对的(见 workspace.py 的说明),
+      测试跟着改成用绝对路径更贴合真实用法。
+    """
     monkeypatch.chdir(tmp_path)
-    result = write_file_handler(path="x.txt", content="a\nb\n", verify=False)
-    raw = (tmp_path / "x.txt").read_bytes()
+    target = tmp_path / "x.txt"
+    result = write_file_handler(path=str(target), content="a\nb\n", verify=False)
+    raw = target.read_bytes()
     if b"\r\n" in raw:
         assert "CRLF" in result
     elif b"\n" in raw:
