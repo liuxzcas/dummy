@@ -409,6 +409,8 @@ class DummyAgent:
         #   · 危险操作黑名单 → 命中即拒绝(不等人,直接报错给模型)
         #   · 会话锁冲突 → 放弃恢复(保守:不抢别人的会话)
         self.autopilot = False
+        # autopilot 下每轮开始时的 garage 文件快照(轮末做差集报告用)
+        self._garage_snapshot: dict[str, int] | None = None
 
         # 注入确认函数提供者:handler 的 _confirm 参数从这里来
         # (输入收集 + /p 拦截在 core,确认语义判断留在 handler)
@@ -464,6 +466,39 @@ class DummyAgent:
         finally:
             self._settle_history()
             self._cleanup_round_temp_files()
+            self._report_garage_changes()
+
+    def _report_garage_changes(self) -> None:
+        """autopilot 下,本轮结束时报一句 garage 新增了什么。
+
+        ============ 为什么只在 autopilot 下报(2026-11-03 用户选 2.a) ============
+        普通模式下文件是**边生成边显示**的(write_file 打印 diff、terminal
+        打印命令和输出),用户当场看得见,再报一遍是噪音。
+        autopilot 下同理显示,但一轮可能跑几十次工具调用、屏幕滚动飞快,
+        事后需要一句话告诉他"这轮到底产出了哪些文件"。
+
+        只报不删 —— 清理仍然手动(/workspace clean),理由见 workspace.py。
+
+        快照在 _chat_impl 开始时拍(见 _garage_snapshot),这里只做差集。
+        """
+        if not self.autopilot:
+            return
+        before = getattr(self, "_garage_snapshot", None)
+        self._garage_snapshot = None
+        if before is None:
+            return
+        try:
+            import workspace
+            after = {n: s for n, s in workspace.listing()}
+            added = [n for n in after if n not in before]
+            if not added:
+                return
+            preview = ", ".join(added[:5])
+            more = f" 等 {len(added)} 项" if len(added) > 5 else ""
+            print(f"\n  🧰 本轮 garage 新增: {preview}{more}")
+            print("     (清空: /workspace clean)")
+        except Exception:
+            pass    # 报告是尽力而为,不该影响对话
 
     def _cleanup_round_temp_files(self) -> None:
         """本轮结束 → 回收输入层登记的临时文件(pastes/*.txt)。
@@ -489,6 +524,17 @@ class DummyAgent:
 
     def _chat_impl(self, user_input: str) -> str:
         """chat() 的本体(工具循环)。调用方负责收口,见 chat()。"""
+        # ============ autopilot:轮开始前拍一份 garage 快照 ============
+        # 轮末 _report_garage_changes 用差集算出"本轮新增了什么"。
+        # 只在 autopilot 下拍 —— 普通模式不需要这份报告,
+        # 省一次目录扫描。
+        if self.autopilot:
+            try:
+                import workspace
+                self._garage_snapshot = {n: s for n, s in workspace.listing()}
+            except Exception:
+                self._garage_snapshot = None
+
         # 先确保当前会话已存在（首次 chat 时才创建）
         self._ensure_session()
 

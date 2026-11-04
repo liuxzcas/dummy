@@ -279,3 +279,79 @@ class TestAutopilot:
                 found = True
                 break
         assert found, "autopilot 下打断处理必须跳过 read_plain(否则死锁)"
+
+
+# ============================================================
+# ⑦ autopilot 下的 garage 新增报告（用户选 2.a：只在 autopilot 报）
+# ============================================================
+class TestGarageReport:
+    """用户："2.a" —— 只在 autopilot 模式报告本轮 garage 新增。
+
+    理由：普通模式下文件是边生成边显示的，用户当场看得见；
+    autopilot 一轮可能跑几十次工具调用、屏幕滚动飞快，
+    事后需要一句话告诉他这轮产出了哪些文件。
+
+    只报不删 —— 清理仍手动（/workspace clean）。
+    """
+
+    def _agent(self, tmp_path, monkeypatch, autopilot):
+        import core
+        from conftest import ScriptedLLM
+        from tools import create_default_registry
+
+        d = tmp_path / "garage"
+        d.mkdir()
+        monkeypatch.setattr(workspace, "GARAGE_DIR", str(d))
+        monkeypatch.setattr(workspace, "ensure", lambda: str(d))
+
+        a = core.DummyAgent(ScriptedLLM(["收到"]), create_default_registry())
+        a.autopilot = autopilot
+        return a, d
+
+    def test_reports_new_files(self, tmp_path, monkeypatch, capsys):
+        a, d = self._agent(tmp_path, monkeypatch, autopilot=True)
+        a._garage_snapshot = {}
+        (d / "probe.py").write_text("x")
+        capsys.readouterr()
+        a._report_garage_changes()
+        out = capsys.readouterr().out
+        assert "garage 新增" in out and "probe.py" in out, out
+
+    def test_no_report_when_not_autopilot(self, tmp_path, monkeypatch, capsys):
+        a, d = self._agent(tmp_path, monkeypatch, autopilot=False)
+        a._garage_snapshot = {}
+        (d / "probe.py").write_text("x")
+        capsys.readouterr()
+        a._report_garage_changes()
+        assert capsys.readouterr().out == "", "普通模式不该报"
+
+    def test_no_report_when_nothing_new(self, tmp_path, monkeypatch, capsys):
+        a, d = self._agent(tmp_path, monkeypatch, autopilot=True)
+        (d / "old.py").write_text("x")
+        a._garage_snapshot = dict(workspace.listing())
+        capsys.readouterr()
+        a._report_garage_changes()
+        assert capsys.readouterr().out == "", "没有新增就不该报"
+
+    def test_mentions_clean_command(self, tmp_path, monkeypatch, capsys):
+        """报告要告诉用户怎么清。"""
+        a, d = self._agent(tmp_path, monkeypatch, autopilot=True)
+        a._garage_snapshot = {}
+        (d / "a.py").write_text("x")
+        capsys.readouterr()
+        a._report_garage_changes()
+        out = capsys.readouterr().out
+        assert "/workspace clean" in out, out
+
+    def test_snapshot_cleared_after_report(self, tmp_path, monkeypatch):
+        """报告后清掉快照，避免下一轮误用。"""
+        a, d = self._agent(tmp_path, monkeypatch, autopilot=True)
+        a._garage_snapshot = {}
+        a._report_garage_changes()
+        assert a._garage_snapshot is None
+
+    def test_no_snapshot_no_crash(self, tmp_path, monkeypatch):
+        """没有快照(比如普通模式残留)也不能崩。"""
+        a, d = self._agent(tmp_path, monkeypatch, autopilot=True)
+        a._garage_snapshot = None
+        a._report_garage_changes()      # 不该抛
