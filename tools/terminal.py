@@ -32,9 +32,11 @@ Windows 中文版默认编码是 GBK，而 git-bash 输出可能是 UTF-8。
 """
 
 import os
+import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 
@@ -90,7 +92,8 @@ DEFAULT_TIMEOUT = 120     # 默认超时(秒)。对齐 Claude Code(120) / Hermes
 MAX_TIMEOUT = 600         # 上限(秒)。对齐两家的硬上限(600)
 
 
-def _run_shell(command: str, timeout: int = DEFAULT_TIMEOUT, task=None):
+def _run_shell(command: str, timeout: int = DEFAULT_TIMEOUT, task=None,
+               cwd: str | None = None):
     """执行命令:优先 git-bash,回退系统默认 shell。
 
     返回 (stdout_bytes, stderr_bytes, returncode, shell_name, timed_out)。
@@ -148,13 +151,10 @@ def _run_shell(command: str, timeout: int = DEFAULT_TIMEOUT, task=None):
     #   · 万一以后真要支持交互式命令,再单独加 stdin=PIPE + 转发
     kwargs = {"stdin": subprocess.DEVNULL,
               "stdout": subprocess.PIPE, "stderr": subprocess.PIPE,
-              # ============ cwd 固定到 garage(2026-11-02 用户定) ============
-              # 用户:"所有为了干活而生成的临时程序、临时脚本、临时文件
-              #      都放在一个固定的路径下运行"。
-              # 有了这个约定,模型 `python foo.py` / `> out.txt` 产生的
-              # 文件都自动落在 garage 里,好找好清。
-              # 想操作别处?命令里写绝对路径即可。
-              "cwd": workspace.ensure()}
+              # ============ cwd 由调用方传入(2026-11-05 改) ============
+              # 原来是死值 workspace.ensure();现在由 terminal_handler
+              # 传 _session_cwd 进来,支持跨调用保持目录。
+              "cwd": cwd or workspace.ensure()}
     if os.name == "nt":
         # 独立进程组(便于整组终止;但 Windows 上没有 killpg,实际靠 taskkill /T)
         kwargs["creationflags"] = 0x00000200   # CREATE_NEW_PROCESS_GROUP
@@ -261,8 +261,142 @@ def _command_hint(command: str) -> str | None:
 
 
 # ============================================================
-# 危险命令黑名单(2026-11-02 用户定)
+# 跨调用的 cwd 保持(2026-11-05 实测后实现)
 # ============================================================
+# ============ 为什么需要 ============
+# 用户日志分析(logs/conversation_20261105_190809.json):
+#     terminal 调用 130 次,其中 117 次以 `cd` 开头,只有 13 次不带 cd。
+#     cd 目标统计:
+#         ×55  cd /d/ja/sjcj                           ← 用户的项目目录
+#         ×29  cd .../skills/lesson-plan-generator/templates
+#         ×10  cd .../garage/vt2
+#         ...
+#
+# 根因:每次 terminal 调用都是**新的 bash 子进程**,上一次的 cd 不会保留。
+# 所以模型每次都要先 cd 到目标目录 —— 白白烧掉大量轮次和 token。
+#
+# ============ 方案:借用 Hermes 的做法 ============
+# Hermes(tools/environments/base.py:555 + local.py:_update_cwd):
+#     在命令末尾追加 `pwd -P > <临时文件>`,执行完读回来自我更新 cwd。
+# 优点:
+#   · 不污染模型看到的输出(不像 echo 标记那样混进 stdout)
+#   · `pwd -P` 解析软链接,拿真实路径
+#   · `|| true` 保证 pwd 失败不影响原命令
+#
+# ============ 两个必须处理的坑(Hermes 代码里都有) ============
+# ① Windows 路径翻译:git-bash 的 `pwd -P` 输出 /c/Users/x,
+#    而 Popen(cwd=...) 需要 C:/Users/x —— 不翻译会导致 isdir 检查失败。
+# ② cwd 被删:模型执行 `rm -rf` 删掉自己当前目录后,
+#    下次 Popen(cwd=不存在) 会 FileNotFoundError,整个工具报废。
+#    (Hermes 的 issue #17558 就是这个,它用 _resolve_safe_cwd 逐级上溯。)
+_session_cwd: str | None = None
+_CWD_FILE = os.path.join(tempfile.gettempdir(), "dummy-terminal-cwd.txt")
+
+
+def _msys_to_native(path: str) -> str:
+    """把 git-bash 风格路径(/c/Users/x、/tmp/x)转成 Windows 原生路径。
+
+    ============ 为什么不能只做正则替换(2026-11-05 实测) ============
+    最初只处理 /c/xxx、/cygdrive/c/xxx 这种盘符形式。实测发现
+    git-bash 的 /tmp 是一个**独立映射**:
+
+        pwd -P 输出  /tmp/tmpso9v_k61/sub
+        Windows 上  C:/Users/xlinz/AppData/Local/Temp/tmpso9v_k61/sub
+
+    /tmp 不在任何盘符下,正则匹配不到 → 原样返回 → isdir 失败
+    → cwd 永远保持不住(而且只在 pwd 落在 /tmp 时才复现,很难查)。
+
+    修法:优先调 git-bash 自带的 `cygpath -w` 做权威转换,
+    失败再退回正则(只认盘符形式)。
+    """
+    if os.name != "nt" or not path:
+        return path
+    # 已经是 Windows 形式(C:\ 或 C:/)就直接返回
+    if re.match(r"^[a-zA-Z]:[\\/]", path):
+        return path
+    # 已带 /cygdrive/ 前缀的,先剥掉再交给 cygpath
+    # (实测:cygpath 会把 /cygdrive/e/foo 当相对路径,
+    #  转成 C:\...\hermes\git\cygdrive\e\foo —— 完全错)
+    p = re.sub(r"^/cygdrive/(?=[a-zA-Z]/)", "/", path)
+    # 权威转换:cygpath 知道所有映射(/tmp、/c、$HOME …)
+    try:
+        r = subprocess.run(["cygpath", "-w", p], capture_output=True,
+                           text=True, timeout=5)
+        if r.returncode == 0 and r.stdout.strip():
+            out = r.stdout.strip()
+            # 防御:转换结果必须是一个盘符开头的绝对路径
+            if re.match(r"^[a-zA-Z]:[\\/]", out):
+                return out
+    except (OSError, subprocess.SubprocessError):
+        pass
+    # 兜底:只处理盘符形式
+    m = re.match(r"^/(?:cygdrive/)?([a-zA-Z])(/.*)?$", p)
+    if not m:
+        return path
+    drive = m.group(1).upper()
+    rest = (m.group(2) or "").replace("/", "\\")
+    return drive + ":" + (rest or "\\")
+
+
+def _safe_cwd(path: str) -> str:
+    """cwd 不存在时(被 rm 掉了)回退到最近的存在的父目录,最后兜底 garage。
+
+    对应 Hermes 的 _resolve_safe_cwd:模型执行 `cd x && rm -rf ../x`
+    之后,下一条命令的 Popen(cwd=已删除) 会抛 FileNotFoundError,
+    整个 terminal 工具就废了,必须自愈。
+    """
+    cur = path
+    while cur and not os.path.isdir(cur):
+        parent = os.path.dirname(cur.rstrip("\\/"))
+        if parent == cur:
+            break
+        cur = parent
+    if cur and os.path.isdir(cur):
+        return cur
+    return workspace.ensure()
+
+
+def _read_back_cwd() -> str | None:
+    """读回命令执行后记录的 cwd(由 _marked_command 写入)。"""
+    try:
+        with open(_CWD_FILE, encoding="utf-8") as f:
+            p = f.read().strip()
+    except (OSError, FileNotFoundError):
+        return None
+    p = _msys_to_native(p)
+    return p if p and os.path.isdir(p) else None
+
+
+def _marked_command(command: str, shell_name: str) -> str:
+    """在命令末尾追加 cwd 记录,**同时保留原命令的退出码**。
+
+    ============ 为什么必须保留退出码(2026-11-05 实测) ============
+    最初直接拼 `pwd -P > file || true` —— 结果整个脚本的退出码
+    变成最后一条命令(0),原命令的失败被吞掉:
+
+        执行 definitely-not-a-command-xyz  → 原本 rc=127
+        拼上 || true 之后               → rc=0
+
+    后果有两层:
+      ① 测试抓不到失败(实测 test_dispatch_stats 直接红)
+      ② **模型也会以为命令成功了** —— 比测试红更严重
+
+    修法:先存 $?,跑完 pwd 再 `exit $__rc` 还原。
+    """
+    if shell_name == "git-bash":
+        return (
+            f"{command}\n"
+            f"__dummy_rc=$?\n"
+            f'pwd -P > "{_CWD_FILE}" 2>/dev/null || true\n'
+            f"exit $__dummy_rc"
+        )
+    if shell_name == "cmd":
+        # cmd.exe 用 `cd`(无参数)打印当前目录;%ERRORLEVEL% 同理要保
+        return (command + chr(13) + chr(10)
+                + "set __DUMMY_RC=%ERRORLEVEL%" + chr(13) + chr(10)
+                + 'cd > "' + _CWD_FILE + '" 2>nul' + chr(13) + chr(10)
+                + "exit /b %__DUMMY_RC%")
+    return command
 # ============ 为什么需要它 ============
 # 用户要"全托管自动跑"(autopilot) —— 但全自动意味着没人拦着。
 # 黑名单是最后一道保险:命中就**拒绝执行**(不等人),直接把
@@ -350,7 +484,18 @@ def terminal_handler(command: str, timeout: int | None = None, _confirm=None) ->
     try:
         # 优先 git-bash(bash -lc),回退系统默认 shell;首行标注执行环境
         # 注意:不用 text=True(Windows GBK 编码会崩),手动 utf-8 解码
-        stdout_b, stderr_b, rc, shell_name, timed_out = _run_shell(command, secs, task)
+        # ============ cwd 保持(2026-11-05) ============
+        # 起点:_session_cwd(上次命令结束时的目录)或 garage(首次)。
+        # 命令末尾追加 pwd 记录,执行完读回来更新 _session_cwd。
+        # 这样模型只需在换目录时 cd 一次,后续命令自动在正确目录跑。
+        global _session_cwd
+        cwd = _safe_cwd(_session_cwd or workspace.ensure())
+        marked = _marked_command(command, "git-bash" if _find_bash() else "cmd")
+        stdout_b, stderr_b, rc, shell_name, timed_out = _run_shell(
+            marked, secs, task, cwd=cwd)
+        new_cwd = _read_back_cwd()
+        if new_cwd:
+            _session_cwd = new_cwd
 
         tasks.finish(task, timed_out)
         # 命令结束后探查后代 —— 可能有"命令已退出但后台进程还在"的情况

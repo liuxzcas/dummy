@@ -435,3 +435,146 @@ class TestInterruptEcho:
         monkeypatch.setattr(_time, "sleep", fake_sleep)
         l._poll_loop()          # 不该抛
         assert l._buffer == "/p" + chr(10)
+
+
+# ============================================================
+# 跨调用的 cwd 保持（2026-11-05 实现）
+# ============================================================
+class TestCwdPersistence:
+    """用户日志分析驱动:terminal 130 次调用里 117 次以 cd 开头。
+
+    ============ 根因 ============
+    每次 terminal 调用都是**新的 bash 子进程**,上一次的 cd 不会保留,
+    所以模型每次都要重新 cd 到目标目录 —— 白白烧掉轮次和 token。
+    cd 目标 Top3:
+        ×55  cd /d/ja/sjcj                    ← 用户项目目录
+        ×29  cd .../skills/.../templates
+        ×10  cd .../garage/vt2
+
+    ============ 方案(借 Hermes 的做法) ============
+    命令末尾追加 `pwd -P > <临时文件>`,执行完读回来更新会话 cwd。
+    用文件而不是 stdout 传值 —— 模型看不到那一行,输出保持干净。
+
+    ============ 两个坑(Hermes 代码里都有血泪) ============
+    ① Windows 路径:git-bash 的 pwd -P 输出 /c/Users/x,
+       Popen(cwd=...) 需要 C:/Users/x —— 不翻译 isdir 必失败。
+    ② cwd 被删:模型 `rm -rf` 掉自己的 cwd 后,
+       下次 Popen(cwd=不存在) 抛 FileNotFoundError,整个工具报废。
+       (Hermes issue #17558)
+    """
+
+    def test_msys_to_native(self):
+        import tools.terminal as T
+        assert T._msys_to_native("/c/Users/x") == r"C:\Users\x"
+        assert T._msys_to_native("/d/Engineering") == r"D:\Engineering"
+        assert T._msys_to_native("/cygdrive/e/foo") == r"E:\foo"
+
+    def test_msys_to_native_keeps_native(self):
+        import tools.terminal as T
+        assert T._msys_to_native("C:/already/native") == "C:/already/native"
+
+    def test_safe_cwd_falls_back_when_deleted(self, tmp_path, monkeypatch):
+        """cwd 被删 → 逐级上溯到存在的父目录,最终兜底 garage。"""
+        import tools.terminal as T
+        import workspace
+
+        gone = tmp_path / "gone" / "deeper"
+        ghost = str(gone)
+        monkeypatch.setattr(workspace, "ensure", lambda: str(tmp_path))
+        got = T._safe_cwd(ghost)
+        assert os.path.isdir(got), got
+        assert got == str(tmp_path)   # 上溯到 tmp_path(存在)
+
+    def test_marked_command_appends_pwd(self):
+        """git-bash 下要追加 pwd -P 到临时文件。"""
+        import tools.terminal as T
+        cmd = T._marked_command("ls", "git-bash")
+        assert "pwd -P" in cmd
+        assert "dummy-terminal-cwd" in cmd
+        assert cmd.startswith("ls")
+
+    def test_marked_command_does_not_leak_to_stdout(self):
+        """用文件传值,不能在命令里 echo 出来。"""
+        import tools.terminal as T
+        cmd = T._marked_command("echo hi", "git-bash")
+        assert "echo $" not in cmd and "printf" not in cmd
+
+    def test_session_cwd_actually_persists(self, tmp_path, monkeypatch):
+        """端到端:cd 一次后,下一条命令自动在新目录。"""
+        import tools.terminal as T
+        from tools import create_default_registry
+
+        target = tmp_path / "sub"
+        target.mkdir()
+        monkeypatch.setattr(T, "_session_cwd", None)
+
+        reg = create_default_registry()
+        reg.set_confirm_provider(lambda p: "")
+
+        reg.dispatch("terminal", {"command": f'cd "{target}"'})
+        assert T._session_cwd == str(target), T._session_cwd
+
+        # 下一条命令不写 cd,应该已经在 target 里
+        reg.dispatch("terminal", {"command": "touch marker.txt"})
+        assert (target / "marker.txt").exists(), "cwd 没有保持"
+
+
+class TestCwdPersistenceExitCode:
+    """追加 pwd 记录不能吞掉原命令的退出码(2026-11-05 实测)。
+
+    ============ 踩到的真 bug ============
+    最初直接拼 `pwd -P > file || true` —— 整个脚本的退出码变成最后
+    一条命令(0),原命令的失败被吞掉:
+
+        definitely-not-a-command-xyz → 原本 rc=127
+        拼上 || true 之后           → rc=0
+
+    后果两层:
+      ① tests/test_self_improve.py::test_dispatch_stats 直接红
+      ② **模型也会以为命令成功了** —— 比测试红更严重
+    """
+
+    def test_rc_preserved_on_failure(self):
+        import tools.terminal as T
+        from tools import create_default_registry
+        reg = create_default_registry()
+        reg.set_confirm_provider(lambda p: "")
+        out = reg.dispatch("terminal",
+                           {"command": "definitely-not-a-command-xyz"})
+        assert "EXIT CODE: 127" in out, f"失败退出码被吞了: {out[-200:]}"
+
+    def test_rc_zero_on_success(self):
+        import tools.terminal as T
+        from tools import create_default_registry
+        reg = create_default_registry()
+        reg.set_confirm_provider(lambda p: "")
+        out = reg.dispatch("terminal", {"command": "echo hi"})
+        assert "EXIT CODE" not in out, f"成功不该报退出码: {out[-200:]}"
+
+    def test_marked_command_saves_and_restores_rc(self):
+        import tools.terminal as T
+        cmd = T._marked_command("false", "git-bash")
+        assert "$?" in cmd, "必须先存 $?"
+        assert "exit" in cmd, "必须还原退出码"
+
+
+class TestMsysToNativeRobustness:
+    """/tmp 映射与 /cygdrive 前缀(2026-11-05 实测踩到)。"""
+
+    def test_tmp_maps_to_windows_temp(self):
+        """/tmp 在 git-bash 里是独立映射,不在任何盘符下。
+
+        不处理的话 cwd 会永远保持不住(且只在 pwd 落在 /tmp 时复现)。
+        """
+        import tools.terminal as T
+        got = T._msys_to_native("/tmp/x")
+        assert os.name != "nt" or os.path.isabs(got) and got != "/tmp/x", got
+
+    def test_cygdrive_prefix_handled(self):
+        """/cygdrive/e/foo 要变成 E:\foo。
+
+        踩坑:cygpath 会把它当相对路径转成
+        C:\...\hermes\git\cygdrive\e\foo —— 必须剥前缀再转。
+        """
+        import tools.terminal as T
+        assert T._msys_to_native("/cygdrive/e/foo") == r"E:\foo"
