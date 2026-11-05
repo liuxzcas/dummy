@@ -325,7 +325,23 @@ def _get_session():
         return _session
     try:
         from prompt_toolkit import PromptSession
-        _session = PromptSession(key_bindings=_build_key_bindings())
+        # ============ 为什么要显式关掉菜单预留(2026-11-05 用户反馈) ============
+        # 用户:"dummy 运行期工具轮间每隔一会儿就会清屏,
+        #      然后之前对话内容就不能上翻查看到了。"
+        #
+        # prompt_toolkit 默认 reserve_space_for_menu=8 ——
+        # 为补全菜单预留 8 行。dummy 没有补全菜单,这 8 行纯属浪费;
+        # 而且它会参与"光标位置/擦除行数"的计算,算错时会把上方
+        # 已打印的历史一起擦掉(非全屏模式下 prompt_toolkit 会
+        # 管理它自己画过的那片区域)。
+        #
+        # 设成 0:不预留、不算错、不打乱历史。
+        # (erase_when_done 保持默认 False —— 那是"退出时擦掉提示符",
+        #  我们不想它擦任何东西。)
+        _session = PromptSession(
+            key_bindings=_build_key_bindings(),
+            reserve_space_for_menu=0,
+        )
         # 真正探测一次:构造成功不代表能用 —— output 是惰性创建的,
         # 要等到首次 prompt() 才可能抛 NoConsoleScreenBufferError。
         # 这里主动取一次 output 来暴露问题。
@@ -352,6 +368,23 @@ def _read_via_prompt_toolkit(prompt: str) -> str | None:
     session = _get_session()
     if not session:
         return None
+    # ============ 每次 prompt 前重置 renderer(2026-11-05 用户反馈) ============
+    # 用户:"dummy 运行期工具轮间每隔一会儿就会清屏,
+    #      然后之前对话内容就不能上翻查看到了。"
+    #
+    # 根因:prompt_toolkit 的 Renderer 用 self._last_screen 记住
+    # **自己上次画了什么**,下次渲染时按那个高度算"该擦几行"。
+    # 但 dummy 的所有输出走的是 print()(ui.raw / ui.show),
+    # 这些内容 prompt_toolkit 根本不知道 —— 它以为屏幕上还是上次那几行。
+    # 于是按旧高度去擦 → 把上方 print 出来的历史一起擦掉。
+    #
+    # reset() 清空 _last_screen / _cursor_pos,让它每次从"当前光标位置"
+    # 重新开始,不与之前的 print 输出打架。
+    # (erase_when_done 保持默认 False:我们不想它擦任何东西。)
+    try:
+        session.app.renderer.reset()
+    except Exception:
+        pass
     try:
         return session.prompt(prompt)
     except Exception:

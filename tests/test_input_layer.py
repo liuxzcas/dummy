@@ -844,3 +844,94 @@ class TestNewlineNormalization:
 
         assert out.count("\n") == 2, f"CR 应被归一化成 LF: {out!r}"
         assert "\r" not in out, "不该残留 CR"
+
+
+# ============================================================
+# ⑰ prompt_toolkit 不能清屏/擦掉历史（2026-11-05 用户反馈）
+# ============================================================
+class TestNoScreenClearing:
+    """用户:"dummy 运行期工具轮间每隔一会儿就会清屏,
+    然后之前对话内容就不能上翻查看到了。这是我不希望的。"
+
+    ============ 根因 ============
+    prompt_toolkit 的 Renderer 用 self._last_screen 记住【自己上次画了
+    什么】,下次渲染时按那个高度算"该擦几行"。但 dummy 的所有输出走
+    print()(ui.raw / ui.show),prompt_toolkit 完全不知道这些内容 ——
+    它以为屏幕上还是上次那几行,于是按旧高度往上擦,
+    把 print 出来的历史一起擦掉。
+
+    ============ 两道修法 ============
+    ① reserve_space_for_menu=0
+       默认是 8(为补全菜单预留)。dummy 没有补全菜单,这 8 行纯浪费,
+       还会参与光标/擦除行数计算。
+    ② 每次 prompt 前 renderer.reset()
+       清空 _last_screen / _cursor_pos,让它从"当前光标位置"重新开始,
+       不与之前的 print 输出打架。
+    """
+
+    def test_reserve_space_for_menu_is_zero(self):
+        """源码层面:PromptSession 必须显式关掉菜单预留。"""
+        import ast
+        import pathlib
+
+        src = (pathlib.Path(__file__).resolve().parent.parent
+               / "input_layer.py").read_text(encoding="utf-8")
+        tree = ast.parse(src)
+        found = False
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            if getattr(node.func, "id", "") != "PromptSession":
+                continue
+            kw = {k.arg: k.value for k in node.keywords}
+            assert "reserve_space_for_menu" in kw, (
+                "PromptSession 必须显式设 reserve_space_for_menu=0 "
+                "(默认 8 会参与擦除计算,导致历史被抹)")
+            v = kw["reserve_space_for_menu"]
+            assert isinstance(v, ast.Constant) and v.value == 0, (
+                f"reserve_space_for_menu 应为 0,实际 {ast.unparse(v)}")
+            found = True
+            break
+        assert found, "没找到 PromptSession 构造"
+
+    def test_renderer_reset_before_prompt(self):
+        """每次 prompt 前必须 reset renderer(清 _last_screen)。"""
+        import ast
+        import pathlib
+
+        src = (pathlib.Path(__file__).resolve().parent.parent
+               / "input_layer.py").read_text(encoding="utf-8")
+        tree = ast.parse(src)
+        # 找 _read_via_prompt_toolkit 函数体
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.FunctionDef)
+                    and node.name == "_read_via_prompt_toolkit"):
+                continue
+            body = ast.unparse(node)
+            assert "renderer.reset()" in body, (
+                "必须在 prompt 前重置 renderer —— 否则 prompt_toolkit "
+                "会按上次画的高度擦除,抹掉 print 出来的历史")
+            # reset 必须在 prompt 之前
+            assert body.index("renderer.reset()") < body.index(".prompt("), \
+                "reset 必须在 prompt 调用之前"
+            return
+        raise AssertionError("没找到 _read_via_prompt_toolkit")
+
+    def test_real_session_config(self):
+        """实构造一次 session,确认参数真的生效。"""
+        from prompt_toolkit import PromptSession
+        from prompt_toolkit.input import create_pipe_input
+        from prompt_toolkit.output import DummyOutput
+        import input_layer as IL
+
+        with create_pipe_input() as inp:
+            s = PromptSession(
+                key_bindings=IL._build_key_bindings(),
+                reserve_space_for_menu=0,
+                input=inp, output=DummyOutput())
+            assert s.reserve_space_for_menu == 0
+            assert s.app.erase_when_done is False, (
+                "erase_when_done 必须为 False —— 我们不想它擦任何东西")
+            # reset() 后 _last_screen 必须为空
+            s.app.renderer.reset()
+            assert s.app.renderer._last_screen is None
