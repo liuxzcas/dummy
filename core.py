@@ -372,14 +372,19 @@ class _InterruptListener:
         于是这一行没人清。下一轮任何工具执行时 peek 又看到它 →
         立刻再打断 → 每一轮都触发一次。
 
-        修法:确认打断的那一刻就把这一行取走。返回是否真的取到了
-        (调用方据此决定要不要触发)。
+        ============ 为什么只吃 /p,其他行原样留着 ============
+        第一版无条件把整行切走 —— 实测会让用户**打错字的行丢失**
+        (poll 看一眼就把 "hello" 吃了,后面检查点再也拿不到)。
+        现在:是 /p 才切走;不是就原样放回,交给后面的 take_line。
         """
         with self._lock:
-            if chr(10) in self._buffer:
-                line, self._buffer = self._buffer.split(chr(10), 1)
-                return line.strip().startswith("/p")
-        return False
+            if chr(10) not in self._buffer:
+                return False
+            first, rest = self._buffer.split(chr(10), 1)
+            if not first.strip().startswith("/p"):
+                return False        # 不是打断指令 → 不动 buffer
+            self._buffer = rest     # 是 /p → 取走这一行
+            return True
 
 
 class DummyAgent:
@@ -497,8 +502,12 @@ class DummyAgent:
         # 这是 autopilot 下唯一能打断长命令的路径:那边 confirm 直接返回
         # "y",没有 read_plain(prompt_toolkit)那段输入环节可依赖。
         from tools import terminal as _terminal_mod
-        _terminal_mod.set_interrupt_probe(
-            self._interrupt_listener.consume_interrupt)
+        # ============ 输入源抽象(2026-11-11 第 2 步) ============
+        # core 只依赖 InputSource 契约,不关心底层是 msvcrt 监听器
+        # 还是 prompt_toolkit 的 queue。第 3-4 步换实现即可。
+        from input_source import ListenerSource
+        self._input_source = ListenerSource(self._interrupt_listener)
+        _terminal_mod.set_interrupt_probe(self._input_source.poll)
 
         # 工具循环护栏(P1a):循环内实时数两类"原地打转"——
         # 完全相同调用反复失败 / 只读调用毫无进展。
@@ -587,6 +596,15 @@ class DummyAgent:
             self._settle_history()
             self._cleanup_round_temp_files()
             self._report_garage_changes()
+            # ============ 轮末清空输入残留(2026-11-11 第 2 步) ============
+            # 用户报障过:"下一轮对话我啥也不打又开始一直触发 /p 停止。"
+            # 根因是打断信号没被清干净,留到下一轮。虽然有消费逻辑,
+            # 但轮末统一 drain 是最后一道保险 —— 一轮结束后,
+            # 之前攒下的一切输入都不该再影响下一轮。
+            try:
+                self._input_source.drain()
+            except Exception:
+                pass
 
     def _report_garage_changes(self) -> None:
         """autopilot 下,本轮结束时报一句 garage 新增了什么。
@@ -1877,12 +1895,18 @@ class DummyAgent:
         return confirm
 
     def _drain_interrupt(self) -> bool:
-        """检查点调用:监听线程累积的行中是否有 /p 触发。
+        """检查点调用:输入源里有没有待处理的中断?
 
-        实时监听只认 '/p' 前缀(后面的内容全部忽略,不解析为提示词);
-        触发后提示词由打断处理点统一收集(阻塞式 input)。
+        ============ 2026-11-11 起走 input_source 抽象 ============
+        原来直接调 _interrupt_listener.take_line() + 判 /p 前缀。
+        现在改成委托给 self._input_source —— 这样第 3-4 步把
+        msvcrt 监听器换成 prompt_toolkit 的 queue 时,
+        core 这边一行都不用改。
+
+        当前是 ListenerSource:只有 /p 前缀算打断(保持原行为)。
+        换成 QueueSource 后:**任何回车提交的非空行**都算打断。
         """
-        line = self._interrupt_listener.take_line()
+        line = self._input_source.take()
         return bool(line and line.startswith("/p"))
 
     # ---------------------------------------------------------------

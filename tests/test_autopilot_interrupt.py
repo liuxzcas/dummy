@@ -227,9 +227,17 @@ class TestNoGhostInterrupt:
         assert l.consume_interrupt() is False
 
     def test_probe_is_consume_not_peek(self):
-        """接线检查:探针必须是 consume 语义,不能是 peek。
+        """接线检查:探针必须是**消费**语义,不能是只读的 peek。
 
-        这是本轮 bug 的直接防线 —— 用 peek 会留幽灵 /p。
+        ============ 这条测试的两次演进(都是用户实测逼出来的) ============
+        第一版:探针接 peek_interrupt(只读)→ /p 留在 buffer,
+                下一轮每轮自动触发(用户:"我啥也不打又开始一直触发")。
+        现在:  走 input_source.poll() —— ListenerSource.poll 内部
+                用 consume_interrupt,QueueSource.poll 用只读探测
+                (因为队列内容要注入给模型,不能取走就丢)。
+
+        所以检查点变了:**探针必须绑在 input_source.poll 上**,
+        不再直接绑监听器的方法。这样将来换实现也不用改 core。
         """
         import ast
         import pathlib
@@ -244,10 +252,10 @@ class TestNoGhostInterrupt:
             body = ast.unparse(node)
             if "set_interrupt_probe" not in body:
                 continue
-            assert "consume_interrupt" in body, (
-                "探针必须是 consume_interrupt —— 用 peek 会留下幽灵 /p,"
-                "导致下一轮每轮都自动触发打断")
-            assert "peek_interrupt)" not in body
+            assert "_input_source.poll" in body, (
+                "探针必须绑在 input_source.poll 上 —— 直接绑监听器会让"
+                "第 3-4 步换输入源时漏改,而且 peek 语义会留幽灵 /p")
+            assert "peek_interrupt" not in body
             return
         raise AssertionError("没找到注入探针的地方")
 
