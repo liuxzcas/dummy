@@ -147,6 +147,62 @@ def _env_int(name: str, default: int) -> int:
     return value if value >= 1 else default
 
 
+def _tool_text(result) -> str:
+    """取工具返回值的**文本视图**(用于预览、日志、教训、观察记录)。
+
+    ============ 为什么需要它(2026-11-10) ============
+    工具返回值有两种形态(str / _multimodal dict),但一堆地方只想要
+    一段可读文本:
+        · core.py 的工具结果预览(result[:300])
+        · core.py 生成教训时的事件描述
+        · turn_context 的本轮观察记录
+        · guardrails 的错误判定
+    这些地方如果都各写一遍 isinstance 判断,迟早漏(实测已经漏了三处,
+    每次都是运行时 TypeError)。
+
+    统一入口:dict 取 text_summary,str 原样。
+    """
+    if isinstance(result, dict):
+        if result.get("_multimodal"):
+            return str(result.get("text_summary") or "[图片]")
+        return str(result.get("text_summary") or result)
+    return result if isinstance(result, str) else str(result)
+
+
+def _tool_content(result, note: str = ""):
+    """把工具返回值转成 tool 消息的 content。
+
+    ============ 为什么要这一层(2026-11-10) ============
+    工具现在有两种返回形态:
+      · str                     —— 普通文本结果(5 个旧工具都是)
+      · _multimodal dict        —— 带图片(read_image)
+
+    图片必须让 OpenAI 兼容 API 收到**多部分 content 数组**:
+
+        [{"type": "text", "text": "..."},
+         {"type": "image_url", "image_url": {"url": "data:..."}}]
+
+    如果直接把 dict 塞进 content,API 会拒;如果转成 JSON 字符串,
+    模型只会看到一坨 base64 文本 —— 正是 Claude Code issue #1671
+    那个"图片退化成文本、白烧几十万 token"的坑。
+
+    note: 打断旁注(字符串)。dict 情况下并进第一个 text 块。
+    """
+    if isinstance(result, dict) and result.get("_multimodal"):
+        content = list(result.get("content") or [])
+        if note:
+            # 旁注并进第一个 text 块,保持数组结构
+            for i, blk in enumerate(content):
+                if blk.get("type") == "text":
+                    content[i] = {"type": "text",
+                                  "text": blk["text"] + note}
+                    break
+            else:
+                content.insert(0, {"type": "text", "text": note.lstrip()})
+        return content
+    return (result or "") + note
+
+
 class _InterruptListener:
     """随时打断监听器(后台线程,无回显)。
 
@@ -721,7 +777,10 @@ class DummyAgent:
                         tool_name, sig_args, result)
 
                     # 打印执行结果摘要
-                    result_preview = result[:300] + "..." if len(result) > 300 else result
+                    # (_tool_text:图片结果是 dict,不能直接切片/len)
+                    text_view = _tool_text(result)
+                    result_preview = (text_view[:300] + "..."
+                                      if len(text_view) > 300 else text_view)
                     ui.show(KIND_TOOL_RESULT, result_preview, tool=tool_name, indent="  ")
 
                     # Phase 3 Step 3:工具错误 → 即时反思生成教训
@@ -746,7 +805,7 @@ class DummyAgent:
                     if interrupt_triggered:
                         self.history.append({
                             "role": "tool", "tool_call_id": tool_call_id,
-                            "content": result + INTERRUPTED_RESULT_NOTE})
+                            "content": _tool_content(result, INTERRUPTED_RESULT_NOTE)})
                         break
 
                     # -------------------------------------------------------
@@ -758,7 +817,7 @@ class DummyAgent:
                     self.history.append({
                         "role": "tool",
                         "tool_call_id": tool_call_id,
-                        "content": result,
+                        "content": _tool_content(result),
                     })
                     self._persist_history()
 
@@ -1396,7 +1455,7 @@ class DummyAgent:
             return
         self._tool_error_reflections += 1
         items = generate_lesson(
-            self.llm, f"工具 {tool_name} 执行失败: {result[:200]}")
+            self.llm, f"工具 {tool_name} 执行失败: {_tool_text(result)[:200]}")
         for item in items:
             self.session_store.add_lesson(
                 self.current_session_id, item["lesson"], item["category"],

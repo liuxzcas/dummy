@@ -48,9 +48,24 @@ MAX_RUNS = 12
 MAX_DIGEST = 160
 
 
-def _digest(text: str | None) -> str:
-    """把一段输出压成一行摘要。"""
-    flat = " ".join((text or "").split())
+def _digest(text) -> str:
+    """把一段输出压成一行摘要。
+
+    ============ 兼容 _multimodal 返回值(2026-11-10) ============
+    工具可能返回 dict(带图片)。这里如果直接 .split() 会抛
+    AttributeError —— 实测就是这样撞上的。
+
+    图片只记一句"图片 N 块",不把 base64 灌进本轮观察记录
+    (否则每轮 5KB 的 base64 会把上下文撑爆)。
+    """
+    if isinstance(text, dict):
+        if text.get("_multimodal"):
+            n = len(text.get("content") or [])
+            return f"[图片 {n} 块]"
+        text = text.get("text_summary") or str(text)
+    if not isinstance(text, str):
+        text = str(text or "")
+    flat = " ".join(text.split())
     return flat[:MAX_DIGEST] + ("…" if len(flat) > MAX_DIGEST else "")
 
 

@@ -10,6 +10,7 @@ from .read_file import read_file_handler
 from .write_file import write_file_handler
 from .web_search import web_search_handler
 from .web_extract import web_extract_handler
+from .read_image import read_image_handler
 
 
 def create_default_registry() -> ToolRegistry:
@@ -158,6 +159,37 @@ handler=web_search_handler,
         },
                 required=["url"],
 handler=web_extract_handler,
+    )
+
+    # ---- read_image ----
+    registry.register(
+        name="read_image",
+        description=(
+            "读取本地图片并交给模型查看（多模态）。"
+            "当需要理解截图、照片、图表、扫描件等图片内容时使用。"
+            "本工具不做 OCR —— 图片直接送给模型,由模型自己看图。"
+            "相对路径以 garage 为基准,也可用绝对路径。"
+            "可选 question 指定你想从图片里得到什么答案,"
+            "比让模型自由描述更聚焦。"
+            "注意:图片会发送给在线模型,请确认不含敏感信息。"
+        ),
+        parameters={
+            "path": {
+                "type": "string",
+                "description": "图片路径。相对路径以 garage 为基准。",
+            },
+            "question": {
+                "type": "string",
+                "description": (
+                    "可选。针对这张图的具体问题,例如"
+                    "'这个报错是什么原因' / '表格第三列是什么'。"
+                    "不传则让模型自由描述图片内容。"
+                ),
+            },
+        },
+        required=["path"],
+        handler=read_image_handler,
+        confirm=True,   # 图片会发给在线模型,需用户确认(隐私提示)
     )
 
     return registry

@@ -161,19 +161,38 @@ class ToolRegistry:
         """获取所有工具定义列表（发给 LLM 的 tools 参数）。"""
         return [tool.schema for tool in self._tools.values()]
 
-    def _normalize_result(self, raw: Any) -> str:
-        """将任意类型的工具返回值规范化为字符串。
+    def _normalize_result(self, raw: Any) -> Any:
+        """将工具返回值规范化。
 
         规则：
         - None → ""
         - str → 原样返回
+        - **_multimodal 标记的 dict → 原样返回(不改 JSON 字符串)**
         - list/dict → json.dumps()
         - 其他 → str()
+
+        ============ 为什么要放行 _multimodal(2026-11-10) ============
+        图片工具的返回值必须是结构化的:
+
+            {"_multimodal": True,
+             "content": [{"type": "text", ...},
+                         {"type": "image_url", "image_url": {...}}],
+             "text_summary": "..."}
+
+        如果这里按老规则 json.dumps 成字符串,模型收到的会是
+        {"_multimodal": true, "content": [...]} 这一坨**文本**,
+        根本看不到图片 —— 正是 Claude Code issue #1671 里
+        "图片退化成 base64 文本"的那个坑。
+
+        所以带 _multimodal 标记的 dict 直接透传,交给 core 转成
+        OpenAI 多部分 content。
         """
         if raw is None:
             return ""
         if isinstance(raw, str):
             return raw
+        if isinstance(raw, dict) and raw.get("_multimodal"):
+            return raw          # ← 图片:原样交给 core
         if isinstance(raw, (list, dict)):
             try:
                 return json.dumps(raw, ensure_ascii=False)
@@ -284,8 +303,9 @@ class ToolRegistry:
 
         # ---- 4. 结果规范化 ----
         result_str = self._normalize_result(result)
-        # 错误特征计数:返回串含 [ToolDispatch]/[错误]/[EXIT CODE 等
-        if is_tool_error(result_str):
+        # 错误特征计数:只对字符串判定。
+        # _multimodal 的 dict(带图片)不是错误,跳过判定直接返回。
+        if isinstance(result_str, str) and is_tool_error(result_str):
             self._record_error(stat, result_str)
         return result_str
 

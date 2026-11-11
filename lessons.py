@@ -72,6 +72,19 @@ def is_tool_error(result: str) -> bool:
       3. 框架级错误标记 → True
     """
     text = result or ""
+    # ============ 兼容 _multimodal 返回值(2026-11-10) ============
+    # 图片工具返回的是 dict(带 _multimodal 标记),不是字符串。
+    # 这里统一转成文本再判定 —— 单点收口,避免每个调用方都各写一遍
+    # isinstance 检查(实测:core.py:1425 和 tool_guardrails.py:242
+    # 都会直接传 dict 进来,后者当场抛 TypeError)。
+    #
+    # 图片结果永远不算错误:能拿到图说明工具执行成功了。
+    if isinstance(result, dict):
+        if result.get("_multimodal"):
+            return False
+        text = result.get("text_summary") or str(result)
+    if not isinstance(text, str):
+        text = str(text)
     if any(m in text for m in NOOP_MARKERS):
         return True
     if "[ToolDispatch]" in text or "[错误]" in text:
