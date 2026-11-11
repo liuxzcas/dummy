@@ -615,8 +615,8 @@ class DummyAgent:
                 return
             preview = ", ".join(added[:5])
             more = f" 等 {len(added)} 项" if len(added) > 5 else ""
-            print(f"\n  🧰 本轮 garage 新增: {preview}{more}")
-            print("     (清空: /workspace clean)")
+            ui.raw(f"\n  🧰 本轮 garage 新增: {preview}{more}")
+            ui.raw("     (清空: /workspace clean)")
         except Exception:
             pass    # 报告是尽力而为,不该影响对话
 
@@ -686,7 +686,7 @@ class DummyAgent:
         if issue and issue not in getattr(self, "_improve_hinted", set()):
             self._improve_hinted = getattr(self, "_improve_hinted", set())
             self._improve_hinted.add(issue)
-            print(f"\n  {paint(f'⚠️ 检测到 {issue} 错误率偏高', YELLOW)}: "
+            ui.raw(f"\n  {paint(f'⚠️ 检测到 {issue} 错误率偏高', YELLOW)}: "
                   f"输入 /improve {issue} 可分析修复")
 
         # -------------------------------------------------------
@@ -817,7 +817,7 @@ class DummyAgent:
                     if guard.action == "report":
                         result = append_guidance(
                             result, self._guardrail_report(guard, sig_args))
-                        print(f"  {paint('ℹ️ 护栏报告', YELLOW)}: "
+                        ui.raw(f"  {paint('ℹ️ 护栏报告', YELLOW)}: "
                               f"{guard.tool_name} 连续相同 {guard.count} 次")
 
                     # 本轮情况:如实记录"做了什么 + 结果长什么样"。
@@ -895,7 +895,7 @@ class DummyAgent:
                     # 追加额外的用户指示,由模型自己决定下一步。
                     if self.autopilot:
                         prompt = ""
-                        print("  🧭 检测到 /p 打断(autopilot:不等待提示词)")
+                        ui.raw("  🧭 检测到 /p 打断(autopilot:不等待提示词)")
                     else:
                         prompt = read_plain(
                             "  🧭 检测到 /p 打断,请输入提示词(Enter 取消): ",
@@ -914,7 +914,7 @@ class DummyAgent:
 
                     if prompt:
                         # 提示词作为用户消息注入,LLM 下一轮看到插话重新规划
-                        print(f"\n  {paint('🧭 用户打断:', YELLOW)} {prompt}")
+                        ui.raw(f"\n  {paint('🧭 用户打断:', YELLOW)} {prompt}")
                         self._append_user_turn(prompt, synthetic="user_interrupt")
                         self._persist_history()
                         continue
@@ -942,7 +942,7 @@ class DummyAgent:
                 ctx = self.turn_context.build_stop_context()
                 if ctx:
                     context_delivered = True
-                    print(f"  {paint('ℹ️ 本轮情况说明已附上', SLATE)}")
+                    ui.raw(f"  {paint('ℹ️ 本轮情况说明已附上', SLATE)}")
                     self.history.append({"role": "assistant", "content": final_text})
                     self._append_user_turn(ctx, synthetic="turn_context")
                     self._persist_history()
@@ -992,7 +992,7 @@ class DummyAgent:
             self._repair_history()
         except Exception as e:
             # 尽力而为:收尾失败不能成为新的故障点
-            print(f"  {paint('⚠️ 历史收尾失败', YELLOW)}: {type(e).__name__}: {e}")
+            ui.raw(f"  {paint('⚠️ 历史收尾失败', YELLOW)}: {type(e).__name__}: {e}")
 
     def _finalize_after_budget_exhausted(self) -> str:
         """轮次用尽:剥掉工具再放一次调用,让模型用已有信息写收尾总结。
@@ -1030,12 +1030,12 @@ class DummyAgent:
             self._accumulate_usage()
             text = (response.content or "").strip()
         except Exception as e:
-            print(f"  {paint('⚠️ 收尾总结失败', YELLOW)}: {type(e).__name__}: {e}")
+            ui.raw(f"  {paint('⚠️ 收尾总结失败', YELLOW)}: {type(e).__name__}: {e}")
 
         if text:
             self.history.append({"role": "assistant", "content": text})
             self._persist_history()
-            print(f"\n  {paint('📋 轮次用尽,已生成收尾总结', YELLOW)}")
+            ui.raw(f"\n  {paint('📋 轮次用尽,已生成收尾总结', YELLOW)}")
 
         self._save_conversation_log()
         return text or fallback
@@ -1081,7 +1081,7 @@ class DummyAgent:
         """
         self.history, closed = close_interrupted_tool_sequence(self.history)
         if closed:
-            print(f"  {paint('🔧 已闭合中断序列', GRAY)}: 补一条合成 assistant 轮次")
+            ui.raw(f"  {paint('🔧 已闭合中断序列', GRAY)}: 补一条合成 assistant 轮次")
         msg: dict[str, Any] = {"role": "user", "content": content}
         if synthetic:
             msg["_meta"] = {"synthetic": synthetic}
@@ -1119,7 +1119,7 @@ class DummyAgent:
         if not stats["total"]:
             return
         self.history = repaired
-        print(f"  {paint('🔧 已自愈历史 tool 配对', YELLOW)}: "
+        ui.raw(f"  {paint('🔧 已自愈历史 tool 配对', YELLOW)}: "
               f"补 {stats['backfilled']} / 删孤儿 {stats['dropped_orphans']} / "
               f"删重复 {stats['dropped_duplicates']}")
         self._persist_history()
@@ -1178,7 +1178,7 @@ class DummyAgent:
             self._log_compression_event(
                 None, last_tokens, error_type="compress_exception", error_msg=str(e)
             )
-            print(f"{paint('⚠️ 压缩异常', YELLOW)}({type(e).__name__}): 已跳过,对话继续")
+            ui.raw(f"{paint('⚠️ 压缩异常', YELLOW)}({type(e).__name__}): 已跳过,对话继续")
             return
 
         persist_error = None
@@ -1194,10 +1194,10 @@ class DummyAgent:
                     )
             except Exception as e:
                 persist_error = str(e)
-                print(f"{paint('⚠️ 压缩后落库失败', YELLOW)}: {e}(内存已更新,下次 persist 重写)")
+                ui.raw(f"{paint('⚠️ 压缩后落库失败', YELLOW)}: {e}(内存已更新,下次 persist 重写)")
         else:
             self.compressor.register_failure()
-            print(f"{paint('⚠️ 压缩失败', YELLOW)}({result.error_type}): 已跳过,对话继续")
+            ui.raw(f"{paint('⚠️ 压缩失败', YELLOW)}({result.error_type}): 已跳过,对话继续")
 
         # 事件日志:成败都记;落库/归档失败也写入 error_type=persist_failed,
         # 使"落库失败率"可统计(plan 6.5,print 不可追溯,error_type 可统计)
@@ -1241,7 +1241,7 @@ class DummyAgent:
             ) as f:
                 f.write(json.dumps(event, ensure_ascii=False) + "\n")
         except Exception as e:
-            print(f"{paint('⚠️ 压缩事件日志写入失败', YELLOW)}: {e}")
+            ui.raw(f"{paint('⚠️ 压缩事件日志写入失败', YELLOW)}: {e}")
 
     # ---------------------------------------------------------------
     # Phase 2.4: 跨 Session 记忆(注入 + 抽取)
@@ -1287,10 +1287,10 @@ class DummyAgent:
         self.history[0] = {"role": "system", "content": new_content}
         self.session_store.increment_memory_hits(ids)
         # 可见性:注入条数 + 历史兜底条数
-        print(f"\n  {paint('🧠 注入记忆', PURPLE)} ({len(ids)}/{len(mems)} 条, ~{total} chars"
+        ui.raw(f"\n  {paint('🧠 注入记忆', PURPLE)} ({len(ids)}/{len(mems)} 条, ~{total} chars"
               f"{f' + 历史 {len(hist_lines)} 条' if hist_lines else ''}):")
         for line in block_lines[2:]:
-            print(f"    {line}")
+            ui.raw(f"    {line}")
 
     def _inject_datetime(self) -> None:
         """注入当前**日期**到 system prompt(精度:天,不是分钟)。
@@ -1477,9 +1477,9 @@ class DummyAgent:
             "content": content + "\n" + "\n".join(block_lines),
         }
         self.session_store.increment_lesson_hits(retrieved_ids)
-        print(f"\n  {paint('🧠 注入教训', PURPLE)} ({len(picked)} 条):")
+        ui.raw(f"\n  {paint('🧠 注入教训', PURPLE)} ({len(picked)} 条):")
         for l in picked:
-            print(f"    - [{l['category']}] {l['lesson'][:60]}")
+            ui.raw(f"    - [{l['category']}] {l['lesson'][:60]}")
 
     def _learn_from_correction(self, user_input: str) -> None:
         """用户纠正 → 即时反思生成教训(旁路 LLM,不影响主对话)。
@@ -1496,7 +1496,7 @@ class DummyAgent:
             self.session_store.add_lesson(
                 self.current_session_id, item["lesson"], item["category"],
                 item.get("applies_when", ""))
-            print(f"\n  {paint('🧠 学到教训', PURPLE)}: {item['lesson']}")
+            ui.raw(f"\n  {paint('🧠 学到教训', PURPLE)}: {item['lesson']}")
 
     def _learn_from_tool_error(self, tool_name: str, result: str) -> None:
         """工具错误 → 即时反思生成教训(旁路 LLM,每轮限 1 次)。
@@ -1518,7 +1518,7 @@ class DummyAgent:
             self.session_store.add_lesson(
                 self.current_session_id, item["lesson"], item["category"],
                 item.get("applies_when", ""))
-            print(f"\n  {paint('🧠 学到教训', PURPLE)}: {item['lesson']}")
+            ui.raw(f"\n  {paint('🧠 学到教训', PURPLE)}: {item['lesson']}")
 
     # ---------------------------------------------------------------
     # Phase 3 Step 4:自我改进闭环(检测→提案→批准→修改→验证→回退)
@@ -1533,22 +1533,22 @@ class DummyAgent:
         """
         stats = self.tools.get_tool_stats()
         if tool_name not in stats:
-            print(f"\n  {paint('❌ 无该工具统计', RED)}: {tool_name}")
+            ui.raw(f"\n  {paint('❌ 无该工具统计', RED)}: {tool_name}")
             return {"status": "no_data", "tool": tool_name}
         if self.llm is None:
             return {"status": "no_llm", "tool": tool_name}
         stat = stats[tool_name]
         proposal = generate_proposal(self.llm, tool_name, stat)
         if not proposal:
-            print(f"\n  {paint('🧭 无法生成修复提案', YELLOW)} (工具 {tool_name})")
+            ui.raw(f"\n  {paint('🧭 无法生成修复提案', YELLOW)} (工具 {tool_name})")
             return {"status": "no_proposal", "tool": tool_name}
         # 展示提案
-        print(f"\n  {paint('🧭 修复提案', YELLOW)} — {tool_name} "
+        ui.raw(f"\n  {paint('🧭 修复提案', YELLOW)} — {tool_name} "
               f"({stat['calls']} 次调用 / {stat['errors']} 次错误):")
-        print(f"    根因: {proposal['root_cause']}")
+        ui.raw(f"    根因: {proposal['root_cause']}")
         for i, ch in enumerate(proposal["changes"], 1):
-            print(f"    {i}. {ch['file']}: {ch['description']}")
-        print(f"    验证计划: {proposal['verification']}")
+            ui.raw(f"    {i}. {ch['file']}: {ch['description']}")
+        ui.raw(f"    验证计划: {proposal['verification']}")
         # 用户批准(I2-A:批准即授权整条链,验证门 + 自动回退兜底)
         try:
             answer = self._make_confirm()(
@@ -1557,7 +1557,7 @@ class DummyAgent:
         except InterruptSignal:
             return {"status": "interrupted", "tool": tool_name}
         if answer != "y":
-            print("\n  已拒绝,不做修改。")
+            ui.raw("\n  已拒绝,不做修改。")
             return {"status": "rejected", "tool": tool_name}
         # 执行修改(受控区协议:检查 → 备份 → 修改 → 验证 → 回退)
         import shutil
@@ -1565,12 +1565,12 @@ class DummyAgent:
             file_path = ch["file"]
             ok, reason = _is_allowed_file(file_path)
             if not ok:
-                print(f"\n  {paint('❌ 禁止修改', RED)}: {reason}")
+                ui.raw(f"\n  {paint('❌ 禁止修改', RED)}: {reason}")
                 return {"status": "blocked", "tool": tool_name,
                         "file": file_path, "reason": reason}
             abs_path = os.path.join(PROJECT_ROOT, file_path)
             if not os.path.isfile(abs_path):
-                print(f"\n  {paint('❌ 文件不存在', RED)}: {file_path}")
+                ui.raw(f"\n  {paint('❌ 文件不存在', RED)}: {file_path}")
                 return {"status": "file_missing", "tool": tool_name,
                         "file": file_path}
             # ② 备份(① git 检查点:git 本身是回退基座,提交由用户掌控)
@@ -1588,7 +1588,7 @@ class DummyAgent:
                     os.remove(backup)
                 except OSError:
                     pass
-                print(f"\n  {paint('⛔ 修改应用失败,已回退', RED)}: {e}")
+                ui.raw(f"\n  {paint('⛔ 修改应用失败,已回退', RED)}: {e}")
                 return {"status": "apply_failed", "tool": tool_name,
                         "file": file_path, "error": str(e)}
             # ④⑤⑥ 验证门链
@@ -1604,9 +1604,9 @@ class DummyAgent:
                         self.current_session_id,
                         f"自我改进修改 {file_path} 失败: {fail}",
                         "self-improve")
-                print(f"\n  {paint('⛔ 验证失败,已自动回退', RED)}:")
+                ui.raw(f"\n  {paint('⛔ 验证失败,已自动回退', RED)}:")
                 for fail in failures:
-                    print(f"    - {fail}")
+                    ui.raw(f"    - {fail}")
                 entry = {"status": "rolled_back", "tool": tool_name,
                          "file": file_path, "failures": failures,
                          "errors_before": stat["errors"],
@@ -1617,7 +1617,7 @@ class DummyAgent:
                 os.remove(backup)
             except OSError:
                 pass
-            print(f"\n  {paint('✅ 修改成功', GREEN)}: {file_path}(验证门全过)")
+            ui.raw(f"\n  {paint('✅ 修改成功', GREEN)}: {file_path}(验证门全过)")
         entry = {"status": "ok", "tool": tool_name,
                  "changes": [c["file"] for c in proposal["changes"]],
                  "errors_before": stat["errors"],
@@ -1669,7 +1669,7 @@ class DummyAgent:
         except Exception:
             return
         if facts:
-            print(f"  {paint('🧠 已抽取', PURPLE)} {facts} 条事实({conflicts} 条覆盖旧事实)")
+            ui.raw(f"  {paint('🧠 已抽取', PURPLE)} {facts} 条事实({conflicts} 条覆盖旧事实)")
 
     def resume_last_session(self) -> bool:
         """恢复数据库中最新的会话历史到当前 Agent。"""
@@ -1695,7 +1695,7 @@ class DummyAgent:
             # 抢别人的会话会让两边的历史交错,而沙箱里本来就不该
             # 同时开两个 dummy 用同一个会话。
             if self.autopilot:
-                print(f"  会话被其他进程持有,autopilot 下不接管: {msg}")
+                ui.raw(f"  会话被其他进程持有,autopilot 下不接管: {msg}")
                 return False
             try:
                 answer = read_plain(
@@ -1705,13 +1705,13 @@ class DummyAgent:
             except EOFError:
                 answer = "n"
             if answer != "y":
-                print("  已放弃恢复该会话。")
+                ui.raw("  已放弃恢复该会话。")
                 return False
             # 强制接管:force 覆盖他人锁
             ok, msg = self.session_store.acquire_session_lock(
                 session_id, self._session_owner, force=True)
         if not ok:
-            print(f"  无法锁定会话: {msg}")
+            ui.raw(f"  无法锁定会话: {msg}")
             return False
         self.current_session_id = session_id
         self.history = history
@@ -1746,7 +1746,7 @@ class DummyAgent:
         except Exception:
             with open(log_path, "w", encoding="utf-8") as f:
                 f.write(str(self.history))
-            print(f"[警告] 对话历史保存为非 JSON 格式: {log_path}")
+            ui.raw(f"[警告] 对话历史保存为非 JSON 格式: {log_path}")
             pass  # 日志写入失败不影响主流程
 
     @staticmethod
@@ -1865,10 +1865,10 @@ class DummyAgent:
             # 仍然打印 prompt:用户要看得到"系统问了什么、系统答了什么",
             # 否则自动跑完一头雾水,不知道中间批准了什么。
             if self.autopilot:
-                print(prompt.rstrip() + " [autopilot] 自动批准")
+                ui.raw(prompt.rstrip() + " [autopilot] 自动批准")
                 return "y"
             # 走输入层:已含 pause/resume(避免与监听器抢控制台)
-            print(prompt)
+            ui.raw(prompt)
             raw = read_plain(
                 "     或输入 /p 打断(随后输入提示词): ", self).strip()
             if raw.startswith("/p"):

@@ -216,7 +216,7 @@ class UI:
         out = self.renderer.render(msg)
         if out is None:
             return
-        print(out)
+        safe_print(out)
 
     # ---- 拼 + 印(最常用) ----
     def show(self, kind: str, text: str = "", **kw) -> None:
@@ -229,7 +229,7 @@ class UI:
         out = self.renderer.render(Message(kind=KIND_RAW, raw=text))
         if out is None:
             return
-        print(out, end=end)
+        safe_print(out, end=end)
 
     # ---- 输入提示符(需要返回字符串给 input()) ----
     # 用 paint_prompt 而非 paint:提示符的 ANSI 码要用 \001/\002 包裹,
@@ -254,6 +254,69 @@ def _make_ui() -> UI:
     except Exception:
         pass
     return UI(PlainRenderer())
+
+
+# ============================================================
+# 线程安全的打印(2026-11-11 输入架构改造 第 1 步)
+# ============================================================
+# ============ 为什么需要 ============
+# 改造目标(用户):"agent 处理 tool calling 时依旧等待用户输入,
+# 用户可以在命令行输入和编辑任意东西。"
+#
+# 那意味着 agent 要跑在【后台线程】,主线程被 prompt_toolkit 的
+# Application 占着渲染输入区。此时后台线程直接 print() 会把
+# 输入区画花 —— 这正是用户此前报的"工具轮间清屏/历史被擦掉"
+# 的同一类问题(两个写入方 + 一个在管理光标)。
+#
+# prompt_toolkit 官方解法是 run_in_terminal():它会先暂停渲染、
+# 让出光标,打印完再恢复。
+#
+# ============ 为什么不是无脑用它 ============
+# run_in_terminal 只在**有一个正在运行的 Application** 时才成立。
+# dummy 现在(第 1 步)还没有 Application:主线程在 session.prompt()。
+# 所以要按"当前有没有活跃 app"分流:
+#   · 有 → run_in_terminal(改造第 3、4 步之后)
+#   · 没有 → 直接 print(现在的行为,零变化)
+#
+# 现在把入口建好、留好分流点,第 3-5 步只需要让 get_app() 返回
+# 真对象,输出侧不用再改。
+_active_app = None
+
+
+def set_active_app(app) -> None:
+    """由 prompt_toolkit 应用注册自己(改造第 3 步调用)。"""
+    global _active_app
+    _active_app = app
+
+
+def _printing_app():
+    """返回"正在运行且需要接管打印"的 app;没有则 None。
+
+    取 app.running 而不是只看 set_active_app —— 应用退出后
+    run_in_terminal 会抛异常,必须退回直接打印。
+    """
+    app = _active_app
+    try:
+        return app if app is not None and app.is_running else None
+    except Exception:
+        return None
+
+
+def safe_print(text: str, end: str = "\n") -> None:
+    """线程安全的打印:有活跃 app 时暂停输入区,否则直接 print。
+
+    所有 ui 输出(core.py 的 42 处 print 也走这里)最终都落到这。
+    """
+    app = _printing_app()
+    if app is None:
+        print(text, end=end)
+        return
+    try:
+        from prompt_toolkit.application import run_in_terminal
+        run_in_terminal(lambda: print(text, end=end), in_executor=False)
+    except Exception:
+        # 任何异常都不能让输出丢失 —— 退回直接打印
+        print(text, end=end)
 
 
 ui = _make_ui()

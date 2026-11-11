@@ -32,6 +32,7 @@ import difflib
 import py_compile
 
 from colors import paint, YELLOW, NEUTRAL, RED, GREEN
+from ui import ui
 import workspace
 
 
@@ -92,7 +93,7 @@ def _show_diff(old: str, new: str, path: str, _confirm) -> bool:
     new_lines = new.splitlines(keepends=True)
 
     if old_lines == new_lines:
-        print(f"  文件内容无变化，跳过写入: {path}")
+        ui.raw(f"  文件内容无变化，跳过写入: {path}")
         return False
 
     diff = list(difflib.unified_diff(
@@ -105,28 +106,28 @@ def _show_diff(old: str, new: str, path: str, _confirm) -> bool:
     MAX_DIFF_LINES = 40
     if len(diff) > MAX_DIFF_LINES:
         for line in diff[:MAX_DIFF_LINES // 2]:
-            print(f"  {_colorize_diff_line(line)}")
-        print(f"  ... (省略 {len(diff) - MAX_DIFF_LINES} 行)")
+            ui.raw(f"  {_colorize_diff_line(line)}")
+        ui.raw(f"  ... (省略 {len(diff) - MAX_DIFF_LINES} 行)")
         for line in diff[-MAX_DIFF_LINES // 2:]:
-            print(f"  {_colorize_diff_line(line)}")
+            ui.raw(f"  {_colorize_diff_line(line)}")
     else:
         for line in diff:
-            print(f"  {_colorize_diff_line(line)}")
+            ui.raw(f"  {_colorize_diff_line(line)}")
 
     # 统计变更量
     added = sum(1 for l in diff if l.startswith("+") and not l.startswith("+++"))
     removed = sum(1 for l in diff if l.startswith("-") and not l.startswith("---"))
-    print(f"\n{paint('📝 write_file 将覆盖', NEUTRAL)}: {path}")
-    print(f"  旧: {len(old_lines)} 行 → 新: {len(new_lines)} 行 (+{added}/-{removed})")
-    print()
+    ui.raw(f"\n{paint('📝 write_file 将覆盖', NEUTRAL)}: {path}")
+    ui.raw(f"  旧: {len(old_lines)} 行 → 新: {len(new_lines)} 行 (+{added}/-{removed})")
+    ui.raw()
     choice = ""
     while choice not in ("y", "n", "d"):
         choice = _confirm("  输入 y 确认写入 / n 拒绝 / d 查看完整 diff: ").strip().lower()
     if choice == "d":
         # 显示完整 diff（通过分页）
         for line in diff:
-            print(f"  {_colorize_diff_line(line)}")
-        print()
+            ui.raw(f"  {_colorize_diff_line(line)}")
+        ui.raw()
         choice = _confirm("  输入 y 确认写入 / n 拒绝: ").strip().lower()
 
     return choice == "y"
@@ -202,16 +203,16 @@ def write_file_handler(path: str, content: str, mode: str = "overwrite", verify:
     in_garage = workspace.is_inside_garage(full_path)
     in_project = full_path.startswith(project_root)
     if not in_garage and not in_project:
-        print(f"   项目: {project_root}")
-        print(f"{paint('⚠️ write_file 试图写到项目目录之外', YELLOW)}:")
-        print(f"   目标: {full_path}")
+        ui.raw(f"   项目: {project_root}")
+        ui.raw(f"{paint('⚠️ write_file 试图写到项目目录之外', YELLOW)}:")
+        ui.raw(f"   目标: {full_path}")
         choice = 0
         if _confirm is not None:
             while choice not in ("y", "n"):
                 choice = _confirm("  输入 y 确认写入 / n 拒绝: ").strip().lower()
         if choice != "y":
             return f"[用户拒绝将内容写到项目目录之外] 写入已取消: {path}"
-        print()  # 空行，让后续输出不挤在一起
+        ui.raw()  # 空行，让后续输出不挤在一起
 
     # ---- 写入 ----
     try:
@@ -246,9 +247,9 @@ def write_file_handler(path: str, content: str, mode: str = "overwrite", verify:
                 old_content = f.read()
             # 追加确认(零副作用:确认通过才合并;非 y/n 输入重新等待)
             if _confirm is not None:
-                print(f"  {paint('write_file 追加模式', NEUTRAL)}: 将追加 {len(content)} 字符到 {path}")
+                ui.raw(f"  {paint('write_file 追加模式', NEUTRAL)}: 将追加 {len(content)} 字符到 {path}")
                 for nl in content.splitlines():
-                    print(f"  {_colorize_diff_line(f'+ {nl}')}")
+                    ui.raw(f"  {_colorize_diff_line(f'+ {nl}')}")
                 choice = ""
                 while choice not in ("y", "n"):
                     choice = _confirm("  输入 y 确认追加 / n 拒绝: ").strip().lower()
@@ -293,11 +294,11 @@ def write_file_handler(path: str, content: str, mode: str = "overwrite", verify:
             new_text = "".join(new_lines)
             # ---- 行级确认（替换前，零副作用；非 y/n 输入重新等待） ----
             if _confirm is not None:
-                print(f"  {paint('write_file line 模式', NEUTRAL)}: 修改第{line}~{end}行 ({len(old_range)}行 → {len(new_lines)}行)")
+                ui.raw(f"  {paint('write_file line 模式', NEUTRAL)}: 修改第{line}~{end}行 ({len(old_range)}行 → {len(new_lines)}行)")
                 for ol in old_range:
-                    print(f"  {_colorize_diff_line(f'- {ol.rstrip()}')}")
+                    ui.raw(f"  {_colorize_diff_line(f'- {ol.rstrip()}')}")
                 for nl in new_lines:
-                    print(f"  {_colorize_diff_line(f'+ {nl.rstrip()}')}")
+                    ui.raw(f"  {_colorize_diff_line(f'+ {nl.rstrip()}')}")
                 choice = ""
                 while choice not in ("y", "n"):
                     choice = _confirm("  输入 y 确认修改 / n 拒绝: ").strip().lower()
@@ -307,14 +308,14 @@ def write_file_handler(path: str, content: str, mode: str = "overwrite", verify:
             old_lines[line - 1:end] = new_lines
             content = "".join(old_lines)
             # 展示修改的差异
-            print(f"  write_file line 模式: 修改第{line}~{end}行 ({len(old_range)}行 → {len(new_lines)}行)")
+            ui.raw(f"  write_file line 模式: 修改第{line}~{end}行 ({len(old_range)}行 → {len(new_lines)}行)")
             for ol, nl in zip(old_range, new_lines):
                 if ol != nl:
-                    print(f"  {_colorize_diff_line(f'- {ol.rstrip()}')}")
-                    print(f"  {_colorize_diff_line(f'+ {nl.rstrip()}')}")
+                    ui.raw(f"  {_colorize_diff_line(f'- {ol.rstrip()}')}")
+                    ui.raw(f"  {_colorize_diff_line(f'+ {nl.rstrip()}')}")
                     break
             if len(old_range) != len(new_lines):
-                print(f"  (共替换 {len(old_range)} 行 → {len(new_lines)} 行)")
+                ui.raw(f"  (共替换 {len(old_range)} 行 → {len(new_lines)} 行)")
 
         # ---- 原子写入 ----
         # 先写临时文件，再 rename，确保不会留下半截文件
