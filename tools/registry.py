@@ -212,6 +212,13 @@ class ToolRegistry:
                 raise TimeoutError(
                     f"工具 '{tool.name}' 执行超时（{tool.timeout} 秒）"
                 )
+            except InterruptSignal:
+                # ============ /p 打断必须原样穿透(2026-11-11) ============
+                # future.result() 会把 handler 里抛的异常重新抛出。
+                # 如果不在这里显式放行，它会被下面 dispatch 的
+                # `except Exception` 兜成一条"执行异常"字符串 ——
+                # 打断就变成了"工具报错"，模型继续跑，loop 停不下来。
+                raise
 
     def dispatch(self, tool_name: str, arguments: dict) -> str:
         """根据工具名称和参数执行对应的 handler。

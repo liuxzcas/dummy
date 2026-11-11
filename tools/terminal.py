@@ -46,6 +46,7 @@ from colors import paint, YELLOW, CYAN
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from env_probe import describe_environment   # noqa: E402
 import workspace                            # noqa: E402
+from .registry import InterruptSignal       # noqa: E402
 from ui import ui                            # noqa: E402
 from tools.tasks import tasks, kill_process_tree   # noqa: E402
 
@@ -93,10 +94,11 @@ MAX_TIMEOUT = 600         # 上限(秒)。对齐两家的硬上限(600)
 
 
 def _run_shell(command: str, timeout: int = DEFAULT_TIMEOUT, task=None,
-               cwd: str | None = None):
+               cwd: str | None = None, on_poll=None):
     """执行命令:优先 git-bash,回退系统默认 shell。
 
-    返回 (stdout_bytes, stderr_bytes, returncode, shell_name, timed_out)。
+    返回 (stdout_bytes, stderr_bytes, returncode, shell_name, timed_out,
+          interrupted)。
 
     ============ 为什么要自己开线程读管道(2026-09-18 实测) ============
     最初用 subprocess.run(timeout=N),发现超时**不能精确中止**:
@@ -213,18 +215,51 @@ def _run_shell(command: str, timeout: int = DEFAULT_TIMEOUT, task=None,
                 break       # shell 已退出,再探也没用(链已断)
             time.sleep(0.1)
 
-    # ---- 主线程计时 ----
+    # ---- 主线程计时(可被 /p 打断)----
+    #
+    # ============ 为什么不是直接 proc.wait(timeout)(2026-11-11 用户报障) ============
+    # 用户:"autopilot 模式下 /p 不能终止 tool calling loop"
+    #
+    # 根因链:
+    #   ① 非 autopilot 时,工具跑完会进 confirm → read_plain → prompt_toolkit
+    #      在活动,用户敲的 /p 由它读到并返回 → confirm 检测到 → raise
+    #      InterruptSignal。**这条路能打断。**
+    #   ② autopilot 时 confirm 直接 return "y",全程没有输入调用;
+    #      打断完全依赖 _InterruptListener 的 msvcrt.kbhit() 轮询。
+    #   ③ 而 terminal 工具这里 proc.wait(timeout) 把主线程**彻底阻塞**,
+    #      加上子进程正占着控制台 —— kbhit() 期间极不稳定。
+    #
+    # 所以把"一次性等待整个超时"改成"小步轮询":
+    #   每 POLL_STEP 秒检查一次,顺便调用 on_poll 回调。
+    #   回调由 core 注入(检查监听器 buffer),命中就杀掉子进程并抛
+    #   InterruptSignal —— 让打断**立刻生效**,而不是等命令跑完。
+    #
+    # 注意:这一步只负责"能被打断",不改变超时语义。
+    POLL_STEP = 0.05
     timed_out = False
-    try:
-        proc.wait(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        timed_out = True
-        # 杀整棵树 —— script 里的固定下一步,不问 LLM(见 tasks 模块头的分层原则)
-        kill_process_tree(proc.pid)
-        try:
-            proc.wait(timeout=2)
-        except subprocess.TimeoutExpired:
-            proc.kill()      # 兜底
+    interrupted = False
+    deadline = time.time() + timeout
+    while True:
+        if proc.poll() is not None:
+            break                       # 正常结束
+        if on_poll is not None and on_poll():
+            interrupted = True
+            kill_process_tree(proc.pid)
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+            break
+        if time.time() >= deadline:
+            timed_out = True
+            # 杀整棵树 —— script 里的固定下一步,不问 LLM(见 tasks 模块头的分层原则)
+            kill_process_tree(proc.pid)
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                proc.kill()      # 兜底
+            break
+        time.sleep(POLL_STEP)
 
     # 给读线程一个极短的窗口把缓冲里剩的数据取完。
     #
@@ -240,7 +275,8 @@ def _run_shell(command: str, timeout: int = DEFAULT_TIMEOUT, task=None,
     # 进程被杀那一刻尚未刷出缓冲的极少量尾部输出(可接受)。
     time.sleep(0.3)
 
-    return buf["out"], buf["err"], proc.returncode, shell_name, timed_out
+    return (buf["out"], buf["err"], proc.returncode, shell_name,
+            timed_out, interrupted)
 
 
 # 常见命令的简单说明(确认提示处显示,帮助用户快速理解命令作用)
@@ -258,6 +294,34 @@ def _command_hint(command: str) -> str | None:
         if cmd0 in names:
             return f"{emoji} {desc}"
     return None
+
+
+# ============================================================
+# 打断检查钩子(2026-11-11)
+# ============================================================
+# ============ 为什么需要它 ============
+# 用户:"autopilot 模式下 /p 不能终止 tool calling loop"
+#
+# 非 autopilot 时,打断靠 confirm 里的 read_plain(prompt_toolkit 在活动,
+# 用户敲的 /p 被它读到)。autopilot 下 confirm 直接返回 "y",全程没有
+# 输入调用 —— 打断只剩 msvcrt 轮询这一条路,而 terminal 工具的
+# proc.wait(timeout) 会把主线程彻底阻塞,期间轮询极不稳定。
+#
+# 解法:让长命令执行期间**主动**去问"是否收到 /p"。
+# core 启动时把自己的检查函数装進來(它是唯一知道监听器在哪的人),
+# 本模块只管调用 —— 不在 tools 层引入对 core 的依赖(会循环导入)。
+_interrupt_probe = None
+
+
+def set_interrupt_probe(fn) -> None:
+    """由 core 注入:"现在是否收到 /p?" 的检查函数。"""
+    global _interrupt_probe
+    _interrupt_probe = fn
+
+
+def _default_on_poll() -> bool:
+    """没有注入时永远返回 False(不影响非交互场景,如单测)。"""
+    return bool(_interrupt_probe and _interrupt_probe())
 
 
 # ============================================================
@@ -440,7 +504,8 @@ def _blocked_reason(command: str) -> str | None:
     return None
 
 
-def terminal_handler(command: str, timeout: int | None = None, _confirm=None) -> str:
+def terminal_handler(command: str, timeout: int | None = None, _confirm=None,
+                     on_poll=None) -> str:
     """在本地 shell 中执行命令，返回输出。
 
     确认交互在 handler 内,但输入收集与 '/p' 拦截由 core 注入的
@@ -491,8 +556,15 @@ def terminal_handler(command: str, timeout: int | None = None, _confirm=None) ->
         global _session_cwd
         cwd = _safe_cwd(_session_cwd or workspace.ensure())
         marked = _marked_command(command, "git-bash" if _find_bash() else "cmd")
-        stdout_b, stderr_b, rc, shell_name, timed_out = _run_shell(
-            marked, secs, task, cwd=cwd)
+        on_poll = on_poll or _default_on_poll
+        stdout_b, stderr_b, rc, shell_name, timed_out, interrupted = _run_shell(
+            marked, secs, task, cwd=cwd, on_poll=on_poll)
+        # ============ 命令执行期间收到 /p(2026-11-11) ============
+        # 立刻抛 InterruptSignal 让工具循环停下来 —— 不用等命令跑完,
+        # 也不等检查点。这是 autopilot 下唯一能打断长命令的路径
+        # (那边没有 confirm 的输入环节)。
+        if interrupted:
+            raise InterruptSignal()
         new_cwd = _read_back_cwd()
         if new_cwd:
             _session_cwd = new_cwd
@@ -534,6 +606,15 @@ def terminal_handler(command: str, timeout: int | None = None, _confirm=None) ->
         #  永远不会执行。2026-09-18 删除,避免误导。)
         return "\n".join(output_parts)
 
+    except InterruptSignal:
+        # ============ /p 打断必须原样穿透(2026-11-11) ============
+        # 实测踩到:上面的 except Exception 把它兜成了
+        #   "[错误] 命令执行失败: InterruptSignal: 用户 /p 打断"
+        # 于是打断变成"工具报错"——模型收到这条错误,以为工具失败了,
+        # 换个命令接着干,loop 根本停不下来。
+        # 这正是用户报的"autopilot 下 /p 不能终止 tool calling loop"。
+        tasks.finish(task, timed_out=True)
+        raise
     except Exception as e:
         tasks.finish(task, timed_out=True)
         return f"[错误] 命令执行失败: {type(e).__name__}: {e}"

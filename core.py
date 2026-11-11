@@ -342,6 +342,24 @@ class _InterruptListener:
                 return line.strip() or None
         return None
 
+    def peek_interrupt(self) -> bool:
+        """**不消费**地看一眼:是否已有 /p 打头的一行?(2026-11-11)
+
+        ============ 为什么需要 peek 而不是 take ============
+        长命令执行期间每 50ms 轮询一次。如果用 take_line(),会把
+        用户输入的行**提前吃掉** —— 万一那不是 /p(用户打错字),
+        这一行就丢了,而且后面检查点再也看不到它。
+
+        peek 只读不删:确认是 /p 才由调用方杀进程,之后交回
+        检查点正常消费(这时它还留在 buffer 里,_drain_interrupt
+        会拿到并走统一的打断收尾流程)。
+        """
+        with self._lock:
+            if chr(10) in self._buffer:
+                first = self._buffer.split(chr(10), 1)[0].strip()
+                return first.startswith("/p")
+        return False
+
 
 class DummyAgent:
     """
@@ -451,6 +469,15 @@ class DummyAgent:
 
         # 随时打断监听器(工具运行中/LLM 等待时用户可输入 /p 触发)
         self._interrupt_listener = _InterruptListener()
+        # ============ 把 /p 检查能力交给 terminal 工具(2026-11-11) ============
+        # 长命令执行期间(proc.wait 阻塞主线程)由工具每 50ms 回调这里。
+        # peek 不消费 buffer —— 确认是 /p 才杀进程,随后检查点照常收尾。
+        #
+        # 这是 autopilot 下唯一能打断长命令的路径:那边 confirm 直接返回
+        # "y",没有 read_plain(prompt_toolkit)那段输入环节可依赖。
+        from tools import terminal as _terminal_mod
+        _terminal_mod.set_interrupt_probe(
+            self._interrupt_listener.peek_interrupt)
 
         # 工具循环护栏(P1a):循环内实时数两类"原地打转"——
         # 完全相同调用反复失败 / 只读调用毫无进展。
