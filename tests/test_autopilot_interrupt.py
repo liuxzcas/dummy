@@ -177,3 +177,112 @@ class TestProbeWiring:
         """单测/非交互环境下没有 probe,程序不能崩或被误打断。"""
         T.set_interrupt_probe(None)
         assert T._default_on_poll() is False
+
+
+# ============================================================
+# ⑤ "幽灵 /p":打断一次之后,不能每轮都自动触发
+# ============================================================
+class TestNoGhostInterrupt:
+    """用户报障(2026-11-11):
+    "我打 /p 不能立马停止,结果到了下一轮对话我啥也不打
+     又开始一直触发 /p 停止。"
+
+    ============ 根因 ============
+    第一版探针用的是 peek_interrupt(**不消费**),于是:
+
+        ① 命令执行中敲 /p → buffer = "/p\n"
+        ② peek → True → 杀进程、抛 InterruptSignal
+        ③ **buffer 里那行还在**
+        ④ interrupt_triggered=True → 检查点 B 的
+           `if not interrupt_triggered` 判断为 False → **跳过 drain**
+        ⑤ 这一行永远没人清
+        ⑥ 下一轮任何工具执行,peek 又看到它 → 立刻再打断
+           → **每轮都触发一次,直到 LLM 返回文本**
+
+    ============ 修法 ============
+    · 探针改成 consume_interrupt():确认打断的同时把行取走
+    · 检查点 A/B 改成**无条件** drain:即使已经在打断流程里,
+      也要把 buffer 清干净(漏清 = 留下幽灵 /p)
+    """
+
+    def test_consume_interrupt_removes_line(self):
+        l = core._InterruptListener()
+        with l._lock:
+            l._buffer += "/p" + chr(10)
+        assert l.consume_interrupt() is True
+        # 消费后 buffer 必须干净
+        assert l.consume_interrupt() is False, "第二行不该还有 /p"
+        assert l.take_line() is None, "buffer 应该空了"
+
+    def test_consume_returns_false_for_other_input(self):
+        """不是 /p 的行要被消费掉吗?——是的,但返回 False。
+
+        (这一行会由 take_line 之外的方式丢掉?不 —— 见下一条:
+         实际上 consume 也会把它取走,所以调用方只在返回 True 时
+         才当打断处理。)
+        """
+        l = core._InterruptListener()
+        with l._lock:
+            l._buffer += "hello" + chr(10)
+        assert l.consume_interrupt() is False
+
+    def test_probe_is_consume_not_peek(self):
+        """接线检查:探针必须是 consume 语义,不能是 peek。
+
+        这是本轮 bug 的直接防线 —— 用 peek 会留幽灵 /p。
+        """
+        import ast
+        import pathlib
+
+        src = (pathlib.Path(__file__).resolve().parent.parent
+               / "core.py").read_text(encoding="utf-8")
+        tree = ast.parse(src)
+
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.FunctionDef) or node.name != "__init__":
+                continue
+            body = ast.unparse(node)
+            if "set_interrupt_probe" not in body:
+                continue
+            assert "consume_interrupt" in body, (
+                "探针必须是 consume_interrupt —— 用 peek 会留下幽灵 /p,"
+                "导致下一轮每轮都自动触发打断")
+            assert "peek_interrupt)" not in body
+            return
+        raise AssertionError("没找到注入探针的地方")
+
+    def test_checkpoints_drain_unconditionally(self):
+        """检查点不能再写 `if not interrupt_triggered: drain()`。
+
+        那样在"已经打断过"时会跳过清理,残留行留到下一轮。
+        """
+        import ast
+        import pathlib
+
+        src = (pathlib.Path(__file__).resolve().parent.parent
+               / "core.py").read_text(encoding="utf-8")
+        tree = ast.parse(src)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "_chat_impl":
+                body = ast.unparse(node)
+                assert "if not interrupt_triggered:\n                interrupt_triggered = self._drain_interrupt()" not in body, \
+                    "检查点还在条件 drain —— 会留幽灵 /p"
+                return
+        raise AssertionError("没找到 _chat_impl")
+
+    def test_no_ghost_after_interrupt(self):
+        """端到端:打断一次后,后续工具执行不该再自动被打断。"""
+        T.set_interrupt_probe(None)
+        agent = core.DummyAgent(None, create_default_registry(),
+                                system_prompt="P")
+        lis = agent._interrupt_listener
+
+        # 模拟:用户在命令执行中敲了 /p
+        with lis._lock:
+            lis._buffer += "/p" + chr(10)
+
+        # 第一次:应该触发
+        assert lis.consume_interrupt() is True
+        # 第二次(下一轮工具执行):不该再触发
+        assert lis.consume_interrupt() is False, \
+            "幽灵 /p:第一次打断后 buffer 没清干净"

@@ -350,14 +350,35 @@ class _InterruptListener:
         用户输入的行**提前吃掉** —— 万一那不是 /p(用户打错字),
         这一行就丢了,而且后面检查点再也看不到它。
 
-        peek 只读不删:确认是 /p 才由调用方杀进程,之后交回
-        检查点正常消费(这时它还留在 buffer 里,_drain_interrupt
-        会拿到并走统一的打断收尾流程)。
+        所以:peek 只读不删;**确认要打断后**再由调用方
+        consume_interrupt() 拿走这一行(见那里的说明)。
         """
         with self._lock:
             if chr(10) in self._buffer:
                 first = self._buffer.split(chr(10), 1)[0].strip()
                 return first.startswith("/p")
+        return False
+
+    def consume_interrupt(self) -> bool:
+        """消费掉触发打断的那一行 /p(2026-11-11 用户报障后新增)。
+
+        ============ 为什么必须有这一步 ============
+        用户:"我打 /p 不能立马停止,结果到了下一轮对话我啥也不打
+             又开始一直触发 /p 停止。"
+
+        根因:peek 不消费 buffer → "/p\\n" 一直留在里面。
+        打断后 interrupt_triggered=True,检查点 B 的
+        `if not interrupt_triggered` 判断为 False,**跳过了 drain**,
+        于是这一行没人清。下一轮任何工具执行时 peek 又看到它 →
+        立刻再打断 → 每一轮都触发一次。
+
+        修法:确认打断的那一刻就把这一行取走。返回是否真的取到了
+        (调用方据此决定要不要触发)。
+        """
+        with self._lock:
+            if chr(10) in self._buffer:
+                line, self._buffer = self._buffer.split(chr(10), 1)
+                return line.strip().startswith("/p")
         return False
 
 
@@ -477,7 +498,7 @@ class DummyAgent:
         # "y",没有 read_plain(prompt_toolkit)那段输入环节可依赖。
         from tools import terminal as _terminal_mod
         _terminal_mod.set_interrupt_probe(
-            self._interrupt_listener.peek_interrupt)
+            self._interrupt_listener.consume_interrupt)
 
         # 工具循环护栏(P1a):循环内实时数两类"原地打转"——
         # 完全相同调用反复失败 / 只读调用毫无进展。
@@ -827,8 +848,9 @@ class DummyAgent:
                     #   (不担心落库:break 之后会走检查点 B,那里统一 persist;
                     #    也不担心被重复补位:_backfill_pending_tool_calls 幂等。)
                     # ---------------------------------------------------
-                    if not interrupt_triggered:
-                        interrupt_triggered = self._drain_interrupt()
+                    # 同检查点 B:无条件 drain,避免残留行留到下一轮重复触发
+                    if self._drain_interrupt():
+                        interrupt_triggered = True
                     if interrupt_triggered:
                         self.history.append({
                             "role": "tool", "tool_call_id": tool_call_id,
@@ -851,8 +873,17 @@ class DummyAgent:
                 # -------------------------------------------------------
                 # 检查点 B:整轮 tool_calls 执行完后(continue 前)
                 # -------------------------------------------------------
-                if not interrupt_triggered:
-                    interrupt_triggered = self._drain_interrupt()
+                # ============ 这里必须无条件 drain(2026-11-11) ============
+                # 原来是 `if not interrupt_triggered: drain()` —— 已经打断过
+                # 就跳过。但那样 buffer 里的残留行没人清,下一轮会被
+                # 重复触发(用户实测:"到了下一轮对话我啥也不打又开始
+                # 一直触发 /p 停止")。
+                #
+                # 现在无条件消费:已经在打断流程里了,多清一行不影响;
+                # 而漏清会留下"幽灵 /p"。
+                triggered_now = self._drain_interrupt()
+                if triggered_now:
+                    interrupt_triggered = True
 
                 if interrupt_triggered:
                     # 统一收集提示词(所有打断路径:确认处 /p 与检查点 /p 汇合)
