@@ -379,7 +379,15 @@ def _cursor_pos() -> str:
 
 
 def trace_output(kind: str, text: str) -> None:
-    """DUMMY_OUTPUT_TRACE=1 时记一条输出日志(不影响正常输出)。"""
+    """DUMMY_OUTPUT_TRACE=1 时记一条输出日志(不影响正常输出)。
+
+    ============ 每条都带会话标记(2026-11-12) ============
+    用户第一次给的 output_trace.log 里只有我自己测试写的那一行 ——
+    说明变量没传进 dummy 进程,而日志看不出"这是哪次运行的"。
+    所以:
+      · 文件开头写一行 SESSION 标记(启动时间 + pid)
+      · 每条记录带 pid,能和别的进程区分
+    """
     if not _TRACE:
         return
     try:
@@ -388,11 +396,16 @@ def trace_output(kind: str, text: str) -> None:
         size = shutil.get_terminal_size((80, 24))
         first = (text or "").strip().split("\n")[0][:100]
         os.makedirs(os.path.dirname(_TRACE_PATH), exist_ok=True)
+        new_file = not os.path.exists(_TRACE_PATH)
         with open(_TRACE_PATH, "a", encoding="utf-8") as f:
+            if new_file:
+                f.write(
+                    f"===== SESSION pid={os.getpid()} "
+                    f"start={datetime.datetime.now():%Y-%m-%d %H:%M:%S} =====\n")
             f.write(
                 f"{datetime.datetime.now().strftime('%H:%M:%S.%f')[:-3]}  "
-                f"kind={kind:<12} cursor={_cursor_pos():<9} "
-                f"size={size.columns}x{size.lines}  "
+                f"pid={os.getpid():<6} kind={kind:<12} "
+                f"cursor={_cursor_pos():<9} size={size.columns}x{size.lines}  "
                 f"len={len(text or '')}  {first}\n")
     except Exception:
         pass

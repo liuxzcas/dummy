@@ -259,6 +259,19 @@ def main():
                       /p 打断仍然有效；危险命令黑名单仍然硬拦截。
     """
     autopilot = "--autopilot" in sys.argv
+    # ============ --trace:输出诊断开关(2026-11-12) ============
+    # 用户要复现"清屏"给我看日志,但设环境变量容易漏
+    # (第一次给的日志里只有我自己测试那一行,变量根本没传进去)。
+    # 所以给个命令行开关:
+    #     python main.py --trace
+    # 等价于 DUMMY_OUTPUT_TRACE=1,但要简单得多。
+    # 必须在 import ui 之后尽早设置 —— ui 模块在 import 时就读了环境变量。
+    if "--trace" in sys.argv:
+        os.environ["DUMMY_OUTPUT_TRACE"] = "1"
+        import ui as _ui_mod
+        _ui_mod._TRACE = True
+        print(f"[trace] 输出诊断已开启 → {_ui_mod._TRACE_PATH}")
+
     print_banner()
 
     # ===========================================================
