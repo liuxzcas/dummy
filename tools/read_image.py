@@ -14,7 +14,7 @@
     {"_multimodal": True,
      "content": [{"type": "text", "text": "..."},
                  {"type": "image_url", "image_url": {"url": "data:..."}}],
-     "text_summary": "<给不支持看图的多模态模型看的摘要>"}
+     "text_summary": "<纯事实描述,如 [图片 x.png 800x300]>"}
 
 配合两处改造:
   · tools/registry.py:_normalize_result —— 带 _multimodal 的 dict
@@ -145,7 +145,18 @@ def read_image_handler(path: str, question: str | None = None,
             {"type": "text", "text": "\n".join(text_parts)},
             {"type": "image_url", "image_url": {"url": data_url}},
         ],
-        "text_summary": (
-            f"[图片 {os.path.basename(full)} {w}x{h}] "
-            f"(当前模型不支持看图,无法读取内容)"),
+        # ============ text_summary 只描述事实,不下结论(2026-11-11 修) ============
+        # 用户报障:"每次 read_image 都返回'当前模型不支持看图,无法读取内容',
+        #           但是模型好像是能看到图片内容。"
+        #
+        # 根因:原来这里写死了一句"(当前模型不支持看图,无法读取内容)"。
+        # 而这个字段会被三处拿去给模型看:
+        #   ① turn_context._digest → 塞进"本轮运行情况"注入模型
+        #   ② lessons.is_tool_error → 错误判定
+        #   ③ core._tool_text       → 工具结果预览也进历史
+        # 于是模型读到"你看不到这张图"——与事实相反,自相矛盾。
+        #
+        # 改成纯事实描述:模型看不看得到图由 provider 决定,
+        # 工具不该替它下这个结论。
+        "text_summary": f"[图片 {os.path.basename(full)} {w}x{h}]",
     }

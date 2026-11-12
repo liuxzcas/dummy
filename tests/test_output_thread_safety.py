@@ -153,3 +153,57 @@ def test_safe_print_handles_empty_line(capsys):
     ui_mod.set_active_app(None)
     ui_mod.ui.raw("")
     assert capsys.readouterr().out == "\n"
+
+
+# ============================================================
+# ④ 输出诊断（用户报"清屏"至今未定位，2026-11-11）
+# ============================================================
+class TestOutputTrace:
+    """为什么要它:信息停在"多发于思考之前"，不足以定位，需要运行时事实。
+
+    DUMMY_OUTPUT_TRACE=1 时每次输出记一条:
+        时间 / 种类 / 光标位置 / 终端尺寸 / 长度 / 首行
+    下次清屏,拿 logs/output_trace.log 就能看到"清屏前最后一次输出
+    是什么、当时光标在哪"。
+    """
+
+    def test_disabled_by_default(self):
+        import ui as ui_mod
+        # 默认(env 没设)不该写日志
+        ui_mod.trace_output("raw", "x")
+        # 只要不抛异常即可 —— 真正是否写由 _TRACE 决定
+
+    def test_enabled_writes_line(self, tmp_path, monkeypatch):
+        import ui as ui_mod
+        log = tmp_path / "trace.log"
+        monkeypatch.setattr(ui_mod, "_TRACE", True)
+        monkeypatch.setattr(ui_mod, "_TRACE_PATH", str(log))
+        ui_mod.trace_output("thinking", "第一行\n第二行")
+        content = log.read_text(encoding="utf-8")
+        assert "kind=thinking" in content
+        assert "第一行" in content
+        assert "第二行" not in content, "只记首行,避免日志爆炸"
+
+    def test_trace_never_raises(self, monkeypatch):
+        """诊断代码绝不能影响主流程。"""
+        import ui as ui_mod
+        monkeypatch.setattr(ui_mod, "_TRACE", True)
+        monkeypatch.setattr(ui_mod, "_TRACE_PATH", "/nonexistent/x/y.log")
+        ui_mod.trace_output("raw", "x")      # 不该抛
+
+    def test_emit_routes_through_trace(self, monkeypatch, capsys):
+        """emit/raw 都要经过 trace(否则定位不到是哪次输出后清的)。
+
+        ★ 用 PlainRenderer:测试环境非 TTY,默认的是 SilentRenderer,
+          对话流(KIND_AGENT)会返回 None,压根走不到 trace。
+        """
+        import ui as ui_mod
+        calls = []
+        monkeypatch.setattr(ui_mod, "trace_output",
+                            lambda k, t: calls.append((k, t)))
+        monkeypatch.setattr(ui_mod, "ui", ui_mod.UI(ui_mod.PlainRenderer()))
+        ui_mod.set_active_app(None)
+        ui_mod.ui.raw("via-raw")
+        ui_mod.ui.show(ui_mod.KIND_AGENT, "via-show")
+        assert ("raw", "via-raw") in calls
+        assert any(k == "agent" for k, _ in calls), calls

@@ -268,3 +268,46 @@ def test_tool_registered():
             assert d["function"]["parameters"]["required"] == ["path"]
             return
     raise AssertionError("read_image 没注册")
+
+
+# ============================================================
+# ⑤ text_summary 只能描述事实，不能替模型下"看不看得到"的结论
+# ============================================================
+class TestTextSummaryIsFactual:
+    """用户报障(2026-11-11):
+    "每次 read_image 都返回'当前模型不支持看图,无法读取内容',
+     但是模型好像是能看到图片内容。"
+
+    ============ 根因 ============
+    text_summary 里写死了一句"(当前模型不支持看图,无法读取内容)"。
+    而这个字段会被三处拿去给模型看:
+        ① turn_context._digest → 塞进"本轮运行情况"注入模型
+        ② lessons.is_tool_error → 错误判定
+        ③ core._tool_text       → 工具结果预览也进历史
+
+    于是模型读到"你看不到这张图"——与事实相反(它明明看得到)。
+    工具不该替 provider 判断这一点。
+    """
+
+    def test_no_unsupported_claim(self, png):
+        from tools.read_image import read_image_handler
+        out = read_image_handler(str(png))
+        summary = out["text_summary"]
+        for bad in ("不支持看图", "无法读取", "看不到"):
+            assert bad not in summary, (
+                f"text_summary 不该替模型下结论(含'{bad}'): {summary}")
+
+    def test_summary_has_facts(self, png):
+        """但要有事实:文件名 + 尺寸。"""
+        from tools.read_image import read_image_handler
+        out = read_image_handler(str(png))
+        s = out["text_summary"]
+        assert "t.png" in s
+        assert "800x300" in s
+
+    def test_no_unsupported_claim_in_content_text(self, png):
+        """content 里的 text 块同样不能有这种结论。"""
+        from tools.read_image import read_image_handler
+        out = read_image_handler(str(png))
+        text = out["content"][0]["text"]
+        assert "不支持看图" not in text

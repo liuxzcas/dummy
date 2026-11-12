@@ -216,6 +216,7 @@ class UI:
         out = self.renderer.render(msg)
         if out is None:
             return
+        trace_output(msg.kind, out)
         safe_print(out)
 
     # ---- 拼 + 印(最常用) ----
@@ -229,6 +230,7 @@ class UI:
         out = self.renderer.render(Message(kind=KIND_RAW, raw=text))
         if out is None:
             return
+        trace_output(KIND_RAW, out)
         safe_print(out, end=end)
 
     # ---- 输入提示符(需要返回字符串给 input()) ----
@@ -317,6 +319,83 @@ def safe_print(text: str, end: str = "\n") -> None:
     except Exception:
         # 任何异常都不能让输出丢失 —— 退回直接打印
         print(text, end=end)
+
+
+# ============================================================
+# 输出诊断(2026-11-11, 用户报"清屏"至今未定位)
+# ============================================================
+# ============ 为什么要这个 ============
+# 用户:"清屏问题还是存在,多发于'思考'之前,但不是每次'思考'
+#      环节都会清屏。"
+#
+# 信息停在"多发于思考之前"——这只能证明它**不是**每次思考都发生,
+# 还不足以定位。继续靠读代码猜没有意义,需要运行时事实。
+#
+# 做法:DUMMY_OUTPUT_TRACE=1 时,每次输出前把
+#   时间 / 输出种类 / 首行摘要 / 终端尺寸 / 光标位置
+# 追加到 logs/output_trace.log。
+# 下次再清屏,把那份日志拿出来 —— 能精确看到"清屏前的最后一次
+# 输出是什么、当时光标在哪"。
+#
+# ============ 为什么默认关闭 ============
+# 查光标位置要给终端发 DSR 查询(\x1b[6n)并等回复,有几百微秒开销,
+# 而且某些终端(重定向/管道)压根不回复。只在排障时开。
+_TRACE = os.environ.get("DUMMY_OUTPUT_TRACE", "").strip().lower() in {
+    "1", "true", "yes", "on"}
+_TRACE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "logs", "output_trace.log")
+
+
+def _cursor_pos() -> str:
+    """尽力取光标位置(行,列);拿不到返回 "?"。
+
+    只在 Windows 上用 Console API —— 比发 DSR 查询稳,
+    不依赖终端回包。
+    """
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class COORD(ctypes.Structure):
+            _fields_ = [("X", ctypes.c_short), ("Y", ctypes.c_short)]
+
+        class SMALL_RECT(ctypes.Structure):
+            _fields_ = [("Left", ctypes.c_short), ("Top", ctypes.c_short),
+                        ("Right", ctypes.c_short), ("Bottom", ctypes.c_short)]
+
+        class CONSOLE_SCREEN_BUFFER_INFO(ctypes.Structure):
+            _fields_ = [("dwSize", COORD), ("dwCursorPosition", COORD),
+                        ("wAttributes", wintypes.WORD),
+                        ("srWindow", SMALL_RECT),
+                        ("dwMaximumWindowSize", COORD)]
+
+        h = ctypes.windll.kernel32.GetStdHandle(-11)   # STD_OUTPUT_HANDLE
+        info = CONSOLE_SCREEN_BUFFER_INFO()
+        if ctypes.windll.kernel32.GetConsoleScreenBufferInfo(h, ctypes.byref(info)):
+            return f"{info.dwCursorPosition.Y},{info.dwCursorPosition.X}"
+    except Exception:
+        pass
+    return "?"
+
+
+def trace_output(kind: str, text: str) -> None:
+    """DUMMY_OUTPUT_TRACE=1 时记一条输出日志(不影响正常输出)。"""
+    if not _TRACE:
+        return
+    try:
+        import datetime
+        import shutil
+        size = shutil.get_terminal_size((80, 24))
+        first = (text or "").strip().split("\n")[0][:100]
+        os.makedirs(os.path.dirname(_TRACE_PATH), exist_ok=True)
+        with open(_TRACE_PATH, "a", encoding="utf-8") as f:
+            f.write(
+                f"{datetime.datetime.now().strftime('%H:%M:%S.%f')[:-3]}  "
+                f"kind={kind:<12} cursor={_cursor_pos():<9} "
+                f"size={size.columns}x{size.lines}  "
+                f"len={len(text or '')}  {first}\n")
+    except Exception:
+        pass
 
 
 ui = _make_ui()
