@@ -352,14 +352,106 @@ _TRACE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 # 上一次打印【之后】的光标位置 —— 与下一次打印【之前】比对,
 # 不一致就说明中间有东西动了光标(清屏线索)
 _last_after: str | None = None
+# 上一次看到的【控制台缓冲区总行数】—— 变小 = 真清屏的铁证
+_last_buf: int | None = None
+
+
+# ============================================================
+# stdout 探针:抓"谁在写清屏序列"(2026-11-16)
+# ============================================================
+# ============ 为什么需要 ============
+# 用户报清屏,trace 抓到 cursor 从 34 跳回 1,但:
+#   · 代码里搜不到 ESC[2J / ESC[3J / clear
+#   · 关掉 msvcrt 监听器仍复现
+#   · 进程只有两个线程
+#
+# 继续读代码猜没有意义。直接 hook sys.stdout.write:
+# 只要写出的内容含"清屏/归位"类序列,就把**调用栈**记下来 ——
+# 谁写的、在哪一行,一目了然。
+#
+# 检测的序列(都是"让已有内容消失"的):
+#   \x1b[2J  清屏(光标不动)
+#   \x1b[3J  连带清 scrollback  ← 这个最符合"往上滚也看不到"
+#   \x1b[H / \x1b[1;1H  光标归位到左上角
+#   \x1b[?1049h/l  切换备用屏幕(进去再出来 = 原内容没了)
+#   \x1b[0J / \x1b[J  从光标清到屏幕末尾
+_CLEAR_SEQS = ("\x1b[2J", "\x1b[3J", "\x1b[H", "\x1b[1;1H",
+               "\x1b[0J", "\x1b[J", "\x1b[?1049h", "\x1b[?1049l")
+_stdout_hooked = False
+
+
+def _hook_stdout() -> None:
+    """包一层 sys.stdout.write,抓到清屏序列就记调用栈。
+
+    只记栈顶 6 层 —— 足够定位到具体文件行,又不至于刷屏。
+    """
+    global _stdout_hooked
+    if _stdout_hooked:
+        return
+    _stdout_hooked = True
+
+    import sys as _sys
+    import traceback
+
+    orig = _sys.stdout.write
+
+    def patched(text):
+        try:
+            s = text if isinstance(text, str) else str(text)
+            for seq in _CLEAR_SEQS:
+                if seq in s:
+                    stack = traceback.format_stack(limit=7)[:-1]
+                    # 只留"文件名:行号 函数名"
+                    frames = []
+                    for fr in stack:
+                        fr = fr.strip()
+                        if fr.startswith("File "):
+                            frames.append(fr)
+                    with open(_TRACE_PATH, "a", encoding="utf-8") as f:
+                        f.write("\n*** CLEAR SEQUENCE DETECTED ***\n")
+                        f.write(f"    seq={seq!r}  payload_len={len(s)}\n")
+                        for fr in frames[-6:]:
+                            f.write(f"    {fr}\n")
+                        f.write("\n")
+                    # 同时打到屏幕,用户当场能看到
+                    orig(f"\n*** 检测到清屏序列 {seq!r} —— 见 trace 日志 ***\n")
+        except Exception:
+            pass
+        return orig(text)
+
+    _sys.stdout.write = patched
 
 
 def _cursor_pos() -> str:
     """尽力取光标位置(行,列);拿不到返回 "?"。
 
-    只在 Windows 上用 Console API —— 比发 DSR 查询稳,
-    不依赖终端回包。
+    ============ 为什么用 Console API 而不是 DSR 查询 ============
+    DSR(\\x1b[6n)要给终端发查询并等回复,管道/重定向下会卡住。
+    Console API 是同步调用,拿不到就返回 "?",不会阻塞。
     """
+    st = _console_state()
+    return st.get("cursor", "?") if st else "?"
+
+
+def _console_state() -> dict | None:
+    """取完整的控制台状态(诊断清屏用)。
+
+    返回:
+        cursor  "行,列"          光标位置
+        buf     缓冲区总行数       ← ★ 清屏时这个会变小
+        win     "Top..Bottom"    可见窗口范围
+        height  可见高度
+
+    ============ 为什么要 buf(2026-11-16) ============
+    用户做过的 7 个隔离实验全部复现不了,说明 dummy 里还有未识别的因素。
+    与其继续猜,不如直接盯住"缓冲区总行数":
+      · 正常输出 → buf 只增不减(内容进 scrollback)
+      · 真清屏   → buf 突然变小或被重置
+    这一条数据能一刀切开"滚动"和"真清屏"。
+    """
+    if os.environ.get("DUMMY_TRACE_NO_CURSOR", "").strip().lower() \
+            in {"1", "true", "yes", "on"}:
+        return None
     try:
         import ctypes
         from ctypes import wintypes
@@ -379,11 +471,17 @@ def _cursor_pos() -> str:
 
         h = ctypes.windll.kernel32.GetStdHandle(-11)   # STD_OUTPUT_HANDLE
         info = CONSOLE_SCREEN_BUFFER_INFO()
-        if ctypes.windll.kernel32.GetConsoleScreenBufferInfo(h, ctypes.byref(info)):
-            return f"{info.dwCursorPosition.Y},{info.dwCursorPosition.X}"
+        if not ctypes.windll.kernel32.GetConsoleScreenBufferInfo(
+                h, ctypes.byref(info)):
+            return None
+        return {
+            "cursor": f"{info.dwCursorPosition.Y},{info.dwCursorPosition.X}",
+            "buf": info.dwSize.Y,
+            "win": f"{info.srWindow.Top}..{info.srWindow.Bottom}",
+            "height": info.srWindow.Bottom - info.srWindow.Top + 1,
+        }
     except Exception:
-        pass
-    return "?"
+        return None
 
 
 def trace_output(kind: str, text: str) -> None:
@@ -406,7 +504,7 @@ def trace_output(kind: str, text: str) -> None:
     """
     if not _TRACE:
         return
-    global _last_after
+    global _last_after, _last_buf
     try:
         import datetime
         import shutil
@@ -417,18 +515,19 @@ def trace_output(kind: str, text: str) -> None:
         for ln in (text or "").split("\n"):
             rows += max(1, -(-len(ln) // cols))
 
-        before = _cursor_pos()
-        # 与上次打印后的位置比对 —— 不一致说明中间有人动过光标
-        jumped = ""
-        if _last_after and before != "?" and _last_after != "?":
-            try:
-                by, _bx = before.split(",")
-                ly, _lx = _last_after.split(",")
-                dy = int(by) - int(ly)
-                if abs(dy) > rows + 2:      # 超出"正常前进"的范围
-                    jumped = f"  **JUMP {ly}->{by} (dy={dy})**"
-            except Exception:
-                pass
+        st = _console_state() or {}
+        before = st.get("cursor", "?")
+        buf = st.get("buf")
+        win = st.get("win", "?")
+
+        # ============ 缓冲区行数缩小 = 真清屏的铁证 ============
+        # 正常输出只增不减(内容进 scrollback);buf 变小说明缓冲区
+        # 被重建/重置 —— 那才是"前面内容滚不到"的机械原因。
+        shrink = ""
+        if _last_buf is not None and buf is not None and buf < _last_buf:
+            shrink = f"  **BUF_SHRINK {_last_buf}->{buf}**"
+        if buf is not None:
+            _last_buf = buf
 
         os.makedirs(os.path.dirname(_TRACE_PATH), exist_ok=True)
         new_file = not os.path.exists(_TRACE_PATH)
@@ -440,11 +539,11 @@ def trace_output(kind: str, text: str) -> None:
             f.write(
                 f"{datetime.datetime.now().strftime('%H:%M:%S.%f')[:-3]}  "
                 f"pid={os.getpid():<6} kind={kind:<12} "
-                f"cursor={before:<9} size={size.columns}x{size.lines}  "
-                f"rows={rows:<3} len={len(text or '')}{jumped}  {first}\n")
-        if jumped:
-            # 当场提示到屏幕 —— 用户复现时能看到"就在这一刻跳的"
-            print(f"{jumped.strip()}", flush=True)
+                f"cursor={before:<9} buf={str(buf or '?'):<7} win={win:<9} "
+                f"size={size.columns}x{size.lines}  "
+                f"rows={rows:<3} len={len(text or '')}{shrink}  {first}\n")
+        if shrink:
+            print(f"{shrink.strip()}", flush=True)
     except Exception:
         pass
 

@@ -270,7 +270,10 @@ def main():
         os.environ["DUMMY_OUTPUT_TRACE"] = "1"
         import ui as _ui_mod
         _ui_mod._TRACE = True
+        # 同时装 stdout 探针:抓"谁在写清屏序列"(2026-11-16)
+        _ui_mod._hook_stdout()
         print(f"[trace] 输出诊断已开启 → {_ui_mod._TRACE_PATH}")
+        print("[trace] stdout 探针已装 —— 一旦有人写清屏序列,会记录调用栈")
 
     print_banner()
 
