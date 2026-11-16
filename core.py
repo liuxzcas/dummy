@@ -223,6 +223,21 @@ class _InterruptListener:
         self._stop = False
         self._lock = threading.Lock()  # 保护 buffer(线程写/检查点读)
         self._msvcrt = None
+        # ============ 对照实验开关(2026-11-12) ============
+        # 用户报"清屏",trace 抓到一个铁证:
+        #     538  kind=tool_result  cursor=34,0
+        #     539  kind=thinking     cursor=1,0     ← 从底行跳回第 1 行
+        # 而这两条之间代码只做了 "llm.chat() 等 1 秒 + 打印思考",
+        # 期间唯一在动控制台的是本监听器(每 20ms msvcrt.kbhit())。
+        #
+        # 所以给一个开关把监听器整个关掉,做 A/B 对照:
+        #     DUMMY_NO_INTERRUPT_LISTENER=1 python main.py --autopilot --trace
+        # 若关掉后不再清屏 → 锁定是 msvcrt 干扰控制台。
+        #
+        # 关掉之后 /p 失效(这是实验代价,/p 靠它收字符)。
+        if os.environ.get("DUMMY_NO_INTERRUPT_LISTENER", "").strip().lower() \
+                in {"1", "true", "yes", "on"}:
+            return
         try:
             import msvcrt  # Windows console 专用
             self._msvcrt = msvcrt

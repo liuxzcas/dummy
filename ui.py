@@ -387,6 +387,14 @@ def trace_output(kind: str, text: str) -> None:
     所以:
       · 文件开头写一行 SESSION 标记(启动时间 + pid)
       · 每条记录带 pid,能和别的进程区分
+
+    ============ 记录的是【打印前】的光标(2026-11-12 追查清屏) ============
+    实测抓到的铁证:
+        538  kind=tool_result  cursor=34,0
+        539  kind=thinking     cursor=1,0    ← 打印前光标已在第 1 行!
+    说明**清屏发生在两次输出之间**,不是打印本身造成的。
+    所以记"打印前"的位置才有诊断价值(记打印后的话,跳变会被
+    自己这次输出掩盖)。
     """
     if not _TRACE:
         return
@@ -395,6 +403,11 @@ def trace_output(kind: str, text: str) -> None:
         import shutil
         size = shutil.get_terminal_size((80, 24))
         first = (text or "").strip().split("\n")[0][:100]
+        # 统计实际占几行(含自动换行)—— 长输出会让终端滚动
+        cols = max(20, size.columns)
+        rows = 0
+        for ln in (text or "").split("\n"):
+            rows += max(1, -(-len(ln) // cols))
         os.makedirs(os.path.dirname(_TRACE_PATH), exist_ok=True)
         new_file = not os.path.exists(_TRACE_PATH)
         with open(_TRACE_PATH, "a", encoding="utf-8") as f:
@@ -406,7 +419,7 @@ def trace_output(kind: str, text: str) -> None:
                 f"{datetime.datetime.now().strftime('%H:%M:%S.%f')[:-3]}  "
                 f"pid={os.getpid():<6} kind={kind:<12} "
                 f"cursor={_cursor_pos():<9} size={size.columns}x{size.lines}  "
-                f"len={len(text or '')}  {first}\n")
+                f"rows={rows:<3} len={len(text or '')}  {first}\n")
     except Exception:
         pass
 
