@@ -309,16 +309,21 @@ def safe_print(text: str, end: str = "\n") -> None:
 
     所有 ui 输出(core.py 的 42 处 print 也走这里)最终都落到这。
     """
+    global _last_after
     app = _printing_app()
     if app is None:
         print(text, end=end)
-        return
-    try:
-        from prompt_toolkit.application import run_in_terminal
-        run_in_terminal(lambda: print(text, end=end), in_executor=False)
-    except Exception:
-        # 任何异常都不能让输出丢失 —— 退回直接打印
-        print(text, end=end)
+    else:
+        try:
+            from prompt_toolkit.application import run_in_terminal
+            run_in_terminal(lambda: print(text, end=end), in_executor=False)
+        except Exception:
+            # 任何异常都不能让输出丢失 —— 退回直接打印
+            print(text, end=end)
+    # 记打印后的光标位置(诊断清屏用):下一次 trace_output 会拿它
+    # 和"打印前"的位置比对,不一致就说明中间有人动了光标。
+    if _TRACE:
+        _last_after = _cursor_pos()
 
 
 # ============================================================
@@ -344,6 +349,9 @@ _TRACE = os.environ.get("DUMMY_OUTPUT_TRACE", "").strip().lower() in {
     "1", "true", "yes", "on"}
 _TRACE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                            "logs", "output_trace.log")
+# 上一次打印【之后】的光标位置 —— 与下一次打印【之前】比对,
+# 不一致就说明中间有东西动了光标(清屏线索)
+_last_after: str | None = None
 
 
 def _cursor_pos() -> str:
@@ -381,33 +389,47 @@ def _cursor_pos() -> str:
 def trace_output(kind: str, text: str) -> None:
     """DUMMY_OUTPUT_TRACE=1 时记一条输出日志(不影响正常输出)。
 
-    ============ 每条都带会话标记(2026-11-12) ============
-    用户第一次给的 output_trace.log 里只有我自己测试写的那一行 ——
-    说明变量没传进 dummy 进程,而日志看不出"这是哪次运行的"。
-    所以:
-      · 文件开头写一行 SESSION 标记(启动时间 + pid)
-      · 每条记录带 pid,能和别的进程区分
+    ============ 记录格式(2026-11-12 追查清屏) ============
+        时间  pid  kind  before=打印前光标  after=打印后光标
+              jump=下一次打印前光标   size / rows / len / 首行
 
-    ============ 记录的是【打印前】的光标(2026-11-12 追查清屏) ============
-    实测抓到的铁证:
+    ============ 为什么要有 after 和 jump ============
+    用户 trace 里的铁证:
         538  kind=tool_result  cursor=34,0
-        539  kind=thinking     cursor=1,0    ← 打印前光标已在第 1 行!
-    说明**清屏发生在两次输出之间**,不是打印本身造成的。
-    所以记"打印前"的位置才有诊断价值(记打印后的话,跳变会被
-    自己这次输出掩盖)。
+        539  kind=thinking     cursor=1,0    ← 打印前已在第 1 行
+    这证明跳变发生在两次输出之间,但**看不出是谁动的**。
+
+    补上 after(这次打印完光标在哪)和 jump(下次打印前在哪):
+        after 和 jump 不一致 → 中间有人移动了光标
+        每行输出后立刻比对,**跳变当场打警告到屏幕**,用户复现时
+        能直接看到"就在这一刻跳的"。
     """
     if not _TRACE:
         return
+    global _last_after
     try:
         import datetime
         import shutil
         size = shutil.get_terminal_size((80, 24))
         first = (text or "").strip().split("\n")[0][:100]
-        # 统计实际占几行(含自动换行)—— 长输出会让终端滚动
         cols = max(20, size.columns)
         rows = 0
         for ln in (text or "").split("\n"):
             rows += max(1, -(-len(ln) // cols))
+
+        before = _cursor_pos()
+        # 与上次打印后的位置比对 —— 不一致说明中间有人动过光标
+        jumped = ""
+        if _last_after and before != "?" and _last_after != "?":
+            try:
+                by, _bx = before.split(",")
+                ly, _lx = _last_after.split(",")
+                dy = int(by) - int(ly)
+                if abs(dy) > rows + 2:      # 超出"正常前进"的范围
+                    jumped = f"  **JUMP {ly}->{by} (dy={dy})**"
+            except Exception:
+                pass
+
         os.makedirs(os.path.dirname(_TRACE_PATH), exist_ok=True)
         new_file = not os.path.exists(_TRACE_PATH)
         with open(_TRACE_PATH, "a", encoding="utf-8") as f:
@@ -418,8 +440,11 @@ def trace_output(kind: str, text: str) -> None:
             f.write(
                 f"{datetime.datetime.now().strftime('%H:%M:%S.%f')[:-3]}  "
                 f"pid={os.getpid():<6} kind={kind:<12} "
-                f"cursor={_cursor_pos():<9} size={size.columns}x{size.lines}  "
-                f"rows={rows:<3} len={len(text or '')}  {first}\n")
+                f"cursor={before:<9} size={size.columns}x{size.lines}  "
+                f"rows={rows:<3} len={len(text or '')}{jumped}  {first}\n")
+        if jumped:
+            # 当场提示到屏幕 —— 用户复现时能看到"就在这一刻跳的"
+            print(f"{jumped.strip()}", flush=True)
     except Exception:
         pass
 
