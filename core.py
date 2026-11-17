@@ -107,6 +107,7 @@ from tool_guardrails import (
 from turn_context import TurnContext
 from colors import paint, GRAY, BLUE, SLATE, PURPLE, YELLOW, NEUTRAL, RED, GREEN
 from ui import ui, KIND_THINKING, KIND_TOOL_CALL, KIND_TOOL_RESULT
+from ui import _strip_control
 from input_layer import read_plain
 import workspace
 from skills_manager import build_skills_index
@@ -201,6 +202,30 @@ def _tool_content(result, note: str = ""):
                 content.insert(0, {"type": "text", "text": note.lstrip()})
         return content
     return (result or "") + note
+
+
+def _clean_history_controls(history: list) -> int:
+    """就地剥掉历史消息里的控制序列,返回清理条数。
+
+    ============ 为什么单独抽成函数(2026-11-17) ============
+    原来这段逻辑内联在 resume_session 里,测不到 —— 写了个假测试
+    (mock 掉 store 后 resume 提前返回,断言空过,回滚也照样绿)。
+
+    抽出来之后可以直接构造脏数据验证。
+
+    ============ 背景 ============
+    2026-11-05 起,terminal 工具输出尾部带 \x1b[H\x1b[2J\x1b[3J
+    (清屏 + 清 scrollback),已存进 db。旧会话一恢复就带着,
+    打印时(尤其 /history)会真的清屏。这里在入口清洗,
+    内存 history 从此干净,后续 persist 会把干净版本写回 db。
+    """
+    cleaned = 0
+    for m in history:
+        c = m.get("content")
+        if isinstance(c, str) and "\x1b" in c:
+            m["content"] = _strip_control(c)
+            cleaned += 1
+    return cleaned
 
 
 class _InterruptListener:
@@ -1720,6 +1745,16 @@ class DummyAgent:
         history = self.session_store.load_history(session_id)
         if not history:
             return False
+        # ============ 恢复时清掉历史里的控制序列(2026-11-17) ============
+        # 2026-11-05 起,terminal 工具的输出尾部带着 \x1b[H\x1b[2J\x1b[3J
+        # (清屏 + 清 scrollback),已经存进了 db。旧会话一恢复就带着这些,
+        # 每次打印(尤其 /history)都会真的清屏。
+        #
+        # 这里在**入口**清洗:内存中的 history 从此干净,
+        # 后续 persist 会把干净版本写回 db,存量污染自然消解。
+        _cleaned = _clean_history_controls(history)
+        if _cleaned:
+            ui.raw(f"  🧹 已清理 {_cleaned} 条历史消息里的终端控制序列")
         ok, msg = self.session_store.acquire_session_lock(
             session_id, self._session_owner)
         if not ok and "持有" in msg:

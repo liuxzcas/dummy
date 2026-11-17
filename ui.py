@@ -27,6 +27,7 @@ write_file 的 diff)保持原样 —— 它们是"问用户话"的交互面板,
 from __future__ import annotations
 
 import os
+import re
 import shutil
 from dataclasses import dataclass, field
 from typing import Any
@@ -216,6 +217,7 @@ class UI:
         out = self.renderer.render(msg)
         if out is None:
             return
+        out = _strip_control(out)      # 纵深防御,见 _strip_control 注释
         trace_output(msg.kind, out)
         safe_print(out)
 
@@ -223,13 +225,23 @@ class UI:
     def show(self, kind: str, text: str = "", **kw) -> None:
         self.emit(self.build(kind, text, **kw))
 
-    # ---- 原样输出(工具内部的确认面板等,不经渲染改造) ----
+    # 原样输出(工具内部的确认面板等,不经渲染改造)
     def raw(self, text: str = "", end: str = "\n") -> None:
         """原样打印。**工具内部的人机交互提示**走这里 —— 它们不是对话流,
-        不参与竖线渲染(见模块头"竖线的边界")。"""
+        不参与竖线渲染(见模块头"竖线的边界")。
+
+        ============ 打印前剥控制序列(2026-11-17) ============
+        用户报的"清屏"真凶:命令输出尾部带着 \\x1b[H\\x1b[2J\\x1b[3J,
+        被存进 history,每次打印就真的清屏 + 清 scrollback。
+
+        terminal 工具入口已经剥了(一处收口),这里是**纵深防御**:
+        万一别处(旧会话恢复、粘贴内容、未来新工具)漏了一处,
+        也不会真的把终端清掉。
+        """
         out = self.renderer.render(Message(kind=KIND_RAW, raw=text))
         if out is None:
             return
+        out = _strip_control(out)
         trace_output(KIND_RAW, out)
         safe_print(out, end=end)
 
@@ -546,6 +558,32 @@ def trace_output(kind: str, text: str) -> None:
             print(f"{shrink.strip()}", flush=True)
     except Exception:
         pass
+
+
+# ============================================================
+# 打印前剥掉终端控制序列(2026-11-17)
+# ============================================================
+# ============ 为什么打印层还要再剥一次 ============
+# 真凶已经定位:命令输出尾部带着 \x1b[H\x1b[2J\x1b[3J
+# (\x1b[2J 清屏、\x1b[3J 连 scrollback 一起清、\x1b[H 光标归位),
+# 存进 history 后每次打印就真的清屏 —— 用户"滚不到"就是这么来的。
+#
+# tools/terminal.py 的入口已经剥了(一处收口)。这里是**纵深防御**:
+#   · 旧会话从 db 恢复,内容里早就带着这些序列
+#   · 粘贴进来的文本、未来新增的工具都可能漏
+# 打印是最后一道关 —— 只要它挡住了,终端就不会被清。
+_CTRL_RE = re.compile(
+    r"\x1b\[[0-9;?]*[a-zA-Z]"              # CSI(含清屏 2J/3J、归位 H)
+    r"|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)"  # OSC
+    r"|\x1b[@-Z\\-_]"                      # 两字节转义
+)
+
+
+def _strip_control(text: str) -> str:
+    """剥掉控制序列(无 ESC 时零开销直接返回)。"""
+    if not text or "\x1b" not in text:
+        return text
+    return _CTRL_RE.sub("", text)
 
 
 ui = _make_ui()

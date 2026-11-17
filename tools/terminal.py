@@ -325,6 +325,48 @@ def _default_on_poll() -> bool:
 
 
 # ============================================================
+# 剥掉命令输出里的终端控制序列(2026-11-17, 清屏的真凶)
+# ============================================================
+# ============ 怎么找到的 ============
+# 用户报"工具轮间每隔一会儿就清屏,之前内容滚不到",排查了 7 个隔离实验
+# 全部复现不了。最后靠 stdout 探针 + 数据库扫描抓到铁证:
+#
+#   messages 表里 332 条 tool 消息,尾部都是同一串:
+#       ...\n\x1b[H\x1b[2J\x1b[3J
+#   \x1b[2J 清屏、\x1b[3J 连 scrollback 一起清、\x1b[H 光标归位
+#
+# 于是每次把这些内容打印出来(工具结果回显、/history、日志)
+# 终端就真的执行了清屏 + 清 scrollback —— 这就是"滚不到"的原因。
+# 最早出现时间 2026-11-05,正是用户第一次报清屏那天。
+#
+# ============ 为什么要在这里剥 ============
+# 命令输出是**给模型看的文本**,不是要重放给终端的控制流。
+# 控制序列对它毫无价值(颜色码还能理解,清屏/归位只会捣乱),
+# 留在返回值里只会:① 污染 history ② 打印时触发副作用 ③ 白占 token。
+#
+# 所以入口处就剥掉 —— 一处收口,history / 打印 / /history 全干净。
+_ANSI_RE = re.compile(
+    r"\x1b\[[0-9;?]*[a-zA-Z]"      # CSI: 颜色、光标移动、清屏(2J/3J/H)
+    r"|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)"   # OSC: 设置标题等
+    r"|\x1b[@-Z\\-_]"              # 其他两字节转义
+)
+
+
+def strip_ansi(text: str) -> str:
+    """剥掉 ANSI/终端控制序列。保留正文与换行。"""
+    if not text or "\x1b" not in text:
+        return text
+    return _ANSI_RE.sub("", text)
+
+
+def _decode_and_clean(raw: bytes | None) -> str:
+    """bytes → str,并剥掉控制序列。"""
+    if not raw:
+        return ""
+    return strip_ansi(raw.decode("utf-8", errors="replace").strip())
+
+
+# ============================================================
 # 跨调用的 cwd 保持(2026-11-05 实测后实现)
 # ============================================================
 # ============ 为什么需要 ============
@@ -575,11 +617,11 @@ def terminal_handler(command: str, timeout: int | None = None, _confirm=None,
 
         output_parts = [describe_environment(shell_name)]
 
-        stdout = stdout_b.decode("utf-8", errors="replace").strip() if stdout_b else ""
+        stdout = _decode_and_clean(stdout_b)
         if stdout:
             output_parts.append(stdout)
 
-        stderr = stderr_b.decode("utf-8", errors="replace").strip() if stderr_b else ""
+        stderr = _decode_and_clean(stderr_b)
         if stderr:
             output_parts.append(f"[STDERR]\n{stderr}")
 
