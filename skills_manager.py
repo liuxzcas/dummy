@@ -15,6 +15,7 @@ skills_manager.py — 技能管理(Phase 3 Step 1)
 """
 
 import os
+import re
 import shutil
 
 # 技能根目录(与 skills_manager.py 同级)
@@ -27,6 +28,8 @@ def _parse_frontmatter(path: str) -> dict:
     """解析 SKILL.md 的 YAML frontmatter(name/description/type/steps)。
 
     容错:非 frontmatter 开头、无闭合、字段缺失都返回空 dict(跳过该技能)。
+    块标量(> 折叠 / | 保留)与嵌套块(metadata:)下的子键都折进上一个 key,
+    多行 description 得到的是一整行文本,而不是孤零零的 ">"。
     """
     try:
         with open(path, encoding="utf-8") as f:
@@ -39,10 +42,38 @@ def _parse_frontmatter(path: str) -> dict:
     if end < 0:
         return {}
     meta: dict[str, str] = {}
+    key = None
+    block = None  # ">" 折叠 / "|" 保留换行 / None 普通标量
+    blank = False  # 刚遇到空行:下一行用换行分隔
     for line in content[3:end].splitlines():
-        if ":" in line:
-            key, _, val = line.partition(":")
-            meta[key.strip()] = val.strip()
+        stripped = line.strip()
+        # 缩进行 or 空行 = 上一个 key 的续行(块标量 > |、折行标量、嵌套块)
+        if (line[:1] in (" ", "\t") or not stripped) and key:
+            if not stripped:
+                blank = True
+                continue
+            if meta[key] in (">", "|", ">-", "|-"):  # 块标量首行:丢掉标记本身
+                meta[key] = stripped
+            elif block == "|":
+                meta[key] = meta[key] + "\n" + stripped
+            elif blank:
+                meta[key] = meta[key] + "\n" + stripped
+            else:
+                meta[key] = meta[key] + " " + stripped
+            blank = False
+            continue
+        if ":" not in line:
+            key, block, blank = None, None, False
+            continue
+        k, _, v = line.partition(":")
+        key = k.strip()
+        if not v.strip() and key in ("metadata", "steps"):  # 纯嵌套块/列表容器
+            meta[key] = ""
+            key, block, blank = None, None, False
+            continue
+        meta[key] = v.strip()
+        block = meta[key] if meta[key] in (">", "|", ">-", "|-") else None
+        blank = False
     return meta
 
 
@@ -148,22 +179,65 @@ def delete_skill(name: str) -> bool:
     return True
 
 
+def _parse_prerequisites(meta: dict) -> dict:
+    """从 frontmatter 提取 prerequisites.commands(需要哪些可执行文件)。
+
+    只取 Hermes 约定的 `prerequisites.commands`,格式:
+        prerequisites:
+          commands: [node, git]
+    我们的行解析器会把嵌套块折进 `prerequisites` 这个 key,所以两种写法都能命中。
+    """
+    blob = meta.get("prerequisites", "")
+    if not blob:
+        return {}
+    m = re.search(r"commands:\s*\[([^\]]*)\]", blob)
+    if not m:
+        return {}
+    cmds = [c.strip().strip("'\"") for c in m.group(1).split(",") if c.strip()]
+    return {"commands": cmds} if cmds else {}
+
+
+def missing_prerequisites(name: str) -> list[str]:
+    """返回该技能声明了但本机没有的命令。空列表 = 依赖齐全。
+
+    为什么要做(2026-11-23):Claude Code / Hermes 的技能用 prerequisites
+    声明依赖,dummy 原来完全忽略 —— 技能读进来了,模型跑到一半才发现没有
+    node/python 包,白烧一轮。这里只读检查,不安装、不改环境。
+    """
+    path = os.path.join(SKILLS_DIR, name, "SKILL.md")
+    meta = _parse_frontmatter(path)
+    cmds = _parse_prerequisites(meta).get("commands", [])
+    return [c for c in cmds if shutil.which(c) is None]
+
+
 def build_skills_index() -> str:
     """构建技能索引(注入 system prompt 的文本;无技能返回空串)。
 
     渐进式加载:索引只含名称+描述+类型标记,全文由 LLM 按需 read_file。
+
+    每条都带**技能目录的绝对路径**:技能正文里的相对路径(如
+    `node examples/build.mjs`、`python validate.py`)以技能目录为基准。
+    不带路径时模型得自己拼 skills/<name>/…,那是推断不是保证。
     """
     skills = list_skills()
     if not skills:
         return ""
     lines = [
-        f"## 可用技能(技能目录: {SKILLS_DIR};用绝对路径读取;"
-        "文件若被移动,先 pwd/find 定位)",
+        f"## 可用技能(技能根目录: {SKILLS_DIR})",
+        "读某个技能用 read_file 它的 SKILL.md;正文里的相对路径以该技能的"
+        "「目录」为基准。",
     ]
     for s in skills:
         wf = " [工作流]" if s["type"] == "workflow" else ""
-        desc = s["description"][:100]
+        desc = " ".join(s["description"].split())
+        if len(desc) > 100:
+            desc = desc[:100] + "…"
         lines.append(f"- {s['name']}{wf}: {desc}")
+        lines.append(f"    目录: {os.path.join(SKILLS_DIR, s['name'])}")
+        missing = missing_prerequisites(s["name"])
+        if missing:
+            lines.append(f"    ⚠ 本机缺少依赖命令: {', '.join(missing)}")
+
     if len(skills) > MAX_SKILLS:
         lines.append(
             f"(技能数 {len(skills)} 超上限 {MAX_SKILLS},建议精简)"

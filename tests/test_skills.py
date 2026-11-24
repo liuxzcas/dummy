@@ -26,6 +26,9 @@ from session_store import SessionStore  # noqa: E402
 from tools import create_default_registry  # noqa: E402
 
 
+pytestmark = pytest.mark.fast   # 测试分组见 pytest.ini
+
+
 @pytest.fixture()
 def skills_dir(tmp_path, monkeypatch):
     """隔离的技能目录(不影响仓库真实 skills/)。"""
@@ -81,6 +84,47 @@ def test_delete_skill(skills_dir):
     assert sm.delete_skill("search-literature") is True
     assert sm.load_skill("search-literature") is None
     assert sm.delete_skill("nope") is False
+
+
+def test_frontmatter_multiline_description(skills_dir):
+    """多行(folded >)description 必须拼成完整一行,不能只剩 '>'(anatomy 就是这种写法)。"""
+    d = skills_dir / "folded-skill"
+    d.mkdir()
+    (d / "SKILL.md").write_text(
+        "---\n"
+        "name: folded-skill\n"
+        "description: >\n"
+        "  Build crafted, highly detailed figures\n"
+        "  that explain an idea as a physical object, with many small precise solid\n"
+        "  parts, four-tone shading and correct painter order, so the reader\n"
+        "  understands the idea because they recognise the machine.\n"
+        "license: MIT\n"
+        "  continued-value\n"
+        "\n"
+        "  block-body-line\n"
+        "metadata:\n"
+        "  opencode/slash: \"true\"\n"
+        "---\n"
+        "# body\n",
+        encoding="utf-8",
+    )
+    meta = sm._parse_frontmatter(str(d / "SKILL.md"))
+    desc = " ".join(meta["description"].split())
+    assert desc == (
+        "Build crafted, highly detailed figures that explain an idea as a physical object, "
+        "with many small precise solid parts, four-tone shading and correct painter order, "
+        "so the reader understands the idea because they recognise the machine."
+    ), desc
+    assert meta["name"] == "folded-skill"  # 续行没把 name 吞掉
+    assert meta["license"].startswith("MIT continued-value")  # 缩进续行拼到上一个 key
+    assert "block-body-line" not in meta["license"].split("\n")[0]  # 空行后另起一行,没和首行粘连
+    assert meta["opencode/slash"] == '"true"'  # 嵌套 key 没被当成续行吞掉
+    # 索引里描述是完整一句,而不是孤零零一个 '>' 或半截
+    line = [ln for ln in sm.build_skills_index().splitlines() if ln.startswith("- folded-skill")][0]
+    assert "Build crafted" in line and line.split(": ", 1)[1].endswith("…")
+    assert not line.split(": ", 1)[1].startswith(">")
+    # validate_skill 能识别这个技能
+    assert sm.validate_skill("folded-skill") == (True, "OK")
 
 
 # ---------------------------------------------------------------
@@ -143,9 +187,53 @@ def test_build_skills_index(skills_dir):
     assert "检索文献(arXiv)" in index
     assert "[工作流]" in index and "literature-review" in index
     assert "## 可用技能" in index
-    # 技能目录绝对路径注入(运行时计算,部署自适应,LLM 零定位成本)
-    assert f"技能目录: {sm.SKILLS_DIR}" in index
-    assert "用绝对路径读取" in index
+    # 技能根目录注入(运行时计算,部署自适应)
+    assert f"技能根目录: {sm.SKILLS_DIR}" in index
+
+
+def test_build_skills_index_has_per_skill_dir(skills_dir):
+    """每个技能都要带自己的目录 —— 正文里的相对路径以它为基准。
+
+    之前索引只给总根目录,模型得自己拼 skills/<name>/…,那是推断不是保证。
+    (anatomy 的 `node examples/build.mjs` 就依赖这个位置。)
+    """
+    index = sm.build_skills_index()
+    for name in ("search-literature", "literature-review"):
+        assert f"目录: {os.path.join(sm.SKILLS_DIR, name)}" in index
+    # 明确告诉模型"相对路径以技能目录为基准"
+    assert "以该技能的" in index
+
+
+def test_prerequisites_missing_detected(tmp_path, monkeypatch):
+    """声明了本机没有的命令 → 必须报出来,不能等跑到一半才炸。"""
+    d = tmp_path / "needs-tool"
+    d.mkdir()
+    (d / "SKILL.md").write_text(
+        "---\nname: needs-tool\ndescription: x\n"
+        "prerequisites:\n  commands: [not-a-real-cmd-xyz]\n---\n", encoding="utf-8")
+    monkeypatch.setattr(sm, "SKILLS_DIR", str(tmp_path))
+    assert sm.missing_prerequisites("needs-tool") == ["not-a-real-cmd-xyz"]
+    assert "缺少依赖命令" in sm.build_skills_index()
+    assert "not-a-real-cmd-xyz" in sm.build_skills_index()
+
+
+def test_prerequisites_satisfied_silent(tmp_path, monkeypatch):
+    """依赖齐全时不许出现告警(否则每条技能都挂个红字,等于噪音)。"""
+    import shutil as _sh
+    have = "python" if _sh.which("python") else "git"
+    d = tmp_path / "ok-tool"
+    d.mkdir()
+    (d / "SKILL.md").write_text(
+        f"---\nname: ok-tool\ndescription: x\nprerequisites:\n  commands: [{have}]\n---\n",
+        encoding="utf-8")
+    monkeypatch.setattr(sm, "SKILLS_DIR", str(tmp_path))
+    assert sm.missing_prerequisites("ok-tool") == []
+    assert "缺少依赖命令" not in sm.build_skills_index()
+
+
+def test_no_prerequisites_block_ok(skills_dir):
+    """没写 prerequisites 的技能(大多数)不能报错 —— 之前缺 import re 会 NameError。"""
+    assert sm.missing_prerequisites("search-literature") == []
 
 
 def test_build_skills_index_empty(tmp_path, monkeypatch):
