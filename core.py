@@ -110,6 +110,7 @@ from ui import ui, KIND_THINKING, KIND_TOOL_CALL, KIND_TOOL_RESULT
 from ui import _strip_control
 from input_layer import read_plain
 import workspace
+import arg_guard
 from skills_manager import build_skills_index
 from lessons import (
     has_correction_signal, is_tool_error, generate_lesson,
@@ -832,7 +833,25 @@ class DummyAgent:
                     #   1. 标准 json.loads
                     #   2. json5（允许单引号、尾逗号等）
                     #   3. 正则提取已知键（最坏情况兜底）
-                    tool_args = self._parse_tool_arguments(tool_call.function.arguments)
+                    raw_args = tool_call.function.arguments
+                    tool_args = self._parse_tool_arguments(raw_args)
+
+                    # 截断保全(arg_guard):参数串结构不完整时,把原始串与断点证据
+                    # 落到 garage/_partials/,并给模型一条能自己判断的提示。
+                    # 为什么放在 dispatch 之前:截断发生在解析之前,handler 根本
+                    # 收不到那段没写完的内容 —— buffer 加在 handler 里是拿不到的。
+                    # 命中时**不执行**该工具(避免落半成品),直接用提示作为工具结果。
+                    trunc_note = None
+                    if not tool_args.get("_error"):
+                        trunc_note = arg_guard.guard(tool_name, raw_args, tool_args)
+                    if trunc_note:
+                        result = trunc_note
+                        self.history.append({
+                            "role": "tool", "tool_call_id": tool_call_id,
+                            "content": result,
+                        })
+                        self._persist_history()
+                        continue
 
                     # 打印工具调用日志
                     ui.show(KIND_TOOL_CALL, tool=tool_name, args=tool_args)
@@ -849,6 +868,11 @@ class DummyAgent:
                     # ---------------------------------------------------
                     try:
                         result = self.tools.dispatch(tool_name, tool_args)
+                        # 工具真的跑通了 → 连续截断计数清零(arg_guard 的重复提示靠它)。
+                        # 注意:dispatch 失败时也返回字符串(不抛异常),所以要看结果,
+                        # 否则一次失败的写入也会把"连续截断"计数抹掉。
+                        if not is_tool_error(result):
+                            arg_guard.reset_streak()
                     except InterruptSignal:
                         # 用户 /p 打断(发生在 handler 的确认输入阶段)
                         #
