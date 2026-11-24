@@ -11,6 +11,11 @@
 from turn_context import TurnContext, RunRecord
 
 
+import pytest  # noqa: E402
+
+pytestmark = pytest.mark.core   # 测试分组见 pytest.ini
+
+
 def _tc(**kw):
     return TurnContext(**kw)
 

@@ -14,6 +14,11 @@ import os
 from tools.write_file import _detect_line_ending, write_file_handler
 
 
+import pytest  # noqa: E402
+
+pytestmark = pytest.mark.fast   # 测试分组见 pytest.ini
+
+
 # ============================================================
 # 探测函数:必须报事实
 # ============================================================

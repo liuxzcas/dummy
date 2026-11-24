@@ -17,11 +17,15 @@ import sys
 
 import env_probe
 from env_probe import (
+
     describe_environment,
     _console_encoding,
     _fs_encoding,
     _python_io_encoding,
 )
+
+import pytest  # noqa: E402
+pytestmark = pytest.mark.core   # 测试分组见 pytest.ini
 
 
 # ============================================================

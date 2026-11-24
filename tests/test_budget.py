@@ -13,6 +13,11 @@ import core
 from conftest import ScriptedLLM
 from tools import create_default_registry
 
+
+import pytest  # noqa: E402
+
+pytestmark = pytest.mark.core   # 测试分组见 pytest.ini
+
 SUMMARY_MARK = "[系统: 本轮可用的调用轮次已用尽"
 
 

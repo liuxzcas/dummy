@@ -11,6 +11,11 @@ import threading
 from session_store import SessionStore
 
 
+import pytest  # noqa: E402
+
+pytestmark = pytest.mark.core   # 测试分组见 pytest.ini
+
+
 def make_store(tmp_path) -> SessionStore:
     return SessionStore(os.path.join(tmp_path, "persist.db"))
 

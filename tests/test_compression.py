@@ -32,6 +32,9 @@ from core import DummyAgent  # noqa: E402
 from tools import ToolRegistry  # noqa: E402
 from session_store import SessionStore  # noqa: E402
 
+
+pytestmark = pytest.mark.core   # 测试分组见 pytest.ini
+
 SUMMARY_MARK = "你负责压缩对话历史"
 
 

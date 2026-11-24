@@ -26,6 +26,9 @@ import sqlite3
 
 import pytest
 
+
+pytestmark = pytest.mark.core   # 测试分组见 pytest.ini
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 

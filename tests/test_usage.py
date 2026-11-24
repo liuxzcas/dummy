@@ -15,6 +15,11 @@ from core import DummyAgent
 from tools import create_default_registry
 
 
+import pytest  # noqa: E402
+
+pytestmark = pytest.mark.fast   # 测试分组见 pytest.ini
+
+
 class _Usage:
     """最小 usage 桩(模拟 OpenAI/DeepSeek 的返回对象)。"""
 

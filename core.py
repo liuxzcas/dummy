@@ -462,6 +462,7 @@ class DummyAgent:
         llm_client: LLMClient,
         tool_registry: ToolRegistry,
         system_prompt: Optional[str] = None,
+        session_store: Optional["SessionStore"] = None,
     ):
         """
         初始化 Agent。
@@ -481,7 +482,12 @@ class DummyAgent:
         """
         self.llm = llm_client
         self.tools = tool_registry
-        self.session_store = SessionStore()
+        # 可注入:测试传临时库,避免依赖生产 session.db。
+        # 不传时行为不变(内部建默认库)。
+        # 为什么重要(2026-11-23):测试用生产库时,每轮 chat 会触发
+        # FTS 索引全量重建(4800+ 行 ≈ 22s),两条用例各慢 45s;
+        # 而且测试会往生产库写数据,污染真实会话历史。
+        self.session_store = session_store or SessionStore()
         self.current_session_id: Optional[str] = None
         # 会话占用锁 owner(进程级唯一:pid + 启动时间戳,防 pid 复用)
         self._session_owner = f"pid:{os.getpid()}:{int(time.time())}"

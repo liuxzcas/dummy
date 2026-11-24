@@ -25,6 +25,9 @@ from session_store import SessionStore  # noqa: E402
 from tools import create_default_registry  # noqa: E402
 
 
+pytestmark = pytest.mark.core   # 测试分组见 pytest.ini
+
+
 @pytest.fixture()
 def store(tmp_path):
     return SessionStore(str(tmp_path / "m.db"))

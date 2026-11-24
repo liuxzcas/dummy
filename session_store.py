@@ -380,6 +380,20 @@ class SessionStore:
             ON lessons(status)
             """
         )
+        # FTS 索引的"脏标记"元数据(2026-11-23)。
+        # 只存两类键:
+        #   fts_dirty      —— 1 表示索引需要重建(预留,供未来增量同步)
+        #   fts_snapshot   —— 上次重建时四个源表的行数快照,格式 "a,b,c,d"
+        # 用行数快照而当门控主判据:写入四张表的入口有 10+ 处,逐处插标记容易漏;
+        # 行数一变必然重建,索引不会静默过期。
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS meta (
+                k TEXT PRIMARY KEY,
+                v TEXT NOT NULL
+            )
+            """
+        )
         # ---- 迁移:老库补列(CREATE TABLE IF NOT EXISTS 不会给已有表加列) ----
         # SQLite 的 ALTER TABLE ADD COLUMN 不幂等(列已存在会报错),
         # 所以先查 PRAGMA 再决定加不加。
@@ -644,8 +658,18 @@ class SessionStore:
         索引范围(见 docs/fts-search.md §2):
         - messages.content(折叠后的 tool 结果;排除 system 模板)
         - tool_result_archive.content(L1 折叠掉的完整原文,决策 C 兑现)
-        数据量小(几千行)毫秒级;搜索前惰性调用,保证索引与库一致。
-        增量同步留作数据量大的演进方向。
+        - memories.fact / lessons.lesson
+
+        ============ 为什么要"脏标记"门控(2026-11-23) ============
+        原实现里 search() 每次都无条件重建。数据库长到 4800+ 条消息后,
+        单次重建 ~23 秒(executemany 前是 45 秒),而 core 每轮要注入
+        记忆 + 教训 = 调 2 次 search → 每轮白烧 ~46 秒。
+
+        现在用 meta 表的脏标记门控:
+          - 任何写 messages/archive/memories/lessons 的地方调 mark_index_dirty()
+          - rebuild 完成后清标记 + 记下源表行数
+          - search() 只在脏时重建
+        行数快照是兜底:标记漏设时,行数变化仍会触发重建(索引不会静默过期)。
         """
         conn = sqlite3.connect(self.db_path)
         conn.execute("PRAGMA busy_timeout = 10000")
@@ -654,68 +678,126 @@ class SessionStore:
             conn.execute("DELETE FROM fts_en")
             conn.execute("DELETE FROM fts_zh")
 
+            # ============ 为什么用 executemany(2026-11-23) ============
+            # 原来逐条 conn.execute(...) 插入:4 个来源 × 2 张表,实测
+            # 22049 次 execute → 单次 rebuild 45.7s,而 search() 每次调用前
+            # 都会 rebuild 一次(core 每轮注入记忆 + 教训 = 2 次/轮),
+            # 等于每轮对话白烧 ~45 秒。
+            #
+            # 改成 executemany:每个 (来源 × 分词器) 一次提交。SQL 与语义不变,
+            # 只是不再逐条往返。FTS 的 trigram 分词仍在插入时完成,索引内容一致。
+            # 四个来源的 SELECT 列顺序一致(session_id, id_or_seq, text),
+            # 所以可以直接把 fetchall() 的行喂给 executemany。
             rows = conn.execute(
                 """
                 SELECT session_id, sequence, content FROM messages
                 WHERE role != 'system' AND content IS NOT NULL AND content != ''
                 """
             ).fetchall()
-            for session_id, seq, content in rows:
-                conn.execute(
-                    "INSERT INTO fts_en (source, session_id, seq, content) VALUES ('message', ?, ?, ?)",
-                    (session_id, seq, content),
-                )
-                conn.execute(
-                    "INSERT INTO fts_zh (source, session_id, seq, content) VALUES ('message', ?, ?, ?)",
-                    (session_id, seq, content),
-                )
+            for table in ("fts_en", "fts_zh"):
+                if rows:
+                    conn.executemany(
+                        f"INSERT INTO {table} (source, session_id, seq, content) "
+                        "VALUES ('message', ?, ?, ?)",
+                        rows,
+                    )
 
             arows = conn.execute(
                 "SELECT session_id, id, content FROM tool_result_archive"
             ).fetchall()
-            for session_id, aid, content in arows:
-                conn.execute(
-                    "INSERT INTO fts_en (source, session_id, seq, content) VALUES ('archive', ?, ?, ?)",
-                    (session_id, aid, content),
-                )
-                conn.execute(
-                    "INSERT INTO fts_zh (source, session_id, seq, content) VALUES ('archive', ?, ?, ?)",
-                    (session_id, aid, content),
-                )
+            for table in ("fts_en", "fts_zh"):
+                if arows:
+                    conn.executemany(
+                        f"INSERT INTO {table} (source, session_id, seq, content) "
+                        "VALUES ('archive', ?, ?, ?)",
+                        arows,
+                    )
 
             # memories(Phase 2.4):事实条目作为第三索引源,
             # 注入时用 source='memory' 过滤检索。
             mrows = conn.execute(
                 "SELECT session_id, id, fact FROM memories"
             ).fetchall()
-            for session_id, mid, fact in mrows:
-                conn.execute(
-                    "INSERT INTO fts_en (source, session_id, seq, content) VALUES ('memory', ?, ?, ?)",
-                    (session_id, mid, fact),
-                )
-                conn.execute(
-                    "INSERT INTO fts_zh (source, session_id, seq, content) VALUES ('memory', ?, ?, ?)",
-                    (session_id, mid, fact),
-                )
+            for table in ("fts_en", "fts_zh"):
+                if mrows:
+                    conn.executemany(
+                        f"INSERT INTO {table} (source, session_id, seq, content) "
+                        "VALUES ('memory', ?, ?, ?)",
+                        mrows,
+                    )
 
             # lessons(Phase 3 Step 3):教训规则作为第四索引源,
             # 注入时用 source='lesson' 过滤检索。
             lrows = conn.execute(
                 "SELECT session_id, id, lesson FROM lessons"
             ).fetchall()
-            for session_id, lid, lesson in lrows:
-                conn.execute(
-                    "INSERT INTO fts_en (source, session_id, seq, content) VALUES ('lesson', ?, ?, ?)",
-                    (session_id, lid, lesson),
-                )
-                conn.execute(
-                    "INSERT INTO fts_zh (source, session_id, seq, content) VALUES ('lesson', ?, ?, ?)",
-                    (session_id, lid, lesson),
-                )
+            for table in ("fts_en", "fts_zh"):
+                if lrows:
+                    conn.executemany(
+                        f"INSERT INTO {table} (source, session_id, seq, content) "
+                        "VALUES ('lesson', ?, ?, ?)",
+                        lrows,
+                    )
+            # 记下本次重建时的行数快照 —— search() 靠它判断是否需要重建
+            conn.execute(
+                "INSERT OR REPLACE INTO meta (k, v) VALUES ('fts_snapshot', ?)",
+                (",".join(str(len(x)) for x in (rows, arows, mrows, lrows)),),
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO meta (k, v) VALUES ('fts_dirty', '0')"
+            )
             conn.commit()
         except Exception:
             conn.rollback()
             raise
+        finally:
+            conn.close()
+
+    def _source_snapshot(self) -> str:
+        """四个索引源的行数快照,格式 "messages,archive,memories,lessons"。"""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            return ",".join(str(n) for n in (
+                conn.execute("SELECT COUNT(*) FROM messages WHERE role != 'system' "
+                             "AND content IS NOT NULL AND content != ''").fetchone()[0],
+                conn.execute("SELECT COUNT(*) FROM tool_result_archive").fetchone()[0],
+                conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0],
+                conn.execute("SELECT COUNT(*) FROM lessons").fetchone()[0],
+            ))
+        finally:
+            conn.close()
+
+    def ensure_search_index(self) -> bool:
+        """索引过期才重建。返回是否真的重建了。
+
+        判据(任一成立就重建):
+          1. meta 里没有快照 —— 首次或老库
+          2. 当前行数快照 != 上次重建时的快照 —— 有增删
+          3. fts_dirty = '1' —— 显式标脏
+        行数不变就直接返回,把原来每次 search() 的 23 秒降到一次 COUNT。
+        """
+        conn = sqlite3.connect(self.db_path)
+        try:
+            stored = dict(conn.execute(
+                "SELECT k, v FROM meta WHERE k IN ('fts_snapshot', 'fts_dirty')"
+            ).fetchall())
+        except sqlite3.OperationalError:
+            stored = {}                       # meta 表还没建(极老库)
+        finally:
+            conn.close()
+        if (stored.get("fts_dirty") != "1"
+                and stored.get("fts_snapshot") == self._source_snapshot()):
+            return False
+        self.rebuild_search_index()
+        return True
+
+    def mark_index_dirty(self) -> None:
+        """显式标脏。行数快照已能兜底,这个入口留给"内容改了但行数没变"的场景
+        (如 UPDATE memories SET fact=...)。"""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            conn.execute("INSERT OR REPLACE INTO meta (k, v) VALUES ('fts_dirty', '1')")
+            conn.commit()
         finally:
             conn.close()
 
@@ -737,7 +819,7 @@ class SessionStore:
         """
         if not query or not query.strip():
             return []
-        self.rebuild_search_index()
+        self.ensure_search_index()
 
         zh_parts = [p for p in re.findall(r"[\u4e00-\u9fff]{2,}", query)]
         en_parts = [p for p in re.findall(r"[A-Za-z0-9_]{2,}", query)]
@@ -876,6 +958,7 @@ class SessionStore:
                     (fact, category, confidence, session_id, now, replace_id),
                 )
                 conn.commit()  # UPDATE 分支也要提交(否则连接关闭回滚)
+                self.mark_index_dirty()   # 行数没变但内容变了,必须显式标脏
                 return replace_id
             cur = conn.execute(
                 """

@@ -32,9 +32,12 @@ date_re = re.compile(r"paste_\d{8}_\d{6}_\d{3}\.txt$")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from input_layer import (                                    # noqa: E402
+
     detect_file_drop, format_drop_message, looks_like_path,
     is_known_command, read_input,
 )
+
+pytestmark = pytest.mark.core   # 测试分组见 pytest.ini
 
 
 @pytest.fixture

@@ -35,6 +35,9 @@ from input_source import (                           # noqa: E402
 from tools import create_default_registry            # noqa: E402
 
 
+pytestmark = pytest.mark.fast   # 测试分组见 pytest.ini
+
+
 # ============================================================
 # ① ListenerSource:保持旧语义(只有 /p 算打断)
 # ============================================================

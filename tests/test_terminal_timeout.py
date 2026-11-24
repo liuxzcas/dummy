@@ -28,8 +28,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from tools.terminal import terminal_handler, DEFAULT_TIMEOUT, MAX_TIMEOUT   # noqa: E402
 from tools.tasks import (                                                   # noqa: E402
+
     TaskRegistry, TaskRecord, kill_process_tree, list_descendants, is_alive,
 )
+
+pytestmark = pytest.mark.slow   # 测试分组见 pytest.ini
 
 
 # ============================================================

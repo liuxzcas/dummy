@@ -34,6 +34,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import colors   # noqa: E402
 
 
+pytestmark = pytest.mark.core   # 测试分组见 pytest.ini
+
+
 @pytest.fixture
 def colored(monkeypatch):
     """强制开启着色(测试环境 stdout 不是 TTY,默认是无色的)。"""

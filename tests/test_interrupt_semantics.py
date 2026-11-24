@@ -34,6 +34,9 @@ from conftest import ScriptedLLM                   # noqa: E402
 from tools import create_default_registry          # noqa: E402
 
 
+pytestmark = pytest.mark.core   # 测试分组见 pytest.ini
+
+
 # ============================================================
 # 造历史的辅助（照 test_history_hygiene.py 的风格）
 # ============================================================

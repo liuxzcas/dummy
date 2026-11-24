@@ -17,6 +17,11 @@ LineRenderer。
 import ast
 import pathlib
 
+
+import pytest  # noqa: E402
+
+pytestmark = pytest.mark.core   # 测试分组见 pytest.ini
+
 MAIN = pathlib.Path(__file__).resolve().parent.parent / "main.py"
 
 

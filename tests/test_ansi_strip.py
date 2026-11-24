@@ -27,6 +27,9 @@ import sys
 
 import pytest
 
+
+pytestmark = pytest.mark.slow   # 测试分组见 pytest.ini
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # 真凶原样

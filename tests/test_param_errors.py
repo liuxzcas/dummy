@@ -37,6 +37,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from tools import create_default_registry   # noqa: E402
 
 
+pytestmark = pytest.mark.core   # 测试分组见 pytest.ini
+
+
 @pytest.fixture
 def reg():
     r = create_default_registry()

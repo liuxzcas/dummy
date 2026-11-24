@@ -133,6 +133,40 @@ def tool_msgs(history):
     return [m for m in history if m.get("role") == "tool"]
 
 
+@pytest.fixture(autouse=True)
+def _isolate_session_store(monkeypatch):
+    """所有测试自动指向临时会话库,绝不碰生产 session.db。
+
+    ============ 为什么必须 autouse(2026-11-23) ============
+    原先只有 run_script 这个 fixture 做了隔离,其他测试直接
+    `core.DummyAgent(llm, registry)` —— 内部 new 的是**生产库**。两个后果:
+      1. 慢:每轮 chat 触发 FTS 全量重建(4800+ 行 ≈ 22s),
+         两条用例各慢 45s,占全量测试时长的 62%;
+      2. 脏:测试会往真实会话历史里写消息。
+
+    现在改成 autouse:任何 new DummyAgent 的地方都拿到临时库。
+    需要断言生产库行为的测试可以显式传 session_store 覆盖。
+    """
+    real_store = core.SessionStore
+    created: list[str] = []
+
+    def _factory(*args, **kwargs):
+        if kwargs.get("db_path"):
+            return real_store(*args, **kwargs)      # 调用方显式指定 → 尊重
+        import tempfile
+        path = os.path.join(tempfile.mkdtemp(prefix="dummy-test-"), "t.db")
+        created.append(path)
+        return real_store(db_path=path)
+
+    monkeypatch.setattr(core, "SessionStore", _factory)
+    yield
+    for p in created:
+        try:
+            os.remove(p)
+        except OSError:
+            pass
+
+
 def tool_contents(history):
     return [str(m.get("content")) for m in tool_msgs(history)]
 

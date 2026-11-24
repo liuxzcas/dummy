@@ -46,6 +46,9 @@ import tools.terminal as T                           # noqa: E402
 from tools import create_default_registry            # noqa: E402
 
 
+pytestmark = pytest.mark.slow   # 测试分组见 pytest.ini
+
+
 @pytest.fixture(autouse=True)
 def clean_probe():
     """每条测试后把探针还原,避免相互污染。"""

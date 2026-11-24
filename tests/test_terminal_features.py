@@ -21,8 +21,12 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from tools.terminal import (                                   # noqa: E402
+
     COMMAND_HINTS, _command_hint, _find_bash, terminal_handler,
 )
+
+import pytest  # noqa: E402
+pytestmark = pytest.mark.slow   # 测试分组见 pytest.ini
 
 
 # ============================================================

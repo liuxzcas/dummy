@@ -12,11 +12,15 @@ import contextlib
 
 import ui as ui_mod
 from ui import (
+
     UI, Message, PlainRenderer, LineRenderer, SilentRenderer,
     KIND_USER, KIND_AGENT, KIND_TOOL_CALL, KIND_TOOL_RESULT,
     KIND_THINKING, KIND_SPINNER, KIND_NOTE, KIND_WARN, KIND_ERROR,
     KIND_DIVIDER, KIND_RAW,
 )
+
+import pytest  # noqa: E402
+pytestmark = pytest.mark.fast   # 测试分组见 pytest.ini
 
 
 def _capture(fn):

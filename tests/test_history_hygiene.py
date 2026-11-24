@@ -22,6 +22,11 @@ from session_store import (
 from tools import create_default_registry
 
 
+import pytest  # noqa: E402
+
+pytestmark = pytest.mark.core   # 测试分组见 pytest.ini
+
+
 # ============================================================
 # 造历史的辅助
 # ============================================================

@@ -24,6 +24,9 @@ import sys
 
 import pytest
 
+
+pytestmark = pytest.mark.core   # 测试分组见 pytest.ini
+
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 

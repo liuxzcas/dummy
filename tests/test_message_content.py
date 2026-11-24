@@ -27,6 +27,9 @@ import pytest
 from llm import message_content
 
 
+pytestmark = pytest.mark.core   # 测试分组见 pytest.ini
+
+
 # ============================================================
 # 三种形态都要支持(生产是 SDK 对象,测试是 dict/字符串)
 # ============================================================

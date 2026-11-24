@@ -26,6 +26,9 @@ from session_store import SessionStore  # noqa: E402
 from tools import create_default_registry  # noqa: E402
 
 
+pytestmark = pytest.mark.slow   # 测试分组见 pytest.ini
+
+
 class FakeLLM:
     def __init__(self, responses):
         self._responses = list(responses)

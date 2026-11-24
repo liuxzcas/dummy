@@ -11,12 +11,15 @@
 import pytest
 
 from tool_guardrails import (
+
     GuardrailConfig,
     ToolCallGuardrailController,
     ToolCallSignature,
     append_guidance,
     _result_hash,
 )
+
+pytestmark = pytest.mark.core   # 测试分组见 pytest.ini
 
 ARGS = {"path": "a.txt"}
 FAIL = "[错误] 文件不存在: a.txt"
