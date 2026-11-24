@@ -54,3 +54,7 @@ garage/*
 # 2026-11-18 用户明确要求不进仓库。重装:
 #   git clone https://github.com/wheresryan22/anatomy.git skills/anatomy
 skills/anatomy/
+
+# 自建技能不进仓库(2026-11-24 用户明确要求)。anatomy 已在上面单独排除。
+skills/courseware-ppt-generator/
+skills/lesson-plan-generator/
